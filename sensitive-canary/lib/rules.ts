@@ -208,7 +208,7 @@ const SECRET_RULES: Rule[] = [
     id: "generic-secret",
     description: "Generic API Key / Secret",
     regex:
-      /(api[_-]?key|secret[_-]?key|access[_-]?token|api[_-]?secret)\s*[:=]\s*['"]?([A-Za-z0-9\-_.]{20,})/gi,
+      /(api[_-]?key|secret[_-]?key|access[_-]?token|api[_-]?secret)['"]?\s*[:=]\s*['"]?([A-Za-z0-9\-_.]{20,})/gi,
     secretGroup: 2,
     entropyThreshold: 3.5,
     category: "secret",
