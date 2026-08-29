@@ -47,46 +47,6 @@ export function parseAllowTags(messages: Message[]): Set<string> {
   return parseTagsOfType("allow", messages);
 }
 
-// Resolve effective allow/mask tags based on first-occurrence priority.
-// For each category dimension ("secret", "pii"), the first matching tag wins.
-// [allow-all] / [mask-all] resolve both dimensions at once.
-//
-//   "[allow-secret] [mask-secret] ..." → secret: allow
-//   "[mask-secret] [allow-secret] ..." → secret: mask
-//   "[allow-secret] [mask-pii]   ..." → secret: allow, pii: mask
-export function resolveTagPriority(prompt: string): {
-  effectiveAllow: Set<string>;
-  effectiveMask: Set<string>;
-} {
-  const pattern = /\[(allow|mask)-(all|secret|pii)\]/gi;
-  const effectiveAllow = new Set<string>();
-  const effectiveMask = new Set<string>();
-  const resolved = new Set<string>();
-
-  for (const [, kind, tag] of prompt.matchAll(pattern)) {
-    if (!kind || !tag) continue;
-    const k = kind.toLowerCase() as "allow" | "mask";
-    const t = tag.toLowerCase();
-    const dims = t === "all" ? ["secret", "pii"] : [t];
-
-    for (const dim of dims) {
-      if (!resolved.has(dim)) {
-        resolved.add(dim);
-        (k === "allow" ? effectiveAllow : effectiveMask).add(dim);
-      }
-    }
-  }
-
-  if (effectiveAllow.has("secret") && effectiveAllow.has("pii")) {
-    effectiveAllow.add("all");
-  }
-  if (effectiveMask.has("secret") && effectiveMask.has("pii")) {
-    effectiveMask.add("all");
-  }
-
-  return { effectiveAllow, effectiveMask };
-}
-
 export function applyAllowTags(
   findings: Finding[],
   allowTags: Set<string>,

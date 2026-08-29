@@ -47,12 +47,13 @@ export function entropy(str: string): number {
   return h;
 }
 
-// Patterns sourced from gitleaks and TruffleHog detector definitions.
+// Patterns sourced from gitleaks and TruffleHog detector definitions; local
+// additions live in LOCAL_SECRET_RULES below so upstream refreshes only touch
+// SECRET_RULES. Local deviation from upstream: scan() passes validate() the
+// extracted secretValue rather than the full match — identical for every
+// upstream rule (all use the full match as secretValue), required by
+// anchored-entropy.
 // Each rule:
-//   regex        — must have /g flag
-//   secretGroup  — capture group containing the secret (default: 0 = full match)
-//   entropyThreshold — skip match if entropy(secretValue) is below threshold
-
 // ── Secrets ───────────────────────────────────────────────────────────────────
 
 const SECRET_RULES: Rule[] = [
@@ -230,6 +231,95 @@ const SECRET_RULES: Rule[] = [
   },
 ];
 
+// ── Local additions (not in upstream 9111ed2) ────────────────────────────────
+
+const LOCAL_SECRET_RULES: Rule[] = [
+  {
+    id: "openai-new",
+    description: "OpenAI API Key (svcacct/none)",
+    regex: /sk-(?:svcacct|None)-[A-Za-z0-9_-]{40,}/g,
+    category: "secret",
+  },
+  {
+    id: "azure-storage",
+    description: "Azure Storage Account Key",
+    regex: /AccountKey=[A-Za-z0-9+/=]{60,}/g,
+    category: "secret",
+  },
+  {
+    id: "huggingface",
+    description: "Hugging Face Token",
+    regex: /hf_[A-Za-z0-9]{34,}/g,
+    category: "secret",
+  },
+  {
+    id: "pypi-upload",
+    description: "PyPI Upload Token",
+    regex: /pypi-[A-Za-z0-9_-]{50,}/g,
+    category: "secret",
+  },
+  {
+    id: "gitlab-runner",
+    description: "GitLab Runner Token",
+    regex: /glrt-[A-Za-z0-9_-]{20,}/g,
+    category: "secret",
+  },
+  {
+    id: "slack-app",
+    description: "Slack App Refresh Token",
+    regex: /xoxe-[0-9A-Za-z-]{70,}/g,
+    category: "secret",
+  },
+  {
+    id: "google-oauth",
+    description: "Google OAuth Token",
+    regex: /(?:ya29\.|GOCSPX-)[A-Za-z0-9_-]{20,}/g,
+    category: "secret",
+  },
+  {
+    id: "stripe-webhook",
+    description: "Stripe Webhook Signing Secret",
+    regex: /whsec_[A-Za-z0-9]{24,}/g,
+    category: "secret",
+  },
+  {
+    id: "shopify",
+    description: "Shopify Access Token",
+    regex: /shp(?:at|ca|pa|ss)_[A-Za-z0-9]{32}/g,
+    category: "secret",
+  },
+  {
+    id: "databricks",
+    description: "Databricks API Token",
+    regex: /dapi[A-Za-z0-9]{32}/g,
+    category: "secret",
+  },
+  {
+    id: "bearer",
+    description: "Bearer Authorization Token",
+    regex: /\bbearer\s+[A-Za-z0-9\-._~+/]{20,}/gi,
+    category: "secret",
+  },
+  {
+    // Context-anchored entropy: a long high-entropy value under a field whose
+    // name ends in a secret term. Generic "key" requires either an explicit
+    // credential qualifier (api/private/access), a separator (`*_key`), or the
+    // whole field name. This deliberately excludes ordinary identifiers such
+    // as `whichKeyWritable`; unanchored entropy flags code, git SHAs, UUIDs,
+    // and test vectors. validate() also excludes pure-hex digests (≥32 hex
+    // chars — almost always a hash) and all-lowercase single tokens.
+    id: "anchored-entropy",
+    description: "High-Entropy Value in Secret-Labeled Field",
+    regex:
+      /\b(?:[A-Za-z0-9_-]*(?:secret|token|password|passwd|credential)|[A-Za-z0-9_-]*(?:(?:api|private|access)[_-]?key|[_-]key)|key)["']?\s*[:=]\s*["']?([A-Za-z0-9+/=_.-]{20,})/gi,
+    secretGroup: 1,
+    entropyThreshold: 3.5,
+    validate: (value: string) =>
+      !/^[0-9a-f]{32,}$/i.test(value) && /[0-9A-Z]/.test(value),
+    category: "secret",
+  },
+];
+
 // ── PII ───────────────────────────────────────────────────────────────────────
 
 const PII_RULES: Rule[] = [
@@ -284,7 +374,11 @@ const PII_RULES: Rule[] = [
   },
 ];
 
-export const RULES: Rule[] = [...SECRET_RULES, ...PII_RULES];
+export const RULES: readonly Rule[] = [
+  ...SECRET_RULES,
+  ...LOCAL_SECRET_RULES,
+  ...PII_RULES,
+];
 
 // Show first 4 + **** + last 4 chars; fully mask strings of 8 chars or fewer
 export function redact(str: string): string {
@@ -306,7 +400,7 @@ export function scan(text: string): Finding[] {
         entropy(secretValue) < rule.entropyThreshold
       )
         continue;
-      if (rule.validate != null && !rule.validate(match[0])) continue;
+      if (rule.validate != null && !rule.validate(secretValue)) continue;
 
       findings.push({
         ruleId: rule.id,

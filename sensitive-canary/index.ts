@@ -4,10 +4,14 @@
 // processes that read a JSON envelope on stdin and signal a block through the
 // exit code. omp's extension API is an in-process event bus instead, so the
 // executables do not transfer. The *detection engine* does, and that is the
-// part worth having -- 31 rules derived from gitleaks/TruffleHog, entropy
-// filtering, Luhn validation. lib/{rules,inspector}.ts are vendored verbatim
-// from upstream 9111ed20841d1ffefd86092dcb8b52ba082d973a (MIT, see lib/LICENSE);
-// refresh by re-copying those two files, they import nothing of their own.
+// part worth having -- 31 upstream rules (plus local additions) derived from
+// gitleaks/TruffleHog, entropy filtering, Luhn validation. lib/{rules,inspector}.ts are vendored from
+// upstream 9111ed20841d1ffefd86092dcb8b52ba082d973a (MIT, see lib/LICENSE),
+// with local additions: rules.ts carries LOCAL_SECRET_RULES (extra providers
+// plus an entropy rule anchored to secret-ish key names) and scan() passes
+// validate() the extracted secretValue; inspector.ts has the unused
+// resolveTagPriority removed. Refresh by re-copying upstream into
+// SECRET_RULES / re-applying the deletions — see the notes in each file.
 //
 // The port is deliberately not one-to-one, because omp can do something Claude
 // Code cannot. Upstream's PreToolUse sees a tool's *inputs* and may only allow
@@ -79,17 +83,25 @@ function isTextChunk(value: unknown): value is TextChunk {
 // every API call. Keyed by exact text; redaction is idempotent, so reusing a
 // hit is always safe.
 const SCAN_CACHE = new Map<string, Finding[]>();
-const SCAN_CACHE_MAX = 512;
+// Budget the memo by bytes, not entries: 512 × 2 MB keys is a gigabyte of RAM.
+const SCAN_CACHE_MAX_BYTES = 32_000_000;
+let scanCacheBytes = 0;
 
 function cachedScan(text: string): Finding[] {
   const hit = SCAN_CACHE.get(text);
   if (hit) return hit;
   const found = scan(text);
-  if (SCAN_CACHE.size >= SCAN_CACHE_MAX) {
-    const oldest = SCAN_CACHE.keys().next().value;
-    if (oldest !== undefined) SCAN_CACHE.delete(oldest);
+  const cost = text.length * 2; // UTF-16 code units × 2 bytes
+  if (cost <= SCAN_CACHE_MAX_BYTES) {
+    while (scanCacheBytes + cost > SCAN_CACHE_MAX_BYTES) {
+      const oldest = SCAN_CACHE.keys().next().value;
+      if (oldest === undefined) break;
+      SCAN_CACHE.delete(oldest);
+      scanCacheBytes -= oldest.length * 2;
+    }
+    SCAN_CACHE.set(text, found);
+    scanCacheBytes += cost;
   }
-  SCAN_CACHE.set(text, found);
   return found;
 }
 
@@ -114,8 +126,25 @@ function blocked(
   };
 }
 
-// Rewrites secret values to `[REDACTED <description>]` in every text chunk.
-// Shared by the ingress (context) and egress (tool_result) handlers.
+// Rewrites secret values to `[REDACTED <description>]` in one text blob.
+function redactText(text: string): { text: string; hits: number } {
+  const findings = dedupeFindings(
+    applyAllowTags(cachedScan(text), allowTags),
+  );
+  if (findings.length === 0) return { text, hits: 0 };
+  let hits = 0;
+  for (const finding of findings) {
+    hits++;
+    text = text.replaceAll(
+      finding.secretValue,
+      `[REDACTED ${finding.description}]`,
+    );
+  }
+  return { text, hits };
+}
+
+// Applies redactText to every text chunk. Shared by the ingress (context)
+// and egress (tool_result) handlers.
 function redactChunks(content: readonly unknown[]): {
   content: unknown[];
   hits: number;
@@ -123,19 +152,9 @@ function redactChunks(content: readonly unknown[]): {
   let hits = 0;
   const out = content.map((chunk) => {
     if (!isTextChunk(chunk) || chunk.text.length > MAX_SCAN_BYTES) return chunk;
-    const findings = dedupeFindings(
-      applyAllowTags(cachedScan(chunk.text), allowTags),
-    );
-    if (findings.length === 0) return chunk;
-
-    let text = chunk.text;
-    for (const finding of findings) {
-      hits++;
-      text = text.replaceAll(
-        finding.secretValue,
-        `[REDACTED ${finding.description}]`,
-      );
-    }
+    const { text, hits: n } = redactText(chunk.text);
+    if (n === 0) return chunk;
+    hits += n;
     return { ...chunk, text };
   });
   return { content: out, hits };
@@ -168,7 +187,7 @@ function extractFilePathsFromCommand(command: string): string[] {
         skipNext = true;
         continue;
       }
-      paths.push(token);
+      paths.push(token.replace(/^["']+|["']+$/g, ""));
     }
   }
   return [...new Set(paths)];
@@ -215,14 +234,30 @@ function candidatePaths(input: Record<string, unknown>): string[] {
 export default function sensitiveCanary(pi: ExtensionAPI): void {
   // ── ingress: user-authored text, before it reaches the provider ───────────
   pi.on("context", async (event, ctx) => {
-    allowTags = parseAllowTags(event.messages as readonly unknown[] as Message[]);
+    // Tags are honored from the most recent user turn only, so a stale
+    // "[allow-secret]" in old history cannot permanently disarm the canary.
+    const all = event.messages as readonly unknown[] as Message[];
+    let latestUser: Message | undefined;
+    for (let i = all.length - 1; i >= 0; i--) {
+      if (all[i]?.role === "user") {
+        latestUser = all[i];
+        break;
+      }
+    }
+    allowTags = parseAllowTags(latestUser ? [latestUser] : []);
     if (allowTags.has("all")) return;
 
     let total = 0;
-    const messages = event.messages.map((message) => {
-      if (message.role !== "user" || !Array.isArray(message.content)) {
-        return message;
+    const messages = all.map((message) => {
+      if (message.role !== "user") return message;
+      if (typeof message.content === "string") {
+        if (message.content.length > MAX_SCAN_BYTES) return message;
+        const { text, hits } = redactText(message.content);
+        if (hits === 0) return message;
+        total += hits;
+        return { ...message, content: text };
       }
+      if (!Array.isArray(message.content)) return message;
       const { content, hits } = redactChunks(message.content);
       if (hits === 0) return message;
       total += hits;
@@ -276,7 +311,7 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
 
   // ── egress: what the tool actually printed. No upstream equivalent. ───────
   pi.on("tool_result", async (event, ctx) => {
-    if (event.isError || allowTags.has("all")) return;
+    if (allowTags.has("all")) return;
 
     const { content, hits } = redactChunks(event.content);
     if (hits === 0) return;
