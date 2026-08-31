@@ -13,42 +13,29 @@
 // resolveTagPriority removed. Refresh by re-copying upstream into
 // SECRET_RULES / re-applying the deletions — see the notes in each file.
 //
-// The port is deliberately not one-to-one, because omp can do something Claude
-// Code cannot. Upstream's PreToolUse sees a tool's *inputs* and may only allow
-// or deny, so it guards `Read(.env)` by filename and greps a bash command
-// string for paths. It is blind to what a command actually prints --
-// `ssh host 'cat settings.json'` sails through and the key lands in the
-// transcript. omp exposes tool_result, which rewrites output after execution,
-// so this port scans egress too and redacts in place.
+// The port is deliberately not one-to-one. omp exposes tool_result and the
+// final provider payload, so detected values can be replaced before they enter
+// the transcript or leave the process. Replacements are stable, random,
+// format-preserving strings; the model keeps usable structure without seeing
+// original values.
 //
-// Three interception points, and the reason for each:
-//   tool_call   -- refuse .env by name, and files whose contents scan dirty,
-//                  before the read happens (upstream parity).
-//   tool_result -- scan every tool's output and redact. The load-bearing one.
-//   context     -- scan user-authored text before each API call. omp has no
-//                  cancel-the-prompt event, so this redacts rather than blocks;
-//                  the notify() keeps it from being silent.
+// Three interception points:
+//   context                 -- synthesize user-authored sensitive values.
+//   before_provider_request -- scan the final wire payload, including system
+//                              prompts and provider-specific fields.
+//   tool_result             -- synthesize tool output and all `.env` values.
 //
-// Allow tags ([allow-secret] / [allow-pii] / [allow-all]) behave as upstream
-// documents. Upstream recovers them by tailing the session transcript from a
-// short-lived subprocess; here the context event already carries the message
-// list, so tags are parsed there and cached for the tool events that follow.
+// Detection is deliberately non-bypassable. A regex scanner is defense in
+// depth, not a confidentiality boundary: proprietary design can still look
+// like ordinary prose and requires an approved provider or local model.
 
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
-import fs from "node:fs";
+import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { type Finding, scan } from "./lib/rules.ts";
-import {
-  applyAllowTags,
-  dedupeFindings,
-  findingsToLines,
-  type Message,
-  parseAllowTags,
-  randomBird,
-} from "./lib/inspector.ts";
+import { dedupeFindings, type Message, randomBird } from "./lib/inspector.ts";
 
-// Files/outputs above this size stream past unscanned. 31 regexes over a
-// multi-megabyte buffer is not worth the stall on every read.
+// Larger strings skip regex scanning and are synthesized in full.
 const MAX_SCAN_BYTES = 2_000_000;
 
 const FILE_READ_COMMANDS: Record<string, true> = {
@@ -60,13 +47,6 @@ const FILE_READ_COMMANDS: Record<string, true> = {
   bat: true,
   nl: true,
 };
-
-const ALLOW_HINTS: readonly string[] = [
-  "To allow, the user must add a tag to their next prompt:",
-  "  [allow-secret]  — allow secrets",
-  "  [allow-pii]     — allow PII",
-  "  [allow-all]     — bypass all checks",
-];
 
 interface TextChunk {
   type: "text";
@@ -80,8 +60,7 @@ function isTextChunk(value: unknown): value is TextChunk {
 }
 
 // Bounded memo so the context handler does not re-scan the whole transcript on
-// every API call. Keyed by exact text; redaction is idempotent, so reusing a
-// hit is always safe.
+// every API call. Keyed by exact text.
 const SCAN_CACHE = new Map<string, Finding[]>();
 // Budget the memo by bytes, not entries: 512 × 2 MB keys is a gigabyte of RAM.
 const SCAN_CACHE_MAX_BYTES = 32_000_000;
@@ -105,42 +84,44 @@ function cachedScan(text: string): Finding[] {
   return found;
 }
 
-// Allow tags from the most recent user turn, refreshed by the context handler.
-let allowTags = new Set<string>();
+const SYNTHETIC_VALUES = new Map<string, string>();
 
-// Shared block envelope: every refusal the LLM sees has the same shape, so the
-// three call sites below stay in lockstep.
-function blocked(
-  source: string,
-  detail: readonly string[],
-): { block: true; reason: string } {
-  return {
-    block: true,
-    reason: [
-      `${randomBird()} sensitive-canary: blocked — ${source}`,
-      "",
-      ...detail,
-      "",
-      ...ALLOW_HINTS,
-    ].join("\n"),
-  };
+// Stable within this process so repeated values keep their identity and the
+// model can still follow references. Character classes and separators survive,
+// preserving JSON, URLs, IP-shaped values, and quoted configuration syntax.
+function syntheticValue(value: string): string {
+  const cached = SYNTHETIC_VALUES.get(value);
+  if (cached !== undefined) return cached;
+
+  const chars = Array.from(value);
+  const entropy = randomBytes(Math.max(chars.length, 1));
+  const synthetic = chars
+    .map((char, index) => {
+      const byte = entropy[index] ?? 0;
+      if (/\p{N}/u.test(char)) return String(byte % 10);
+      if (/\p{Lu}/u.test(char)) {
+        return String.fromCharCode(65 + (byte % 26));
+      }
+      if (/\p{L}/u.test(char)) {
+        return String.fromCharCode(97 + (byte % 26));
+      }
+      return char;
+    })
+    .join("");
+  if (value.length <= MAX_SCAN_BYTES) SYNTHETIC_VALUES.set(value, synthetic);
+  return synthetic;
 }
 
-// Rewrites secret values to `[REDACTED <description>]` in one text blob.
 function redactText(text: string): { text: string; hits: number } {
-  const findings = dedupeFindings(
-    applyAllowTags(cachedScan(text), allowTags),
-  );
+  const findings = dedupeFindings(cachedScan(text));
   if (findings.length === 0) return { text, hits: 0 };
-  let hits = 0;
   for (const finding of findings) {
-    hits++;
     text = text.replaceAll(
       finding.secretValue,
-      `[REDACTED ${finding.description}]`,
+      syntheticValue(finding.secretValue),
     );
   }
-  return { text, hits };
+  return { text, hits: findings.length };
 }
 
 // Applies redactText to every text chunk. Shared by the ingress (context)
@@ -151,7 +132,11 @@ function redactChunks(content: readonly unknown[]): {
 } {
   let hits = 0;
   const out = content.map((chunk) => {
-    if (!isTextChunk(chunk) || chunk.text.length > MAX_SCAN_BYTES) return chunk;
+    if (!isTextChunk(chunk)) return chunk;
+    if (chunk.text.length > MAX_SCAN_BYTES) {
+      hits++;
+      return { ...chunk, text: syntheticValue(chunk.text) };
+    }
     const { text, hits: n } = redactText(chunk.text);
     if (n === 0) return chunk;
     hits += n;
@@ -160,9 +145,40 @@ function redactChunks(content: readonly unknown[]): {
   return { content: out, hits };
 }
 
-// upstream parity: `.env` and `.env.*` are refused by name whatever they hold.
-// A file merely ending in `.env` (production.env) is left to content scanning.
-function isBlockedEnvFile(filePath: string): boolean {
+function redactValue(value: unknown): { value: unknown; hits: number } {
+  if (typeof value === "string") {
+    if (value.length > MAX_SCAN_BYTES) {
+      return { value: syntheticValue(value), hits: 1 };
+    }
+    const { text, hits } = redactText(value);
+    return { value: text, hits };
+  }
+  if (Array.isArray(value)) {
+    let hits = 0;
+    const out = value.map((item) => {
+      const result = redactValue(item);
+      hits += result.hits;
+      return result.value;
+    });
+    return { value: out, hits };
+  }
+  if (typeof value === "object" && value !== null) {
+    let hits = 0;
+    const out = Object.fromEntries(
+      Object.entries(value).map(([key, item]) => {
+        const result = redactValue(item);
+        hits += result.hits;
+        return [key, result.value];
+      }),
+    );
+    return { value: out, hits };
+  }
+  return { value, hits: 0 };
+}
+
+// `.env` and `.env.* may contain low-entropy passwords that pattern matching
+// cannot detect. Their values are always synthesized while keys remain useful.
+function isEnvFile(filePath: string): boolean {
   if (!filePath) return false;
   const base = path.basename(filePath);
   return base === ".env" || base.startsWith(".env.");
@@ -193,30 +209,6 @@ function extractFilePathsFromCommand(command: string): string[] {
   return [...new Set(paths)];
 }
 
-// `echo $STRIPE_KEY` never names a secret in the command text; the value only
-// appears once the shell expands it. Upstream resolves referenced names against
-// the hook's own environment and scans those values, so this does the same.
-function extractEnvVarNames(command: string): string[] {
-  const names = new Set<string>();
-  const pattern = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g;
-  for (const match of command.matchAll(pattern)) {
-    const name = match[1] ?? match[2];
-    if (name) names.add(name);
-  }
-  return [...names];
-}
-
-function scanFileAt(filePath: string): Finding[] {
-  try {
-    const stat = fs.statSync(filePath);
-    if (!stat.isFile() || stat.size > MAX_SCAN_BYTES) return [];
-    return cachedScan(fs.readFileSync(filePath, "utf8"));
-  } catch {
-    // Unreadable or missing: not this hook's problem, let the tool report it.
-    return [];
-  }
-}
-
 // Candidate path inputs across omp's file-touching tools. `read` uses `path`,
 // but selectors ride along on it (`file.ts:20-40`), so the suffix is trimmed
 // before the filename test.
@@ -231,27 +223,45 @@ function candidatePaths(input: Record<string, unknown>): string[] {
   return out;
 }
 
+function synthesizeEnvChunks(content: readonly unknown[]): {
+  content: unknown[];
+  hits: number;
+} {
+  let hits = 0;
+  const out = content.map((chunk) => {
+    if (!isTextChunk(chunk)) return chunk;
+    if (chunk.text.length > MAX_SCAN_BYTES) {
+      hits++;
+      return { ...chunk, text: syntheticValue(chunk.text) };
+    }
+    const text = chunk.text
+      .split("\n")
+      .map((line) => {
+        const equals = line.indexOf("=");
+        if (equals < 0 || line.slice(equals + 1).trim().length === 0) {
+          return line;
+        }
+        hits++;
+        return `${line.slice(0, equals + 1)}${syntheticValue(line.slice(equals + 1))}`;
+      })
+      .join("\n");
+    return { ...chunk, text };
+  });
+  return { content: out, hits };
+}
+
 export default function sensitiveCanary(pi: ExtensionAPI): void {
   // ── ingress: user-authored text, before it reaches the provider ───────────
   pi.on("context", async (event, ctx) => {
-    // Tags are honored from the most recent user turn only, so a stale
-    // "[allow-secret]" in old history cannot permanently disarm the canary.
     const all = event.messages as readonly unknown[] as Message[];
-    let latestUser: Message | undefined;
-    for (let i = all.length - 1; i >= 0; i--) {
-      if (all[i]?.role === "user") {
-        latestUser = all[i];
-        break;
-      }
-    }
-    allowTags = parseAllowTags(latestUser ? [latestUser] : []);
-    if (allowTags.has("all")) return;
-
     let total = 0;
     const messages = all.map((message) => {
       if (message.role !== "user") return message;
       if (typeof message.content === "string") {
-        if (message.content.length > MAX_SCAN_BYTES) return message;
+        if (message.content.length > MAX_SCAN_BYTES) {
+          total++;
+          return { ...message, content: syntheticValue(message.content) };
+        }
         const { text, hits } = redactText(message.content);
         if (hits === 0) return message;
         total += hits;
@@ -266,58 +276,40 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
 
     if (total === 0) return;
     ctx.ui?.notify?.(
-      `${randomBird()} sensitive-canary: redacted ${total} value(s) from your prompt`,
+      `${randomBird()} sensitive-canary: synthesized ${total} value(s) from your prompt`,
       "warning",
     );
     return { messages };
   });
 
-  // ── pre-execution: refuse the read outright (upstream parity) ─────────────
-  pi.on("tool_call", async (event) => {
-    if (allowTags.has("all")) return;
-    const input: Record<string, unknown> = event.input ?? {};
-    const isBash = event.toolName.toLowerCase() === "bash";
-    const command = String(input.command ?? "");
-
-    const targets = isBash
-      ? extractFilePathsFromCommand(command)
-      : candidatePaths(input);
-
-    for (const target of targets) {
-      if (isBlockedEnvFile(target)) {
-        return blocked(target, [
-          ".env and .env.* contain secrets and must not be read into the conversation.",
-        ]);
-      }
-      const findings = dedupeFindings(
-        applyAllowTags(scanFileAt(target), allowTags),
-      );
-      if (findings.length > 0) {
-        return blocked(target, findingsToLines(findings));
-      }
-    }
-
-    if (!isBash) return;
-    const expanded: Finding[] = [];
-    for (const name of extractEnvVarNames(command)) {
-      const value = process.env[name];
-      if (value) expanded.push(...cachedScan(value));
-    }
-    const findings = dedupeFindings(applyAllowTags(expanded, allowTags));
-    if (findings.length > 0) {
-      return blocked("expanded environment variable", findingsToLines(findings));
-    }
-  });
-
-  // ── egress: what the tool actually printed. No upstream equivalent. ───────
-  pi.on("tool_result", async (event, ctx) => {
-    if (allowTags.has("all")) return;
-
-    const { content, hits } = redactChunks(event.content);
+  // ── final egress: scan the exact provider payload ─────────────────────────
+  pi.on("before_provider_request", async (event, ctx) => {
+    const { value, hits } = redactValue(event.payload);
     if (hits === 0) return;
 
     ctx.ui?.notify?.(
-      `${randomBird()} sensitive-canary: redacted ${hits} value(s) from ${event.toolName} output`,
+      `${randomBird()} sensitive-canary: synthesized ${hits} value(s) from provider payload`,
+      "warning",
+    );
+    return value;
+  });
+
+  // ── egress: synthesize sensitive values before they enter the transcript ─
+  pi.on("tool_result", async (event, ctx) => {
+    const input = event.input ?? {};
+    const command = String(input.command ?? "");
+    const targets =
+      event.toolName === "bash"
+        ? extractFilePathsFromCommand(command)
+        : candidatePaths(input);
+    const result = targets.some(isEnvFile)
+      ? synthesizeEnvChunks(event.content)
+      : redactChunks(event.content);
+    const { content, hits } = result;
+    if (hits === 0) return;
+
+    ctx.ui?.notify?.(
+      `${randomBird()} sensitive-canary: synthesized ${hits} value(s) from ${event.toolName} output`,
       "warning",
     );
     return { content };

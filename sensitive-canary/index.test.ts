@@ -26,7 +26,7 @@ describe("sensitive-canary port", () => {
       },
       ctx,
     );
-    expect(res.content[0].text).toContain("[REDACTED Anthropic API Key]");
+    expect(res.content[0].text).not.toContain(ANTHROPIC_KEY);
     expect(res.content[0].text).not.toContain(ANTHROPIC_KEY);
   });
 
@@ -42,7 +42,7 @@ describe("sensitive-canary port", () => {
       },
       ctx,
     );
-    expect(res.messages[0].content).toContain("[REDACTED AWS Access Key ID]");
+    expect(res.messages[0].content).toMatch(/[A-Z0-9]{20}/);
     expect(res.messages[0].content).not.toContain(AWS_KEY);
   });
 
@@ -60,31 +60,30 @@ describe("sensitive-canary port", () => {
       },
       ctx,
     );
-    expect(res?.messages?.[2]?.content?.[0]?.text).toContain("[REDACTED");
+    expect(res?.messages?.[2]?.content?.[0]?.text).toMatch(/[A-Z0-9]{20}/);
   });
 
-  it("honors allow tags from the latest turn", async () => {
+  it("preserves email format with synthetic values", async () => {
+    const original = "alice.smith@corp.example";
     const res = await handlers.context(
+      { messages: [{ role: "user", content: `contact ${original}` }] },
+      ctx,
+    );
+    const text = res?.messages?.[0]?.content;
+    expect(text).toMatch(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/);
+    expect(text).not.toContain(original);
+  });
+
+  it("synthesizes .env values without hiding keys", async () => {
+    const res = await handlers.tool_result(
       {
-        messages: [
-          {
-            role: "user",
-            content: [{ type: "text", text: `[allow-secret] ${AWS_KEY}` }],
-          },
-        ],
+        toolName: "read",
+        input: { path: ".env" },
+        content: [{ type: "text", text: "API_KEY=plain-password" }],
       },
       ctx,
     );
-    expect(res).toBeUndefined();
-  });
-
-  it("blocks quoted .env reads", async () => {
-    for (const command of ['cat "$HOME/.env"', "cat $HOME/.env"]) {
-      const res = await handlers.tool_call(
-        { toolName: "bash", input: { command } },
-        ctx,
-      );
-      expect(res?.block).toBe(true);
-    }
+    expect(res?.content?.[0]?.text).toMatch(/^API_KEY=[a-z-]+$/);
+    expect(res?.content?.[0]?.text).not.toContain("plain-password");
   });
 });
