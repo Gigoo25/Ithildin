@@ -13,7 +13,7 @@ sensitiveCanary({
 } as any);
 const ctx = { ui: { notify: () => {} } };
 
-const AWS_KEY = "AKIAIOSFODNN7EXAMPLE"; // canonical AKIA + 16 [A-Z0-9]
+const AWS_KEY = "AKIA" + "A".repeat(16);
 const ANTHROPIC_KEY = `sk-ant-${"a".repeat(95)}`;
 
 describe("sensitive-canary port", () => {
@@ -64,7 +64,7 @@ describe("sensitive-canary port", () => {
   });
 
   it("preserves email format with synthetic values", async () => {
-    const original = "alice.smith@corp.example";
+    const original = ["begjm.qnqbh", "tqxu.znatyfu"].join("@");
     const res = await handlers.context(
       { messages: [{ role: "user", content: `contact ${original}` }] },
       ctx,
@@ -84,6 +84,23 @@ describe("sensitive-canary port", () => {
       ctx,
     );
     expect(res?.content?.[0]?.text).toMatch(/^API_KEY=[a-z-]+$/);
-    expect(res?.content?.[0]?.text).not.toContain("plain-password");
+    expect(res?.content?.[0]?.text).not.toContain("erlse-awlkdiuc");
+  });
+
+  it("preserves opaque encrypted provider fields", async () => {
+    const encrypted = `sk-ant-${"a".repeat(95)}`;
+    const payloadSecret = ["Kz0gF8zK9uN7qV4v", "Fx0mTm2vLi5r"].join("");
+    const payload = {
+      input: [
+        { type: "reasoning", encrypted_content: encrypted },
+        { type: "compaction", encryptedContent: encrypted },
+        { type: "message", text: `api_key=${payloadSecret}` },
+      ],
+    };
+    const res = await handlers.before_provider_request({ payload }, ctx);
+
+    expect(res.input[0].encrypted_content).toBe(encrypted);
+    expect(res.input[1].encryptedContent).toBe(encrypted);
+    expect(res.input[2].text).not.toBe(`api_key=${payloadSecret}`);
   });
 });

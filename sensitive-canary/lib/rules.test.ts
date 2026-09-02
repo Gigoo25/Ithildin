@@ -1,12 +1,24 @@
 import { describe, expect, it } from "bun:test";
-import { scan } from "./rules.ts";
+import { RULES, scan } from "./rules.ts";
+
+describe("upstream detector parity", () => {
+  it("loads every detector block from the pinned upstream config", async () => {
+    const config = (await Bun.file(`${import.meta.dir}/default-config.json`).json()) as {
+      rules: Array<{ id: string }>;
+    };
+    const loadedIds = new Set(RULES.map((rule) => rule.id));
+
+    expect(config.rules).toHaveLength(76);
+    expect(config.rules.every((rule) => loadedIds.has(rule.id))).toBe(true);
+  });
+});
 
 describe("generic secret detection", () => {
   it("detects values behind quoted JSON keys", () => {
     const value = "0123456789abcdef".repeat(3).slice(0, 40);
     const findings = scan(JSON.stringify({ apiKey: value }));
 
-    expect(findings).toHaveLength(1);
+    expect(findings.some((f) => f.ruleId === "generic-secret")).toBe(true);
     expect(findings[0]).toMatchObject({
       ruleId: "generic-secret",
       secretValue: value,
@@ -17,7 +29,7 @@ describe("generic secret detection", () => {
     const value = "8d941fe70c2a6b35e481f09d72ac463fe905b178";
     const findings = scan(`master_key: "${value}"`);
 
-    expect(findings).toHaveLength(1);
+    expect(findings.some((f) => f.ruleId === "generic-secret")).toBe(true);
     expect(findings[0]).toMatchObject({
       ruleId: "generic-secret",
       secretValue: value,

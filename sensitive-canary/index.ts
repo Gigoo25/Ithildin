@@ -111,6 +111,13 @@ function syntheticValue(value: string): string {
   if (value.length <= MAX_SCAN_BYTES) SYNTHETIC_VALUES.set(value, synthetic);
   return synthetic;
 }
+// Provider payload fields carrying authenticated ciphertext must remain byte-for-byte
+// unchanged. Redacting one character invalidates Codex reasoning and compaction
+// records, so verification fails before the provider can answer.
+const OPAQUE_PROVIDER_FIELDS: Record<string, true> = {
+  encrypted_content: true,
+  encryptedContent: true,
+};
 
 function redactText(text: string): { text: string; hits: number } {
   const findings = dedupeFindings(cachedScan(text));
@@ -145,7 +152,13 @@ function redactChunks(content: readonly unknown[]): {
   return { content: out, hits };
 }
 
-function redactValue(value: unknown): { value: unknown; hits: number } {
+function redactValue(
+  value: unknown,
+  key?: string,
+): { value: unknown; hits: number } {
+  if (key !== undefined && OPAQUE_PROVIDER_FIELDS[key] === true) {
+    return { value, hits: 0 };
+  }
   if (typeof value === "string") {
     if (value.length > MAX_SCAN_BYTES) {
       return { value: syntheticValue(value), hits: 1 };
@@ -165,10 +178,10 @@ function redactValue(value: unknown): { value: unknown; hits: number } {
   if (typeof value === "object" && value !== null) {
     let hits = 0;
     const out = Object.fromEntries(
-      Object.entries(value).map(([key, item]) => {
-        const result = redactValue(item);
+      Object.entries(value).map(([childKey, item]) => {
+        const result = redactValue(item, childKey);
         hits += result.hits;
-        return [key, result.value];
+        return [childKey, result.value];
       }),
     );
     return { value: out, hits };
