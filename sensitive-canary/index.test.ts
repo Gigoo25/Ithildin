@@ -72,6 +72,7 @@ describe("sensitive-canary port", () => {
     const text = res?.messages?.[0]?.content;
     expect(text).toMatch(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/);
     expect(text).not.toContain(original);
+    expect(text).toContain("[sensitive-canary]");
   });
 
   it("synthesizes .env values without hiding keys", async () => {

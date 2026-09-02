@@ -262,6 +262,13 @@ function synthesizeEnvChunks(content: readonly unknown[]): {
   });
   return { content: out, hits };
 }
+const SYNTHESIS_NOTICE =
+  "[sensitive-canary] Some sensitive values in this context were replaced with synthetic placeholders. Treat them as non-real data; preserve their structure only.";
+
+function withSynthesisNotice(content: readonly unknown[]): unknown[] {
+  return [...content, { type: "text", text: SYNTHESIS_NOTICE }];
+}
+
 
 export default function sensitiveCanary(pi: ExtensionAPI): void {
   // ── ingress: user-authored text, before it reaches the provider ───────────
@@ -273,18 +280,24 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
       if (typeof message.content === "string") {
         if (message.content.length > MAX_SCAN_BYTES) {
           total++;
-          return { ...message, content: syntheticValue(message.content) };
+          return {
+            ...message,
+            content: `${syntheticValue(message.content)}\n\n${SYNTHESIS_NOTICE}`,
+          };
         }
         const { text, hits } = redactText(message.content);
         if (hits === 0) return message;
         total += hits;
-        return { ...message, content: text };
+        return {
+          ...message,
+          content: `${text}\n\n${SYNTHESIS_NOTICE}`,
+        };
       }
       if (!Array.isArray(message.content)) return message;
       const { content, hits } = redactChunks(message.content);
       if (hits === 0) return message;
       total += hits;
-      return { ...message, content };
+      return { ...message, content: withSynthesisNotice(content) };
     });
 
     if (total === 0) return;
@@ -325,6 +338,6 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
       `${randomBird()} sensitive-canary: synthesized ${hits} value(s) from ${event.toolName} output`,
       "warning",
     );
-    return { content };
+    return { content: withSynthesisNotice(content) };
   });
 }
