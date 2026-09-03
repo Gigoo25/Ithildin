@@ -27,7 +27,6 @@ describe("sensitive-canary port", () => {
       ctx,
     );
     expect(res.content[0].text).not.toContain(ANTHROPIC_KEY);
-    expect(res.content[0].text).not.toContain(ANTHROPIC_KEY);
   });
 
   it("redacts string-content user messages", async () => {
@@ -85,7 +84,59 @@ describe("sensitive-canary port", () => {
       ctx,
     );
     expect(res?.content?.[0]?.text).toMatch(/^API_KEY=[a-z-]+$/);
-    expect(res?.content?.[0]?.text).not.toContain("erlse-awlkdiuc");
+    expect(res?.content?.[0]?.text).not.toContain("urzgh-pevcttvl");
+  });
+
+  it("synthesizes .env values returned by zvec search", async () => {
+    const secret = "low-entropy-password";
+    const res = await handlers.tool_result(
+      {
+        toolName: "zvec_grep_search",
+        input: { root: "/repo", query: "configuration" },
+        content: [
+          {
+            type: "text",
+            text: `freshness: fresh\n.env:1-1\nmatched: 1\nsource:\n1 API_KEY=${secret}`,
+          },
+        ],
+      },
+      ctx,
+    );
+    expect(res?.content?.[0]?.text).toContain("1 API_KEY=");
+    expect(res?.content?.[0]?.text).not.toContain(secret);
+  });
+
+  it("blocks sensitive env reads before execution", async () => {
+    expect(
+      await handlers.tool_call({ toolName: "bash", input: { command: "head < .env" } }),
+    ).toMatchObject({ block: true });
+    expect(
+      await handlers.tool_call({ toolName: "read", input: { path: ".env.local" } }),
+    ).toMatchObject({ block: true });
+    expect(
+      await handlers.tool_call({
+        toolName: "bash",
+        input: { command: "env cat .env.production" },
+      }),
+    ).toMatchObject({ block: true });
+    expect(
+      await handlers.tool_call({ toolName: "read", input: { path: ".env:img" } }),
+    ).toMatchObject({ block: true });
+    expect(
+      await handlers.tool_call({
+        toolName: "bash",
+        input: { command: "ls\ncat .env" },
+      }),
+    ).toMatchObject({ block: true });
+  });
+
+  it("allows example and non-dotenv filenames", async () => {
+    expect(
+      await handlers.tool_call({ toolName: "read", input: { path: ".env.example" } }),
+    ).toBeUndefined();
+    expect(
+      await handlers.tool_call({ toolName: "bash", input: { command: "cat prod.env" } }),
+    ).toBeUndefined();
   });
 
   it("preserves opaque encrypted provider fields", async () => {

@@ -85,6 +85,8 @@ function cachedScan(text: string): Finding[] {
 }
 
 const SYNTHETIC_VALUES = new Map<string, string>();
+const SYNTHETIC_VALUES_MAX_BYTES = 8_000_000;
+let syntheticValuesBytes = 0;
 
 // Stable within this process so repeated values keep their identity and the
 // model can still follow references. Character classes and separators survive,
@@ -108,7 +110,21 @@ function syntheticValue(value: string): string {
       return char;
     })
     .join("");
-  if (value.length <= MAX_SCAN_BYTES) SYNTHETIC_VALUES.set(value, synthetic);
+  const cost = (value.length + synthetic.length) * 2;
+  if (cost <= SYNTHETIC_VALUES_MAX_BYTES) {
+    while (
+      syntheticValuesBytes + cost > SYNTHETIC_VALUES_MAX_BYTES &&
+      SYNTHETIC_VALUES.size > 0
+    ) {
+      const oldest = SYNTHETIC_VALUES.keys().next().value;
+      if (oldest === undefined) break;
+      const oldValue = SYNTHETIC_VALUES.get(oldest);
+      SYNTHETIC_VALUES.delete(oldest);
+      syntheticValuesBytes -= (oldest.length + (oldValue?.length ?? 0)) * 2;
+    }
+    SYNTHETIC_VALUES.set(value, synthetic);
+    syntheticValuesBytes += cost;
+  }
   return synthetic;
 }
 // Provider payload fields carrying authenticated ciphertext must remain byte-for-byte
@@ -118,6 +134,13 @@ const OPAQUE_PROVIDER_FIELDS: Record<string, true> = {
   encrypted_content: true,
   encryptedContent: true,
 };
+
+function clearCaches(): void {
+  SCAN_CACHE.clear();
+  scanCacheBytes = 0;
+  SYNTHETIC_VALUES.clear();
+  syntheticValuesBytes = 0;
+}
 
 function redactText(text: string): { text: string; hits: number } {
   const findings = dedupeFindings(cachedScan(text));
@@ -193,8 +216,10 @@ function redactValue(
 // cannot detect. Their values are always synthesized while keys remain useful.
 function isEnvFile(filePath: string): boolean {
   if (!filePath) return false;
-  const base = path.basename(filePath);
-  return base === ".env" || base.startsWith(".env.");
+  return filePath.split(/[?:]/).some((candidate) => {
+    const base = path.basename(candidate);
+    return base === ".env" || (base.startsWith(".env.") && base !== ".env.example");
+  });
 }
 
 function extractFilePathsFromCommand(command: string): string[] {
@@ -222,18 +247,35 @@ function extractFilePathsFromCommand(command: string): string[] {
   return [...new Set(paths)];
 }
 
-// Candidate path inputs across omp's file-touching tools. `read` uses `path`,
-// but selectors ride along on it (`file.ts:20-40`), so the suffix is trimmed
-// before the filename test.
+function commandReadsEnv(command: string): boolean {
+  return command
+    .split(/[\s|;&<>]+/)
+    .some((token) =>
+      isEnvFile(token.replace(/^["'`()$]+|["'`()]+$/g, "")),
+    );
+}
+
+// Candidate path inputs across omp's file-touching tools.
 function candidatePaths(input: Record<string, unknown>): string[] {
   const out: string[] = [];
   for (const key of ["path", "file_path", "filePath", "file"]) {
     const value = input[key];
     if (typeof value === "string" && value) {
-      out.push(value.replace(/:[0-9raw,+-].*$/, ""));
+      out.push(value);
     }
   }
   return out;
+}
+
+function resultNamesEnvFile(content: readonly unknown[]): boolean {
+  return content.some(
+    (chunk) =>
+      isTextChunk(chunk) &&
+      chunk.text.split("\n").some((line) => {
+        const location = /^(.+):\d+(?:-\d+)?$/.exec(line.trim());
+        return location !== null && isEnvFile(location[1] ?? "");
+      }),
+  );
 }
 
 function synthesizeEnvChunks(content: readonly unknown[]): {
@@ -269,8 +311,23 @@ function withSynthesisNotice(content: readonly unknown[]): unknown[] {
   return [...content, { type: "text", text: SYNTHESIS_NOTICE }];
 }
 
-
 export default function sensitiveCanary(pi: ExtensionAPI): void {
+  // ── pre-exec: block direct sensitive-file reads ───────────────────────────
+  pi.on("tool_call", (event) => {
+    const input = (event.input ?? {}) as Record<string, unknown>;
+    const command = String(input.command ?? "");
+    const targets = candidatePaths(input);
+    if (
+      (event.toolName === "bash" && commandReadsEnv(command)) ||
+      targets.some(isEnvFile)
+    ) {
+      return {
+        block: true,
+        reason: "sensitive-canary: refusing to read .env files",
+      };
+    }
+  });
+
   // ── ingress: user-authored text, before it reaches the provider ───────────
   pi.on("context", async (event, ctx) => {
     const all = event.messages as readonly unknown[] as Message[];
@@ -328,7 +385,11 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
       event.toolName === "bash"
         ? extractFilePathsFromCommand(command)
         : candidatePaths(input);
-    const result = targets.some(isEnvFile)
+    const envOutput =
+      targets.some(isEnvFile) ||
+      (event.toolName.endsWith("zvec_grep_search") &&
+        resultNamesEnvFile(event.content));
+    const result = envOutput
       ? synthesizeEnvChunks(event.content)
       : redactChunks(event.content);
     const { content, hits } = result;
@@ -339,5 +400,8 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
       "warning",
     );
     return { content: withSynthesisNotice(content) };
+  });
+  pi.on("session_shutdown", () => {
+    clearCaches();
   });
 }
