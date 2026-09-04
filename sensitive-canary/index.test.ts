@@ -8,12 +8,14 @@ type Handler = (event: any, ctx?: any) => Promise<any>;
 const handlers: Record<string, Handler> = {};
 const notifications: string[] = [];
 const emittedEvents: Array<{ name: string; event: unknown }> = [];
+const internalHandlers: Record<string, (event: any) => void> = {};
 sensitiveCanary({
   on: (name: string, fn: any) => {
     handlers[name] = fn;
   },
   events: {
     emit: (name: string, event: unknown) => emittedEvents.push({ name, event }),
+    on: (name: string, handler: (event: any) => void) => { internalHandlers[name] = handler; },
   },
 } as any);
 const ctx = {
@@ -28,6 +30,13 @@ const ANTHROPIC_KEY = `sk-ant-${"a".repeat(95)}`;
 describe("sensitive-canary port", () => {
   beforeEach(() => {
     handlers.agent_start({}, ctx);
+  });
+
+  it("certifies and sanitizes persisted text", () => {
+    const event = { text: `API_KEY=${AWS_KEY}`, certified: false };
+    internalHandlers["sensitive-canary:sanitize-stored-text"](event);
+    expect(event.certified).toBeTrue();
+    expect(event.text).not.toContain(AWS_KEY);
   });
 
   it("redacts secrets from error tool results", async () => {

@@ -325,6 +325,14 @@ function withSynthesisNotice(content: readonly unknown[]): unknown[] {
 export default function sensitiveCanary(pi: ExtensionAPI): void {
   let pendingWarningCount = 0;
 
+  pi.events.on("sensitive-canary:sanitize-stored-text", (event: { text: string; certified: boolean }) => {
+    if (typeof event.text !== "string") return;
+    event.text = event.text.length > MAX_SCAN_BYTES
+      ? syntheticValue(event.text)
+      : redactText(event.text).text;
+    event.certified = true;
+  });
+
   function recordWarning(hits: number): void {
     pendingWarningCount += hits;
   }
