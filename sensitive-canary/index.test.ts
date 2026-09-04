@@ -1,17 +1,22 @@
 // Behavioral checks for the port glue (not upstream rules — see rules.test.ts).
-// index.ts's @oh-my-pi/pi-coding-agent import is type-only, so Bun erases it
+// index.ts's @earendil-works/pi-coding-agent import is type-only, so Bun erases it
 // and a stub ExtensionAPI drives the real handlers.
 import { describe, expect, it } from "bun:test";
 import sensitiveCanary from "./index.ts";
 
 type Handler = (event: any, ctx?: any) => Promise<any>;
 const handlers: Record<string, Handler> = {};
+const notifications: string[] = [];
 sensitiveCanary({
   on: (name: string, fn: any) => {
     handlers[name] = fn;
   },
 } as any);
-const ctx = { ui: { notify: () => {} } };
+const ctx = {
+  ui: {
+    notify: (message: string) => notifications.push(message),
+  },
+};
 
 const AWS_KEY = "AKIA" + "A".repeat(16);
 const ANTHROPIC_KEY = `sk-ant-${"a".repeat(95)}`;
@@ -43,6 +48,70 @@ describe("sensitive-canary port", () => {
     );
     expect(res.messages[0].content).toMatch(/[A-Z0-9]{20}/);
     expect(res.messages[0].content).not.toContain(AWS_KEY);
+  });
+
+  it("names assignment keys without exposing values", async () => {
+    const before = notifications.length;
+    await handlers.context(
+      { messages: [{ role: "user", content: `API_KEY=${AWS_KEY}` }] },
+      ctx,
+    );
+    const notice = notifications.at(-1);
+    expect(notifications.length).toBe(before + 1);
+    expect(notice).toContain("keys: API_KEY");
+    expect(notice).not.toContain(AWS_KEY);
+  });
+
+  it("suppresses provider cache metadata from warning labels", async () => {
+    const before = notifications.length;
+    await handlers.before_provider_request(
+      {
+        payload: {
+          prompt_cache_key: "cache-id",
+          prompt: `API_KEY=${AWS_KEY}`,
+        },
+      },
+      ctx,
+    );
+    const notice = notifications.at(-1);
+    expect(notifications.length).toBe(before + 1);
+    expect(notice).toContain("keys: API_KEY");
+    expect(notice).not.toContain("prompt_cache_key");
+  });
+
+  it("does not resynthesize an already sanitized context", async () => {
+    const first = await handlers.context(
+      { messages: [{ role: "user", content: `my key is ${AWS_KEY}` }] },
+      ctx,
+    );
+    expect(
+      await handlers.context({ messages: first.messages }, ctx),
+    ).toBeUndefined();
+  });
+
+  it("does not warn again for a sanitized provider payload", async () => {
+    const first = await handlers.context(
+      { messages: [{ role: "user", content: `API_KEY=${AWS_KEY}` }] },
+      ctx,
+    );
+    const before = notifications.length;
+    expect(
+      await handlers.before_provider_request({
+        payload: { prompt: first.messages[0].content },
+      }, ctx),
+    ).toBeUndefined();
+    expect(notifications.length).toBe(before);
+  });
+
+  it("separates synthesis notices from tool output", async () => {
+    const res = await handlers.tool_result(
+      {
+        toolName: "bash",
+        content: [{ type: "text", text: `API_KEY=${AWS_KEY}` }],
+      },
+      ctx,
+    );
+    expect(res.content[1].text).toMatch(/^\n\n\[sensitive-canary\]/);
   });
 
   it("ignores allow tags from older turns", async () => {
@@ -87,24 +156,6 @@ describe("sensitive-canary port", () => {
     expect(res?.content?.[0]?.text).not.toContain("urzgh-pevcttvl");
   });
 
-  it("synthesizes .env values returned by zvec search", async () => {
-    const secret = "low-entropy-password";
-    const res = await handlers.tool_result(
-      {
-        toolName: "zvec_grep_search",
-        input: { root: "/repo", query: "configuration" },
-        content: [
-          {
-            type: "text",
-            text: `freshness: fresh\n.env:1-1\nmatched: 1\nsource:\n1 API_KEY=${secret}`,
-          },
-        ],
-      },
-      ctx,
-    );
-    expect(res?.content?.[0]?.text).toContain("1 API_KEY=");
-    expect(res?.content?.[0]?.text).not.toContain(secret);
-  });
 
   it("blocks sensitive env reads before execution", async () => {
     expect(

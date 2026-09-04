@@ -138,8 +138,8 @@ function hasNearbyContextWord(
   });
 }
 
-// Detector blocks mirror coo-quack/sensitive-canary at commit
-// edd06d2bb163800731e040c55ab209a0815b5bd2; OMP-only rules are appended below.
+// Detector blocks mirror the upstream sensitive-canary rules.
+// Local rules are appended below.
 // Keep default-config.json and upstream helper modules in sync with that commit.
 // ── Config loading ───────────────────────────────────────────────────────────
 

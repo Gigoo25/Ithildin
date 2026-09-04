@@ -1,8 +1,8 @@
-// sensitive-canary for omp.
+// sensitive-canary for Pi.
 //
 // Upstream (coo-quack/sensitive-canary) ships Claude Code hooks: standalone
 // processes that read a JSON envelope on stdin and signal a block through the
-// exit code. omp's extension API is an in-process event bus instead, so the
+// exit code. Pi's extension API is an in-process event bus instead, so the
 // executables do not transfer. The *detection engine* does, and that is the
 // part worth having -- 31 upstream rules (plus local additions) derived from
 // gitleaks/TruffleHog, entropy filtering, Luhn validation. lib/{rules,inspector}.ts are vendored from
@@ -13,7 +13,7 @@
 // resolveTagPriority removed. Refresh by re-copying upstream into
 // SECRET_RULES / re-applying the deletions — see the notes in each file.
 //
-// The port is deliberately not one-to-one. omp exposes tool_result and the
+// The port is deliberately not one-to-one. Pi exposes tool_result and the
 // final provider payload, so detected values can be replaced before they enter
 // the transcript or leave the process. Replacements are stable, random,
 // format-preserving strings; the model keeps usable structure without seeing
@@ -29,7 +29,7 @@
 // depth, not a confidentiality boundary: proprietary design can still look
 // like ordinary prose and requires an approved provider or local model.
 
-import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { type Finding, scan } from "./lib/rules.ts";
@@ -127,6 +127,13 @@ function syntheticValue(value: string): string {
   }
   return synthetic;
 }
+
+function isSyntheticValue(value: string): boolean {
+  for (const synthetic of SYNTHETIC_VALUES.values()) {
+    if (synthetic === value) return true;
+  }
+  return false;
+}
 // Provider payload fields carrying authenticated ciphertext must remain byte-for-byte
 // unchanged. Redacting one character invalidates Codex reasoning and compaction
 // records, so verification fails before the provider can answer.
@@ -143,8 +150,9 @@ function clearCaches(): void {
 }
 
 function redactText(text: string): { text: string; hits: number } {
-  const findings = dedupeFindings(cachedScan(text));
-  if (findings.length === 0) return { text, hits: 0 };
+  const findings = dedupeFindings(cachedScan(text)).filter(
+    (finding) => !isSyntheticValue(finding.secretValue),
+  );
   for (const finding of findings) {
     text = text.replaceAll(
       finding.secretValue,
@@ -255,7 +263,7 @@ function commandReadsEnv(command: string): boolean {
     );
 }
 
-// Candidate path inputs across omp's file-touching tools.
+// Candidate path inputs across Pi's file-touching tools.
 function candidatePaths(input: Record<string, unknown>): string[] {
   const out: string[] = [];
   for (const key of ["path", "file_path", "filePath", "file"]) {
@@ -308,7 +316,44 @@ const SYNTHESIS_NOTICE =
   "[sensitive-canary] Some sensitive values in this context were replaced with synthetic placeholders. Treat them as non-real data; preserve their structure only.";
 
 function withSynthesisNotice(content: readonly unknown[]): unknown[] {
-  return [...content, { type: "text", text: SYNTHESIS_NOTICE }];
+  return [...content, { type: "text", text: `\n\n${SYNTHESIS_NOTICE}` }];
+}
+
+const KEY_LABEL_PATTERN =
+  /["']?([A-Za-z][A-Za-z0-9_.-]{1,63})["']?\s*[:=]\s*(?=["'A-Za-z0-9_$-])/g;
+const SENSITIVE_LABEL_PATTERN =
+  /(?:key|token|secret|password|passwd|credential|auth|dsn|private|certificate|cert|cookie|session)/i;
+const NON_VALUE_LABELS: Record<string, true> = {
+  content: true,
+  input: true,
+  messages: true,
+  payload: true,
+  prompt_cache_key: true,
+  role: true,
+  text: true,
+  type: true,
+};
+
+function warningDetails(value: unknown): string {
+  let text: string;
+  try {
+    text = typeof value === "string" ? value : JSON.stringify(value);
+  } catch {
+    return "";
+  }
+  if (!text) return "";
+  const labels = new Set<string>();
+  for (const match of text.matchAll(KEY_LABEL_PATTERN)) {
+    const label = match[1];
+    const likelySensitive =
+      label !== undefined &&
+      (SENSITIVE_LABEL_PATTERN.test(label) ||
+        (label.includes("_") && label === label.toUpperCase()));
+    if (label && likelySensitive && !NON_VALUE_LABELS[label.toLowerCase()])
+      labels.add(label);
+    if (labels.size === 4) break;
+  }
+  return labels.size === 0 ? "" : `; keys: ${[...labels].join(", ")}`;
 }
 
 export default function sensitiveCanary(pi: ExtensionAPI): void {
@@ -334,6 +379,16 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
     let total = 0;
     const messages = all.map((message) => {
       if (message.role !== "user") return message;
+      if (
+        (typeof message.content === "string" &&
+          message.content.includes(SYNTHESIS_NOTICE)) ||
+        (Array.isArray(message.content) &&
+          message.content.some(
+            (chunk) => isTextChunk(chunk) && chunk.text.includes(SYNTHESIS_NOTICE),
+          ))
+      ) {
+        return message;
+      }
       if (typeof message.content === "string") {
         if (message.content.length > MAX_SCAN_BYTES) {
           total++;
@@ -359,7 +414,7 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
 
     if (total === 0) return;
     ctx.ui?.notify?.(
-      `${randomBird()} sensitive-canary: synthesized ${total} value(s) from your prompt`,
+      `${randomBird()} sensitive-canary: synthesized ${total} value(s) from your prompt${warningDetails(all)}`,
       "warning",
     );
     return { messages };
@@ -371,7 +426,7 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
     if (hits === 0) return;
 
     ctx.ui?.notify?.(
-      `${randomBird()} sensitive-canary: synthesized ${hits} value(s) from provider payload`,
+      `${randomBird()} sensitive-canary: synthesized ${hits} value(s) from provider payload${warningDetails(event.payload)}`,
       "warning",
     );
     return value;
@@ -385,10 +440,7 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
       event.toolName === "bash"
         ? extractFilePathsFromCommand(command)
         : candidatePaths(input);
-    const envOutput =
-      targets.some(isEnvFile) ||
-      (event.toolName.endsWith("zvec_grep_search") &&
-        resultNamesEnvFile(event.content));
+    const envOutput = targets.some(isEnvFile);
     const result = envOutput
       ? synthesizeEnvChunks(event.content)
       : redactChunks(event.content);
@@ -396,7 +448,7 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
     if (hits === 0) return;
 
     ctx.ui?.notify?.(
-      `${randomBird()} sensitive-canary: synthesized ${hits} value(s) from ${event.toolName} output`,
+      `${randomBird()} sensitive-canary: synthesized ${hits} value(s) from ${event.toolName} output${warningDetails(event.content)}`,
       "warning",
     );
     return { content: withSynthesisNotice(content) };
