@@ -228,6 +228,33 @@ describe("sensitive-canary port", () => {
     ).toBeUndefined();
   });
 
+  it("preserves image bytes and scans adjacent text", async () => {
+    const data = "A".repeat(2_000_004);
+    const uri = `data:image/png;base64,${data}`;
+    const bytes = new Uint8Array([1, 2, 3]);
+    const payload = {
+      content: [
+        { type: "image", source: { type: "base64", media_type: "image/png", data } },
+        { type: "image_url", image_url: { url: uri } },
+        { type: "input_image", image_url: uri },
+        { inlineData: { mimeType: "image/png", data } },
+        { image: { source: { bytes } } },
+        { text: `API_KEY=${AWS_KEY}` },
+      ],
+    };
+    const result = await handlers.before_provider_request({ payload }, ctx);
+    expect(result.content.slice(0, 5)).toEqual(payload.content.slice(0, 5));
+    expect(result.content[5].text).not.toContain(AWS_KEY);
+    expect(result.content[4].image.source.bytes).toBe(bytes);
+  });
+
+  it("does not exempt ordinary data fields from scanning", async () => {
+    const payload = { data: AWS_KEY, url: `https://example.com/${AWS_KEY}` };
+    const result = await handlers.before_provider_request({ payload }, ctx);
+    expect(result.data).not.toBe(AWS_KEY);
+    expect(result.url).not.toContain(AWS_KEY);
+  });
+
   it("preserves opaque encrypted provider fields", async () => {
     const encrypted = `sk-ant-${"a".repeat(95)}`;
     const payloadSecret = ["Kz0gF8zK9uN7qV4v", "Fx0mTm2vLi5r"].join("");

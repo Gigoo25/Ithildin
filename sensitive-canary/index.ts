@@ -35,6 +35,7 @@ import path from "node:path";
 import { type Finding, scan } from "./lib/rules.ts";
 import { dedupeFindings, type Message, randomBird } from "./lib/inspector.ts";
 import { toolResultDigest } from "./lib/certification.ts";
+import { isImagePayload } from "./lib/image-payload.ts";
 
 // Larger strings skip regex scanning and are synthesized in full.
 const MAX_SCAN_BYTES = 2_000_000;
@@ -188,17 +189,20 @@ function redactChunks(content: readonly unknown[]): {
 function redactValue(
   value: unknown,
   key?: string,
+  parent?: Record<string, unknown>,
 ): { value: unknown; hits: number } {
   if (key !== undefined && OPAQUE_PROVIDER_FIELDS[key] === true) {
     return { value, hits: 0 };
   }
   if (typeof value === "string") {
+    if (isImagePayload(value, key, parent)) return { value, hits: 0 };
     if (value.length > MAX_SCAN_BYTES) {
       return { value: syntheticValue(value), hits: 1 };
     }
     const { text, hits } = redactText(value);
     return { value: text, hits };
   }
+  if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return { value, hits: 0 };
   if (Array.isArray(value)) {
     let hits = 0;
     const out = value.map((item) => {
@@ -212,7 +216,7 @@ function redactValue(
     let hits = 0;
     const out = Object.fromEntries(
       Object.entries(value).map(([childKey, item]) => {
-        const result = redactValue(item, childKey);
+        const result = redactValue(item, childKey, value as Record<string, unknown>);
         hits += result.hits;
         return [childKey, result.value];
       }),
