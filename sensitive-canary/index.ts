@@ -281,17 +281,6 @@ function candidatePaths(input: Record<string, unknown>): string[] {
   return out;
 }
 
-function resultNamesEnvFile(content: readonly unknown[]): boolean {
-  return content.some(
-    (chunk) =>
-      isTextChunk(chunk) &&
-      chunk.text.split("\n").some((line) => {
-        const location = /^(.+):\d+(?:-\d+)?$/.exec(line.trim());
-        return location !== null && isEnvFile(location[1] ?? "");
-      }),
-  );
-}
-
 function synthesizeEnvChunks(content: readonly unknown[]): {
   content: unknown[];
   hits: number;
