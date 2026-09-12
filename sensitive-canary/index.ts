@@ -5,13 +5,11 @@
 // exit code. Pi's extension API is an in-process event bus instead, so the
 // executables do not transfer. The *detection engine* does, and that is the
 // part worth having -- 31 upstream rules (plus local additions) derived from
-// gitleaks/TruffleHog, entropy filtering, Luhn validation. lib/{rules,inspector}.ts are vendored from
-// upstream 9111ed20841d1ffefd86092dcb8b52ba082d973a (MIT, see lib/LICENSE),
-// with local additions: rules.ts carries LOCAL_SECRET_RULES (extra providers
-// plus an entropy rule anchored to secret-ish key names) and scan() passes
-// validate() the extracted secretValue; inspector.ts has the unused
-// resolveTagPriority removed. Refresh by re-copying upstream into
-// SECRET_RULES / re-applying the deletions — see the notes in each file.
+// gitleaks/TruffleHog, entropy filtering, and Luhn validation.
+// lib/{rules,inspector}.ts are vendored from upstream
+// 9111ed20841d1ffefd86092dcb8b52ba082d973a (MIT, see lib/LICENSE).
+// Local code adds provider and entropy rules, Pi allow-tag policy, and cookie
+// handling. See each file for refresh instructions.
 //
 // The port is deliberately not one-to-one. Pi exposes tool_result and the
 // final provider payload, so detected values can be replaced before they enter
@@ -19,22 +17,35 @@
 // format-preserving strings; the model keeps usable structure without seeing
 // original values.
 //
-// Three interception points:
+// Four interception points:
+//   tool_call               -- block direct `.env` access and cookie transfer.
 //   context                 -- synthesize user-authored sensitive values.
 //   before_provider_request -- scan the final wire payload, including system
 //                              prompts and provider-specific fields.
 //   tool_result             -- synthesize tool output and all `.env` values.
 //
-// Detection is deliberately non-bypassable. A regex scanner is defense in
-// depth, not a confidentiality boundary: proprietary design can still look
-// like ordinary prose and requires an approved provider or local model.
+// The latest user prompt can bypass one category or all checks with an
+// explicit allow tag. Older, quoted, and runtime-generated tags do not apply.
+// This scanner remains a defense in depth, not a confidentiality boundary.
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { type Finding, scan } from "./lib/rules.ts";
-import { dedupeFindings, type Message, randomBird } from "./lib/inspector.ts";
+import {
+  applyAllowTags,
+  dedupeFindings,
+  type Message,
+  randomBird,
+  resolveTagPriority,
+  userTypedText,
+} from "./lib/inspector.ts";
 import { toolResultDigest } from "./lib/certification.ts";
+import {
+  commandSendsCookies,
+  redactCookieHeaders,
+  redactCookieValue,
+} from "./lib/cookies.ts";
 import { isImagePayload } from "./lib/image-payload.ts";
 
 // Larger strings skip regex scanning and are synthesized in full.
@@ -152,9 +163,18 @@ function clearCaches(): void {
   syntheticValuesBytes = 0;
 }
 
-function redactText(text: string): { text: string; hits: number } {
-  const findings = dedupeFindings(cachedScan(text)).filter(
-    (finding) => !isSyntheticValue(finding.secretValue),
+function redactText(text: string, allowTags: Set<string> = new Set()): { text: string; hits: number } {
+  let cookieHits = 0;
+  if (!allowTags.has("secret")) {
+    const cookieResult = redactCookieHeaders(text, syntheticValue, isSyntheticValue);
+    text = cookieResult.text;
+    cookieHits = cookieResult.hits;
+  }
+  const findings = applyAllowTags(
+    dedupeFindings(cachedScan(text)).filter(
+      (finding) => !isSyntheticValue(finding.secretValue),
+    ),
+    allowTags,
   );
   for (const finding of findings) {
     text = text.replaceAll(
@@ -162,12 +182,12 @@ function redactText(text: string): { text: string; hits: number } {
       syntheticValue(finding.secretValue),
     );
   }
-  return { text, hits: findings.length };
+  return { text, hits: cookieHits + findings.length };
 }
 
 // Applies redactText to every text chunk. Shared by the ingress (context)
 // and egress (tool_result) handlers.
-function redactChunks(content: readonly unknown[]): {
+function redactChunks(content: readonly unknown[], allowTags: Set<string> = new Set()): {
   content: unknown[];
   hits: number;
 } {
@@ -178,7 +198,7 @@ function redactChunks(content: readonly unknown[]): {
       hits++;
       return { ...chunk, text: syntheticValue(chunk.text) };
     }
-    const { text, hits: n } = redactText(chunk.text);
+    const { text, hits: n } = redactText(chunk.text, allowTags);
     if (n === 0) return chunk;
     hits += n;
     return { ...chunk, text };
@@ -186,8 +206,27 @@ function redactChunks(content: readonly unknown[]): {
   return { content: out, hits };
 }
 
+function redactCookieField(
+  value: string,
+  key: string | undefined,
+  allowTags: Set<string>,
+): { value: string; hits: number } | undefined {
+  if (allowTags.has("secret")) return;
+  const header = key?.toLowerCase();
+  if (header !== "cookie" && header !== "set-cookie") return;
+  const cookieResult = redactCookieValue(
+    value,
+    header === "set-cookie",
+    syntheticValue,
+    isSyntheticValue,
+  );
+  const scanned = redactText(cookieResult.text, allowTags);
+  return { value: scanned.text, hits: cookieResult.hits + scanned.hits };
+}
+
 function redactValue(
   value: unknown,
+  allowTags: Set<string>,
   key?: string,
   parent?: Record<string, unknown>,
 ): { value: unknown; hits: number } {
@@ -199,14 +238,16 @@ function redactValue(
     if (value.length > MAX_SCAN_BYTES) {
       return { value: syntheticValue(value), hits: 1 };
     }
-    const { text, hits } = redactText(value);
+    const cookieResult = redactCookieField(value, key, allowTags);
+    if (cookieResult) return cookieResult;
+    const { text, hits } = redactText(value, allowTags);
     return { value: text, hits };
   }
   if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return { value, hits: 0 };
   if (Array.isArray(value)) {
     let hits = 0;
     const out = value.map((item) => {
-      const result = redactValue(item);
+      const result = redactValue(item, allowTags);
       hits += result.hits;
       return result.value;
     });
@@ -216,7 +257,7 @@ function redactValue(
     let hits = 0;
     const out = Object.fromEntries(
       Object.entries(value).map(([childKey, item]) => {
-        const result = redactValue(item, childKey, value as Record<string, unknown>);
+        const result = redactValue(item, allowTags, childKey, value as Record<string, unknown>);
         hits += result.hits;
         return [childKey, result.value];
       }),
@@ -311,12 +352,39 @@ function synthesizeEnvChunks(content: readonly unknown[]): {
 const SYNTHESIS_NOTICE =
   "[sensitive-canary] Some sensitive values in this context were replaced with synthetic placeholders. Treat them as non-real data; preserve their structure only.";
 
+const SYNTHESIS_SYSTEM_REMINDER =
+  "SENSITIVE-CANARY: Sensitive values can be synthetic placeholders. These placeholders are not real credentials, identities, contact details, or production data. Preserve only their structure and relationships.";
+
 function withSynthesisNotice(content: readonly unknown[]): unknown[] {
   return [...content, { type: "text", text: `\n\n${SYNTHESIS_NOTICE}` }];
 }
 
+function latestAllowTags(messages: Message[]): Set<string> {
+  const latestUser = [...messages].reverse().find((message) => message.role === "user");
+  return resolveTagPriority(latestUser ? userTypedText(latestUser) : "").effectiveAllow;
+}
+
+function blocksSecretAccess(toolName: string, command: string, targets: string[], allowTags: Set<string>): boolean {
+  if (allowTags.has("secret")) return false;
+  return (
+    (toolName === "bash" && (commandReadsEnv(command) || commandSendsCookies(command))) ||
+    targets.some(isEnvFile)
+  );
+}
+
+function sanitizeToolContent(
+  content: readonly unknown[],
+  envOutput: boolean,
+  allowTags: Set<string>,
+): { content: unknown[]; hits: number } {
+  if (allowTags.has("all")) return { content: [...content], hits: 0 };
+  if (envOutput && !allowTags.has("secret")) return synthesizeEnvChunks(content);
+  return redactChunks(content, allowTags);
+}
+
 export default function sensitiveCanary(pi: ExtensionAPI): void {
   let pendingWarningCount = 0;
+  let allowTags = new Set<string>();
 
   pi.events.on("sensitive-canary:sanitize-stored-text", (event: { text: string; certified: boolean }) => {
     if (typeof event.text !== "string") return;
@@ -341,24 +409,26 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
 
   pi.on("agent_start", () => {
     pendingWarningCount = 0;
+    allowTags = new Set<string>();
   });
 
   pi.on("agent_end", (_event, ctx) => {
     flushWarning(ctx);
   });
 
+  pi.on("before_agent_start", (event) => ({
+    systemPrompt: `${event.systemPrompt}\n\n${SYNTHESIS_SYSTEM_REMINDER}`,
+  }));
+
   // ── pre-exec: block direct sensitive-file reads ───────────────────────────
   pi.on("tool_call", (event) => {
     const input = (event.input ?? {}) as Record<string, unknown>;
     const command = String(input.command ?? "");
     const targets = candidatePaths(input);
-    if (
-      (event.toolName === "bash" && commandReadsEnv(command)) ||
-      targets.some(isEnvFile)
-    ) {
+    if (blocksSecretAccess(event.toolName, command, targets, allowTags)) {
       return {
         block: true,
-        reason: "sensitive-canary: refusing to read .env files",
+        reason: "sensitive-canary: refusing direct secret access or transmission. Add [allow-secrets] or [allow-all] to the current user prompt to bypass this check.",
       };
     }
   });
@@ -366,6 +436,8 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
   // ── ingress: user-authored text, before it reaches the provider ───────────
   pi.on("context", async (event, ctx) => {
     const all = event.messages as readonly unknown[] as Message[];
+    allowTags = latestAllowTags(all);
+    if (allowTags.has("all")) return;
     let total = 0;
     const messages = all.map((message) => {
       if (message.role !== "user") return message;
@@ -387,7 +459,7 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
             content: `${syntheticValue(message.content)}\n\n${SYNTHESIS_NOTICE}`,
           };
         }
-        const { text, hits } = redactText(message.content);
+        const { text, hits } = redactText(message.content, allowTags);
         if (hits === 0) return message;
         total += hits;
         return {
@@ -396,7 +468,7 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
         };
       }
       if (!Array.isArray(message.content)) return message;
-      const { content, hits } = redactChunks(message.content);
+      const { content, hits } = redactChunks(message.content, allowTags);
       if (hits === 0) return message;
       total += hits;
       return { ...message, content: withSynthesisNotice(content) };
@@ -409,7 +481,8 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
 
   // ── final egress: scan the exact provider payload ─────────────────────────
   pi.on("before_provider_request", async (event, ctx) => {
-    const { value, hits } = redactValue(event.payload);
+    if (allowTags.has("all")) return;
+    const { value, hits } = redactValue(event.payload, allowTags);
     if (hits === 0) return;
 
     recordWarning(hits);
@@ -424,10 +497,7 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
       event.toolName === "bash"
         ? extractFilePathsFromCommand(command)
         : candidatePaths(input);
-    const envOutput = targets.some(isEnvFile);
-    const result = envOutput
-      ? synthesizeEnvChunks(event.content)
-      : redactChunks(event.content);
+    const result = sanitizeToolContent(event.content, targets.some(isEnvFile), allowTags);
     const { content, hits } = result;
     const finalContent = hits === 0 ? event.content : withSynthesisNotice(content);
     pi.events.emit("sensitive-canary:tool-result-sanitized", {
@@ -440,6 +510,7 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
     return { content: finalContent };
   });
   pi.on("session_shutdown", () => {
+    allowTags.clear();
     clearCaches();
   });
 }

@@ -71,6 +71,13 @@ describe("sensitive-canary port", () => {
     expect(res.messages[0].content).not.toContain(AWS_KEY);
   });
 
+  it("always reminds the model that synthetic values are not real", async () => {
+    const result = await handlers.before_agent_start({ prompt: "ordinary prompt", systemPrompt: "base" });
+    expect(result.systemPrompt).toContain("synthetic placeholders");
+    expect(result.systemPrompt).toContain("not real credentials");
+    expect(result.systemPrompt).toContain("Preserve only their structure and relationships");
+  });
+
   it("names assignment keys without exposing values", async () => {
     const before = notifications.length;
     await handlers.context(
@@ -152,6 +159,50 @@ describe("sensitive-canary port", () => {
     expect(res.content[1].text).toMatch(/^\n\n\[sensitive-canary\]/);
   });
 
+  it("allows secrets for the current user turn", async () => {
+    const prompt = `[allow-secrets]\nAPI_KEY=${AWS_KEY}`;
+    expect(await handlers.context({ messages: [{ role: "user", content: prompt }] }, ctx)).toBeUndefined();
+    expect(await handlers.before_provider_request({ payload: { prompt } }, ctx)).toBeUndefined();
+    expect(await handlers.tool_call({ toolName: "read", input: { path: ".env" } })).toBeUndefined();
+    expect(await handlers.tool_result({
+      toolCallId: "allowed-secret",
+      toolName: "read",
+      input: { path: ".env" },
+      content: [{ type: "text", text: `API_KEY=${AWS_KEY}` }],
+    }, ctx)).toBeUndefined();
+  });
+
+  it("keeps the singular secret tag as an alias", async () => {
+    const prompt = `[allow-secret]\nAPI_KEY=${AWS_KEY}`;
+    expect(await handlers.context({ messages: [{ role: "user", content: prompt }] }, ctx)).toBeUndefined();
+  });
+
+  it("allows PII but continues to synthesize secrets", async () => {
+    const email = "person@realcompany.io";
+    const prompt = `[allow-pii]\ncontact=${email}\nAPI_KEY=${AWS_KEY}`;
+    const res = await handlers.context({ messages: [{ role: "user", content: prompt }] }, ctx);
+    expect(res.messages[0].content).toContain(email);
+    expect(res.messages[0].content).not.toContain(AWS_KEY);
+  });
+
+  it("allows all checks for the current user turn", async () => {
+    const prompt = `[allow-all]\ncontact=person@realcompany.io\nAPI_KEY=${AWS_KEY}`;
+    expect(await handlers.context({ messages: [{ role: "user", content: prompt }] }, ctx)).toBeUndefined();
+    expect(await handlers.before_provider_request({ payload: { prompt } }, ctx)).toBeUndefined();
+  });
+
+  it("ignores allow tags in quoted code", async () => {
+    const prompt = `Quoted documentation:\n\`\`\`\n[allow-all]\n\`\`\`\nAPI_KEY=${AWS_KEY}`;
+    const res = await handlers.context({ messages: [{ role: "user", content: prompt }] }, ctx);
+    expect(res.messages[0].content).not.toContain(AWS_KEY);
+  });
+
+  it("uses only the last allow tag", async () => {
+    const prompt = `[allow-all] then [allow-pii]\nAPI_KEY=${AWS_KEY}`;
+    const res = await handlers.context({ messages: [{ role: "user", content: prompt }] }, ctx);
+    expect(res.messages[0].content).not.toContain(AWS_KEY);
+  });
+
   it("ignores allow tags from older turns", async () => {
     const res = await handlers.context(
       {
@@ -194,6 +245,70 @@ describe("sensitive-canary port", () => {
     expect(res?.content?.[0]?.text).not.toContain("urzgh-pevcttvl");
   });
 
+
+  it("synthesizes cookie values at ingress and provider egress", async () => {
+    const session = "opaque-browser-session-value";
+    const prompt = `Cookie: sessionid=${session}; theme=dark`;
+    const contextResult = await handlers.context(
+      { messages: [{ role: "user", content: prompt }] },
+      ctx,
+    );
+    expect(contextResult.messages[0].content).toContain("Cookie: sessionid=");
+    expect(contextResult.messages[0].content).toContain("; theme=");
+    expect(contextResult.messages[0].content).not.toContain(session);
+    expect(contextResult.messages[0].content).not.toContain("theme=dark");
+
+    const providerResult = await handlers.before_provider_request(
+      { payload: { headers: { Cookie: `sessionid=${session}` } } },
+      ctx,
+    );
+    expect(providerResult.headers.Cookie).toStartWith("sessionid=");
+    expect(providerResult.headers.Cookie).not.toContain(session);
+  });
+
+  it("synthesizes Set-Cookie values in tool results", async () => {
+    const session = "opaque-browser-session-value";
+    const result = await handlers.tool_result(
+      {
+        toolName: "bash",
+        input: { command: "curl -i https://example.com" },
+        content: [{ type: "text", text: `Set-Cookie: sessionid=${session}; Path=/; HttpOnly` }],
+      },
+      ctx,
+    );
+    expect(result.content[0].text).toContain("Set-Cookie: sessionid=");
+    expect(result.content[0].text).toContain("; Path=/; HttpOnly");
+    expect(result.content[0].text).not.toContain(session);
+  });
+
+  it("blocks curl commands that send cookies unless secrets are allowed", async () => {
+    expect(
+      await handlers.tool_call({
+        toolName: "bash",
+        input: { command: "curl -H 'Cookie: sessionid=opaque-browser-session-value' https://example.com" },
+      }),
+    ).toMatchObject({ block: true });
+    expect(
+      await handlers.tool_call({
+        toolName: "bash",
+        input: { command: "curl --cookie 'sessionid=opaque-browser-session-value' https://example.com" },
+      }),
+    ).toMatchObject({ block: true });
+    expect(
+      await handlers.tool_call({ toolName: "bash", input: { command: "curl https://example.com" } }),
+    ).toBeUndefined();
+
+    await handlers.context(
+      { messages: [{ role: "user", content: "[allow-secrets]" }] },
+      ctx,
+    );
+    expect(
+      await handlers.tool_call({
+        toolName: "bash",
+        input: { command: "curl -H 'Cookie: sessionid=opaque-browser-session-value' https://example.com" },
+      }),
+    ).toBeUndefined();
+  });
 
   it("blocks sensitive env reads before execution", async () => {
     expect(
