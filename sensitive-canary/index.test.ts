@@ -78,6 +78,11 @@ describe("sensitive-canary port", () => {
     expect(result.systemPrompt).toContain("Preserve only their structure and relationships");
   });
 
+  it("does not duplicate the system reminder", async () => {
+    const first = await handlers.before_agent_start({ prompt: "ordinary prompt", systemPrompt: "base" });
+    expect(await handlers.before_agent_start({ prompt: "retry", systemPrompt: first.systemPrompt })).toBeUndefined();
+  });
+
   it("names assignment keys without exposing values", async () => {
     const before = notifications.length;
     await handlers.context(
@@ -157,6 +162,17 @@ describe("sensitive-canary port", () => {
       ctx,
     );
     expect(res.content[1].text).toMatch(/^\n\n\[sensitive-canary\]/);
+  });
+
+  it("does not duplicate an existing synthesis notice", async () => {
+    const res = await handlers.tool_result(
+      {
+        toolName: "bash",
+        content: [{ type: "text", text: `API_KEY=${AWS_KEY}` }, { type: "text", text: "\n\n[sensitive-canary] Some sensitive values in this context were replaced with synthetic placeholders. Treat them as non-real data; preserve their structure only." }],
+      },
+      ctx,
+    );
+    expect(res.content.filter((chunk) => chunk.type === "text" && chunk.text.includes("[sensitive-canary]"))).toHaveLength(1);
   });
 
   it("allows secrets for the current user turn", async () => {

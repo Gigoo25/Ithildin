@@ -356,6 +356,13 @@ const SYNTHESIS_SYSTEM_REMINDER =
   "SENSITIVE-CANARY: Sensitive values can be synthetic placeholders. These placeholders are not real credentials, identities, contact details, or production data. Preserve only their structure and relationships.";
 
 function withSynthesisNotice(content: readonly unknown[]): unknown[] {
+  if (
+    content.some(
+      (chunk) => isTextChunk(chunk) && chunk.text.includes(SYNTHESIS_NOTICE),
+    )
+  ) {
+    return [...content];
+  }
   return [...content, { type: "text", text: `\n\n${SYNTHESIS_NOTICE}` }];
 }
 
@@ -416,9 +423,12 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
     flushWarning(ctx);
   });
 
-  pi.on("before_agent_start", (event) => ({
-    systemPrompt: `${event.systemPrompt}\n\n${SYNTHESIS_SYSTEM_REMINDER}`,
-  }));
+  pi.on("before_agent_start", (event) => {
+    if (event.systemPrompt.includes(SYNTHESIS_SYSTEM_REMINDER)) return;
+    return {
+      systemPrompt: `${event.systemPrompt}\n\n${SYNTHESIS_SYSTEM_REMINDER}`,
+    };
+  });
 
   // ── pre-exec: block direct sensitive-file reads ───────────────────────────
   pi.on("tool_call", (event) => {
