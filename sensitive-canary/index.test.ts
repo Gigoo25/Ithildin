@@ -76,11 +76,51 @@ describe("sensitive-canary port", () => {
     expect(result.systemPrompt).toContain("synthetic placeholders");
     expect(result.systemPrompt).toContain("not real credentials");
     expect(result.systemPrompt).toContain("Preserve only their structure and relationships");
+    expect(result.systemPrompt).toContain("Never pass a placeholder to a tool");
+    expect(result.systemPrompt).toContain("[allow-pii]");
   });
 
   it("does not duplicate the system reminder", async () => {
     const first = await handlers.before_agent_start({ prompt: "ordinary prompt", systemPrompt: "base" });
     expect(await handlers.before_agent_start({ prompt: "retry", systemPrompt: first.systemPrompt })).toBeUndefined();
+  });
+
+  it("replaces PII with obvious numbered tokens, not realistic fakes", async () => {
+    const res = await handlers.tool_result(
+      {
+        toolName: "bash",
+        content: [{ type: "text", text: "deploy to FatMan via 10.1.2.3 as rstocchi" }],
+      },
+      ctx,
+    );
+    const text = res.content[0].text;
+    expect(text).not.toContain("FatMan");
+    expect(text).not.toContain("10.1.2.3");
+    expect(text).not.toContain("rstocchi");
+    expect(text).toMatch(/__CANARY_HOST_\d+__/);
+    expect(text).toMatch(/__CANARY_IP_\d+__/);
+    expect(text).toMatch(/__CANARY_USER_\d+__/);
+  });
+
+  it("keeps token identity stable for repeated PII", async () => {
+    const run = () =>
+      handlers.tool_result(
+        { toolName: "bash", content: [{ type: "text", text: "peer 100.96.26.43 up" }] },
+        ctx,
+      );
+    const first = (await run()).content[0].text;
+    const second = (await run()).content[0].text;
+    expect(first).toMatch(/__CANARY_IP_\d+__/);
+    expect(second).toBe(first);
+  });
+
+  it("does not rescan its own tokens", async () => {
+    expect(
+      await handlers.context(
+        { messages: [{ role: "user", content: "see __CANARY_HOST_9__ config" }] },
+        ctx,
+      ),
+    ).toBeUndefined();
   });
 
   it("names assignment keys without exposing values", async () => {
@@ -168,7 +208,7 @@ describe("sensitive-canary port", () => {
     const res = await handlers.tool_result(
       {
         toolName: "bash",
-        content: [{ type: "text", text: `API_KEY=${AWS_KEY}` }, { type: "text", text: "\n\n[sensitive-canary] Some sensitive values in this context were replaced with synthetic placeholders. Treat them as non-real data; preserve their structure only." }],
+        content: [{ type: "text", text: `API_KEY=${AWS_KEY}` }, { type: "text", text: "\n\n[sensitive-canary] Some sensitive values in this context were replaced with synthetic placeholders. Treat them as non-real data; preserve their structure only. Do not use placeholders as file paths, command arguments, URLs, or identifiers." }],
       },
       ctx,
     );
@@ -191,6 +231,62 @@ describe("sensitive-canary port", () => {
   it("keeps the singular secret tag as an alias", async () => {
     const prompt = `[allow-secret]\nAPI_KEY=${AWS_KEY}`;
     expect(await handlers.context({ messages: [{ role: "user", content: prompt }] }, ctx)).toBeUndefined();
+  });
+
+  it("persists the redacted view of user messages", async () => {
+    const res = await handlers.message_end(
+      { message: { role: "user", content: "deploy to Mini" } },
+      ctx,
+    );
+    expect(res.message.role).toBe("user");
+    expect(res.message.content).toMatch(/__CANARY_HOST_\d+__/);
+    expect(res.message.content).not.toContain("Mini");
+  });
+
+  it("persists approved values when the message allows them", async () => {
+    expect(
+      await handlers.message_end(
+        { message: { role: "user", content: "[allow-pii]\ndeploy to Mini" } },
+        ctx,
+      ),
+    ).toBeUndefined();
+  });
+
+  it("persists the redacted view of assistant messages", async () => {
+    const res = await handlers.message_end(
+      {
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: `key is ${AWS_KEY}` }],
+        },
+      },
+      ctx,
+    );
+    expect(res.message.content[0].text).not.toContain(AWS_KEY);
+  });
+
+  it("redacts secrets hiding in tool result details", async () => {
+    const res = await handlers.message_end(
+      {
+        message: {
+          role: "toolResult",
+          content: [{ type: "text", text: "ok" }],
+          details: { answers: [{ id: "q", value: AWS_KEY }] },
+        },
+      },
+      ctx,
+    );
+    expect(res.message.content[0].text).toBe("ok");
+    expect(JSON.stringify(res.message.details)).not.toContain(AWS_KEY);
+  });
+
+  it("leaves clean messages unpersisted-by-canary", async () => {
+    expect(
+      await handlers.message_end(
+        { message: { role: "user", content: "hello there" } },
+        ctx,
+      ),
+    ).toBeUndefined();
   });
 
   it("allows PII but continues to synthesize secrets", async () => {
@@ -236,14 +332,14 @@ describe("sensitive-canary port", () => {
     expect(res?.messages?.[2]?.content?.[0]?.text).toMatch(/[A-Z0-9]{20}/);
   });
 
-  it("preserves email format with synthetic values", async () => {
+  it("replaces email addresses with obvious tokens", async () => {
     const original = ["begjm.qnqbh", "tqxu.znatyfu"].join("@");
     const res = await handlers.context(
       { messages: [{ role: "user", content: `contact ${original}` }] },
       ctx,
     );
     const text = res?.messages?.[0]?.content;
-    expect(text).toMatch(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/);
+    expect(text).toMatch(/__CANARY_EMAIL_\d+__/);
     expect(text).not.toContain(original);
     expect(text).toContain("[sensitive-canary]");
   });

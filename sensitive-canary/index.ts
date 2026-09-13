@@ -4,7 +4,7 @@
 // processes that read a JSON envelope on stdin and signal a block through the
 // exit code. Pi's extension API is an in-process event bus instead, so the
 // executables do not transfer. The *detection engine* does, and that is the
-// part worth having -- 31 upstream rules (plus local additions) derived from
+// part worth having -- upstream rules (plus local additions) derived from
 // gitleaks/TruffleHog, entropy filtering, and Luhn validation.
 // lib/{rules,inspector}.ts are vendored from upstream
 // 9111ed20841d1ffefd86092dcb8b52ba082d973a (MIT, see lib/LICENSE).
@@ -13,16 +13,21 @@
 //
 // The port is deliberately not one-to-one. Pi exposes tool_result and the
 // final provider payload, so detected values can be replaced before they enter
-// the transcript or leave the process. Replacements are stable, random,
-// format-preserving strings; the model keeps usable structure without seeing
-// original values.
+// the transcript or leave the process. Secret replacements are stable, random,
+// format-preserving strings. PII replacements are obviously-fake numbered
+// tokens (`__CANARY_HOST_1__`) so the model never mistakes them for real
+// paths or identifiers; only the value type leaks.
 //
-// Four interception points:
+// Five interception points:
 //   tool_call               -- block direct `.env` access and cookie transfer.
 //   context                 -- synthesize user-authored sensitive values.
 //   before_provider_request -- scan the final wire payload, including system
 //                              prompts and provider-specific fields.
 //   tool_result             -- synthesize tool output and all `.env` values.
+//   message_end             -- persist the redacted view, never the original,
+//                              so compaction (which bypasses the event bus and
+//                              reads stored entries) can only re-send what the
+//                              provider already saw.
 //
 // The latest user prompt can bypass one category or all checks with an
 // explicit allow tag. Older, quoted, and runtime-generated tags do not apply.
@@ -101,6 +106,50 @@ const SYNTHETIC_VALUES = new Map<string, string>();
 const SYNTHETIC_OUTPUTS = new Set<string>();
 const SYNTHETIC_VALUES_MAX_BYTES = 8_000_000;
 let syntheticValuesBytes = 0;
+const TOKEN_COUNTERS = new Map<string, number>();
+
+function storeSynthetic(value: string, synthetic: string): void {
+  const cost = (value.length + synthetic.length) * 2;
+  if (cost > SYNTHETIC_VALUES_MAX_BYTES) return;
+  while (
+    syntheticValuesBytes + cost > SYNTHETIC_VALUES_MAX_BYTES &&
+    SYNTHETIC_VALUES.size > 0
+  ) {
+    const oldest = SYNTHETIC_VALUES.keys().next().value;
+    if (oldest === undefined) break;
+    const oldValue = SYNTHETIC_VALUES.get(oldest);
+    SYNTHETIC_VALUES.delete(oldest);
+    if (oldValue !== undefined) SYNTHETIC_OUTPUTS.delete(oldValue);
+    syntheticValuesBytes -= (oldest.length + (oldValue?.length ?? 0)) * 2;
+  }
+  SYNTHETIC_VALUES.set(value, synthetic);
+  SYNTHETIC_OUTPUTS.add(synthetic);
+  syntheticValuesBytes += cost;
+}
+
+// PII placeholders are obviously fake (`__CANARY_HOST_1__`), never
+// realistic: realistic fakes get mistaken for real paths and identifiers.
+// The tag leaks only the value type, and numbering is stable per process
+// so repeated values keep their identity. Secrets keep realistic
+// shape-preserving synthesis.
+function tokenTagFor(ruleId: string): string {
+  if (/ip/i.test(ruleId)) return "IP";
+  if (/host/i.test(ruleId)) return "HOST";
+  if (/user|login|owner/i.test(ruleId)) return "USER";
+  if (/email/i.test(ruleId)) return "EMAIL";
+  return "PII";
+}
+
+function syntheticToken(ruleId: string, value: string): string {
+  const cached = SYNTHETIC_VALUES.get(value);
+  if (cached !== undefined) return cached;
+  const tag = tokenTagFor(ruleId);
+  const n = (TOKEN_COUNTERS.get(tag) ?? 0) + 1;
+  TOKEN_COUNTERS.set(tag, n);
+  const synthetic = `__CANARY_${tag}_${n}__`;
+  storeSynthetic(value, synthetic);
+  return synthetic;
+}
 
 // Stable within this process so repeated values keep their identity and the
 // model can still follow references. Character classes and separators survive,
@@ -124,23 +173,7 @@ function syntheticValue(value: string): string {
       return char;
     })
     .join("");
-  const cost = (value.length + synthetic.length) * 2;
-  if (cost <= SYNTHETIC_VALUES_MAX_BYTES) {
-    while (
-      syntheticValuesBytes + cost > SYNTHETIC_VALUES_MAX_BYTES &&
-      SYNTHETIC_VALUES.size > 0
-    ) {
-      const oldest = SYNTHETIC_VALUES.keys().next().value;
-      if (oldest === undefined) break;
-      const oldValue = SYNTHETIC_VALUES.get(oldest);
-      SYNTHETIC_VALUES.delete(oldest);
-      if (oldValue !== undefined) SYNTHETIC_OUTPUTS.delete(oldValue);
-      syntheticValuesBytes -= (oldest.length + (oldValue?.length ?? 0)) * 2;
-    }
-    SYNTHETIC_VALUES.set(value, synthetic);
-    SYNTHETIC_OUTPUTS.add(synthetic);
-    syntheticValuesBytes += cost;
-  }
+  storeSynthetic(value, synthetic);
   return synthetic;
 }
 
@@ -161,6 +194,7 @@ function clearCaches(): void {
   SYNTHETIC_VALUES.clear();
   SYNTHETIC_OUTPUTS.clear();
   syntheticValuesBytes = 0;
+  TOKEN_COUNTERS.clear();
 }
 
 function redactText(text: string, allowTags: Set<string> = new Set()): { text: string; hits: number } {
@@ -177,10 +211,11 @@ function redactText(text: string, allowTags: Set<string> = new Set()): { text: s
     allowTags,
   );
   for (const finding of findings) {
-    text = text.replaceAll(
-      finding.secretValue,
-      syntheticValue(finding.secretValue),
-    );
+    const replacement =
+      finding.category === "pii"
+        ? syntheticToken(finding.ruleId, finding.secretValue)
+        : syntheticValue(finding.secretValue);
+    text = text.replaceAll(finding.secretValue, replacement);
   }
   return { text, hits: cookieHits + findings.length };
 }
@@ -350,10 +385,10 @@ function synthesizeEnvChunks(content: readonly unknown[]): {
 }
 
 const SYNTHESIS_NOTICE =
-  "[sensitive-canary] Some sensitive values in this context were replaced with synthetic placeholders. Treat them as non-real data; preserve their structure only.";
+  "[sensitive-canary] Some sensitive values in this context were replaced with synthetic placeholders. Treat them as non-real data; preserve their structure only. Do not use placeholders as file paths, command arguments, URLs, or identifiers.";
 
 const SYNTHESIS_SYSTEM_REMINDER =
-  "SENSITIVE-CANARY: Sensitive values can be synthetic placeholders. These placeholders are not real credentials, identities, contact details, or production data. Preserve only their structure and relationships.";
+  "SENSITIVE-CANARY: Sensitive values can be synthetic placeholders. These placeholders are not real credentials, identities, contact details, or production data. Preserve only their structure and relationships. Never pass a placeholder to a tool or attempt to reverse it. If one blocks the task, stop and ask the user to re-run with [allow-pii].";
 
 function withSynthesisNotice(content: readonly unknown[]): unknown[] {
   if (
@@ -518,6 +553,56 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
 
     recordWarning(hits);
     return { content: finalContent };
+  });
+  // ── persistence: store the redacted view, never the original ────────────
+  // The context/tool_result handlers patch provider-bound copies; session
+  // entries keep the originals, and compaction re-sends those originals
+  // without touching the extension bus. Redacting here (same role back, so
+  // the runner syncs state and storage) closes that leak: whatever the
+  // provider saw is all compaction can re-send. Allow-tags behave exactly
+  // as on the wire, so approved values keep working across turns.
+  // Tool-call argument chunks are left alone: execution already ran on them.
+  pi.on("message_end", async (event) => {
+    const message = event.message as { role?: string; content?: unknown; details?: unknown };
+    if (!message || typeof message !== "object") return;
+    const tags =
+      message.role === "user"
+        ? latestAllowTags([{ role: "user", content: message.content } as Message])
+        : allowTags;
+    if (tags.has("all")) return;
+    let content = message.content;
+    let details = message.details;
+    let hits = 0;
+    if (message.role === "user" || message.role === "assistant") {
+      if (typeof content === "string") {
+        if (content.length > MAX_SCAN_BYTES) {
+          content = `${syntheticValue(content)}\n\n${SYNTHESIS_NOTICE}`;
+          hits++;
+        } else if (!content.includes(SYNTHESIS_NOTICE)) {
+          const redacted = redactText(content, tags);
+          if (redacted.hits > 0) {
+            content = `${redacted.text}\n\n${SYNTHESIS_NOTICE}`;
+            hits += redacted.hits;
+          }
+        }
+      } else if (Array.isArray(content)) {
+        const redacted = redactChunks(content, tags);
+        if (redacted.hits > 0) {
+          content = withSynthesisNotice(redacted.content);
+          hits += redacted.hits;
+        }
+      }
+    }
+    if (details !== undefined) {
+      const redacted = redactValue(details, tags);
+      if (redacted.hits > 0) {
+        details = redacted.value;
+        hits += redacted.hits;
+      }
+    }
+    if (hits === 0) return;
+    recordWarning(hits);
+    return { message: { ...message, content, details } };
   });
   pi.on("session_shutdown", () => {
     allowTags.clear();
