@@ -1,0 +1,48 @@
+{
+  "_readme": "Personal PII inventory. COPY to ~/.config/sensitive-canary/config.json (or point $SENSITIVE_CANARY_CONFIG at your copy), replace every EXAMPLE value with the real one, chmod 600 the copy. NEVER commit real values: this template stays inert (its values match nothing you will type). See PERSONAL-INVENTORY.md. All rules are category pii, so findings become obvious __CANARY_*__ tokens and [allow-pii] bypasses them.",
+  "rules": [
+    {
+      "id": "pii-personal-name",
+      "description": "Your full name (exact match)",
+      "regex": "\\bJane Exampleperson\\b",
+      "flags": "gi",
+      "category": "pii"
+    },
+    {
+      "id": "pii-personal-handle",
+      "description": "Your handles, comma-free exact matches (add one rule per handle if they differ)",
+      "regex": "\\b(examplehandle|example_handle)\\b",
+      "flags": "gi",
+      "category": "pii"
+    },
+    {
+      "id": "pii-personal-github-url",
+      "description": "Your GitHub profile URLs (public-repo references to others still pass)",
+      "regex": "github\\.com/(examplehandle)\\b",
+      "flags": "gi",
+      "secretGroup": 0,
+      "category": "pii"
+    },
+    {
+      "id": "pii-personal-org",
+      "description": "Employer / team / client names (exact match)",
+      "regex": "\\b(ExampleCorp|Example Team)\\b",
+      "flags": "gi",
+      "category": "pii"
+    },
+    {
+      "id": "pii-personal-net",
+      "description": "Home SSID, personal domains, other named networks (exact match)",
+      "regex": "\\b(HomeSSID|example\\.home\\.arpa)\\b",
+      "flags": "gi",
+      "category": "pii"
+    },
+    {
+      "id": "pii-personal-ticket",
+      "description": "Employer ticket keys: pin YOUR prefix (a bare [A-Z]+-\\d+ would fire on CVEs and error codes)",
+      "regex": "\\bEX-\\d+\\b",
+      "flags": "g",
+      "category": "pii"
+    }
+  ]
+}
