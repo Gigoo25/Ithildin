@@ -2,6 +2,7 @@
 // index.ts's @earendil-works/pi-coding-agent import is type-only, so Bun erases it
 // and a stub ExtensionAPI drives the real handlers.
 import { beforeEach, describe, expect, it } from "bun:test";
+import { beginScanBudget } from "./lib/rules.ts";
 import sensitiveCanary from "./index.ts";
 
 type Handler = (event: any, ctx?: any) => Promise<any>;
@@ -287,6 +288,24 @@ describe("sensitive-canary port", () => {
         ctx,
       ),
     ).toBeUndefined();
+  });
+
+  it("marks unscannable spans instead of passing them through", async () => {
+    beginScanBudget(0);
+    try {
+      const res = await handlers.tool_result(
+        {
+          toolName: "bash",
+          content: [{ type: "text", text: "host __CANARY_IP_6__ reachable" }],
+        },
+        ctx,
+      );
+      const text = res.content[0].text;
+      expect(text).toContain("scan budget exceeded");
+      expect(text).not.toContain("__CANARY_IP_6__");
+    } finally {
+      beginScanBudget(null);
+    }
   });
 
   it("flushes a value-free finding ledger per response", async () => {

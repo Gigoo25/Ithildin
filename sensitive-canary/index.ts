@@ -37,7 +37,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import path from "node:path";
-import { type Finding, scan } from "./lib/rules.ts";
+import { type Finding, mergeRanges, scanWindows, SCAN_WINDOW_OVERLAP } from "./lib/rules.ts";
 import {
   applyAllowTags,
   dedupeFindings,
@@ -80,15 +80,15 @@ function isTextChunk(value: unknown): value is TextChunk {
 
 // Bounded memo so the context handler does not re-scan the whole transcript on
 // every API call. Keyed by exact text.
-const SCAN_CACHE = new Map<string, Finding[]>();
+const SCAN_CACHE = new Map<string, { findings: Finding[]; trips: Array<{ start: number; end: number }> }>();
 // Budget the memo by bytes, not entries: 512 × 2 MB keys is a gigabyte of RAM.
 const SCAN_CACHE_MAX_BYTES = 32_000_000;
 let scanCacheBytes = 0;
 
-function cachedScan(text: string): Finding[] {
+function cachedScan(text: string): { findings: Finding[]; trips: Array<{ start: number; end: number }> } {
   const hit = SCAN_CACHE.get(text);
   if (hit) return hit;
-  const found = scan(text);
+  const found = scanWindows(text);
   const cost = text.length * 2; // UTF-16 code units × 2 bytes
   if (cost <= SCAN_CACHE_MAX_BYTES) {
     while (scanCacheBytes + cost > SCAN_CACHE_MAX_BYTES) {
@@ -235,6 +235,24 @@ function flushLedger(): void {
   }
 }
 
+// Tripped scan windows become explicit markers, never silent passthrough.
+// Ranges expand by the window overlap first so a value straddling the edge
+// is swallowed whole instead of leaking its outside fragment.
+function applyTripMarkers(text: string, trips: Array<{ start: number; end: number }>): string {
+  const merged = mergeRanges(
+    trips.map((trip) => ({
+      start: Math.max(0, trip.start - SCAN_WINDOW_OVERLAP),
+      end: Math.min(text.length, trip.end + SCAN_WINDOW_OVERLAP),
+    })),
+  );
+  let out = text;
+  for (let i = merged.length - 1; i >= 0; i--) {
+    const span = merged[i];
+    out = `${out.slice(0, span.start)}[sensitive-canary: omitted ${span.end - span.start} chars (scan budget exceeded)]${out.slice(span.end)}`;
+  }
+  return out;
+}
+
 function redactText(text: string, allowTags: Set<string> = new Set()): { text: string; hits: number } {
   let cookieHits = 0;
   if (!allowTags.has("secret")) {
@@ -242,13 +260,15 @@ function redactText(text: string, allowTags: Set<string> = new Set()): { text: s
     text = cookieResult.text;
     cookieHits = cookieResult.hits;
   }
+  const { findings: raw, trips } = cachedScan(text);
   const findings = applyAllowTags(
-    dedupeFindings(cachedScan(text)).filter(
+    dedupeFindings(raw.filter(
       (finding) => !isSyntheticValue(finding.secretValue),
-    ),
+    )),
     allowTags,
   );
   recordLedger(findings);
+  if (trips.length > 0) text = applyTripMarkers(text, trips);
   for (const finding of findings) {
     const replacement =
       finding.category === "pii"
@@ -256,7 +276,7 @@ function redactText(text: string, allowTags: Set<string> = new Set()): { text: s
         : syntheticValue(finding.secretValue);
     text = text.replaceAll(finding.secretValue, replacement);
   }
-  return { text, hits: cookieHits + findings.length };
+  return { text, hits: cookieHits + findings.length + trips.length };
 }
 
 // Applies redactText to every text chunk. Shared by the ingress (context)
