@@ -624,13 +624,19 @@ const LOCAL_RULES: Rule[] = [
   {
     id: "pii-internal-host",
     description: "Internal hostname (generic)",
-    regex: /\b((?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+(?:local|lan|home|internal|corp|intranet|ts\.net))\b/gi,
-    // Nix attribute paths wear the same shape (config.home, env.local):
-    // refuse matches built from Nix-ecosystem labels.
+    // Flat quantifiers only: the nested-label form catastrophized on
+    // dot-chains (6.5s per 40KB). Structure is validated in code instead.
+    regex: /\b([A-Za-z0-9][A-Za-z0-9.-]{0,300}\.(?:local|lan|home|internal|corp|intranet|ts\.net))\b/gi,
     validate: (value: string) => {
+      // Nix attribute paths wear the same shape (config.home, env.local):
+      // refuse matches built from Nix-ecosystem labels.
       const labels = value.toLowerCase().split(".");
       labels.pop(); // the TLD-ish suffix is not evidence either way
-      return !labels.some((label) => NIX_ATTR_LABELS.has(label));
+      return (
+        labels.length > 0 &&
+        labels.every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label)) &&
+        !labels.some((label) => NIX_ATTR_LABELS.has(label))
+      );
     },
     category: "pii",
   },
@@ -710,6 +716,31 @@ const LOCAL_RULES: Rule[] = [
   // Street addresses carry their own suffix vocabulary, so the shape is
   // precise without context words: the match must terminate on a suffix,
   // which bare "2 Road" prose never does.
+  // Coordinates are only meaningful as pairs. Bare integer pairs ("5, 6")
+  // are lists far more often than locations, so decimals are required
+  // unless direction letters or degree marks say otherwise; ranges kill
+  // versions and dates that survive the shape.
+  {
+    id: "pii-geo-decimal",
+    description: "Lat/long decimal pair",
+    regex: /\b(-?\d{1,3}(?:\.\d+)?)\s*°?\s*([NS])?[\s,;]+(-?\d{1,3}(?:\.\d+)?)\s*°?\s*([EW])?\b/gi,
+    validate: (value: string) => {
+      const match = /^(-?\d{1,3}(?:\.\d+)?)\s*°?\s*([NS])?[\s,;]+(-?\d{1,3}(?:\.\d+)?)\s*°?\s*([EW])?$/i.exec(value);
+      if (!match) return false;
+      const [, latRaw, ns, lonRaw, ew] = match;
+      if (Math.abs(Number(latRaw)) > 90 || Math.abs(Number(lonRaw)) > 180) return false;
+      const frac = (part: string): boolean => part.includes(".");
+      const marked = value.includes("°") || ns !== undefined || ew !== undefined;
+      return (frac(latRaw) && frac(lonRaw)) || (marked && (frac(latRaw) || frac(lonRaw) || (!!ns && !!ew)));
+    },
+    category: "pii",
+  },
+  {
+    id: "pii-geo-dms",
+    description: "Lat/long degrees-minutes-seconds",
+    regex: /\b\d{1,3}°\s*\d{1,2}(?:\.\d+)?'\s*\d{1,2}(?:\.\d+)?"\s*[NS]\s*,?\s*\d{1,3}°\s*\d{1,2}(?:\.\d+)?'\s*\d{1,2}(?:\.\d+)?"\s*[EW]\b/gi,
+    category: "pii",
+  },
   {
     id: "pii-street-address",
     description: "US street address",
@@ -861,6 +892,91 @@ export function scan(
   );
 }
 
+// One rule's matches over the text: pure over (rule, text) with no budget
+// state, so the whole-text and windowed drivers share it. A poisoned rule
+// trips only itself here; each driver decides what a trip means.
+function scanRule(rule: Rule, text: string): Finding[] {
+  const findings: Finding[] = [];
+  for (const match of text.matchAll(rule.regex)) {
+    const secretValue =
+      rule.secretGroup != null ? match[rule.secretGroup] : match[0];
+
+    if (!secretValue) continue;
+    // Both the captured value and the whole match: a rule with a
+    // `secretGroup` captures only part of what it matched, and the
+    // connection-string rule stops at the `@`, so the host — the one thing
+    // that separates `user:password@localhost` from `user:password@` in front
+    // of real infrastructure — is outside the capture.
+    const matchStart = match.index ?? 0;
+    const matchEnd = matchStart + match[0].length;
+    const following = text.slice(matchEnd, matchEnd + 64);
+    // The shape test applies only where the rule captured a free-form value.
+    // A rule that matches a fixed prefix has already said what the thing is —
+    // a Slack webhook is a URL and a secret, and asking whether it looks like
+    // a URL is asking the wrong question.
+    const capturesAValue = rule.secretGroup != null;
+    if (
+      rule.category === "secret" &&
+      (isPlaceholder(secretValue, following) ||
+        (capturesAValue &&
+          (isNotSecretShaped(secretValue) ||
+            isPlaceholder(match[0], following) ||
+            isNotSecretShaped(match[0]) ||
+            keyDescribesRatherThanHolds(match[0]))))
+    )
+      continue;
+    if (
+      rule.entropyThreshold != null &&
+      entropy(secretValue) < rule.entropyThreshold
+    )
+      continue;
+    if (rule.validate != null && !rule.validate(secretValue)) continue;
+
+    const hasContext =
+      !rule.contextWords || rule.contextWords.length === 0
+        ? true
+        : hasNearbyContextWord(
+            text,
+            matchStart,
+            matchEnd,
+            rule.contextWords,
+            rule.contextWindow ?? effectiveContextWindow,
+          );
+
+    // Rules that require context (e.g. bare postal codes) are dropped when
+    // no context label is nearby, to avoid flagging every 5-digit number.
+    if (rule.requireContext && !hasContext) continue;
+
+    // And the other way: a word nearby that says this is not what the rule is
+    // for. `git clone git@github.com:…` and `ssh deploy@host` are addresses by
+    // shape, and the command in front of them is what says they are not
+    // anyone's mail.
+    if (
+      rule.excludeContext &&
+      rule.excludeContext.length > 0 &&
+      hasNearbyContextWord(
+        text,
+        matchStart,
+        matchEnd,
+        rule.excludeContext,
+        rule.contextWindow ?? effectiveContextWindow,
+      )
+    ) {
+      continue;
+    }
+
+    findings.push({
+      ruleId: rule.id,
+      description: rule.description,
+      category: rule.category,
+      matchRedacted: redact(secretValue),
+      secretValue,
+      score: hasContext ? 1.0 : 0.4,
+    });
+  }
+  return findings;
+}
+
 function scanUninterrupted(
   text: string,
   categories: ReadonlySet<Category>,
@@ -875,84 +991,113 @@ function scanUninterrupted(
     // Thrown rather than returned: a partial result is indistinguishable from a
     // clean one, and the hooks stop the call on an error they cannot explain.
     if (elapsed > budgetMs) throw new ScanBudgetExceeded(rule.id, elapsed);
-    for (const match of text.matchAll(rule.regex)) {
-      const secretValue =
-        rule.secretGroup != null ? match[rule.secretGroup] : match[0];
-
-      if (!secretValue) continue;
-      // Both the captured value and the whole match: a rule with a
-      // `secretGroup` captures only part of what it matched, and the
-      // connection-string rule stops at the `@`, so the host — the one thing
-      // that separates `user:password@localhost` from `user:password@` in front
-      // of real infrastructure — is outside the capture.
-      const matchStart = match.index ?? 0;
-      const matchEnd = matchStart + match[0].length;
-      const following = text.slice(matchEnd, matchEnd + 64);
-      // The shape test applies only where the rule captured a free-form value.
-      // A rule that matches a fixed prefix has already said what the thing is —
-      // a Slack webhook is a URL and a secret, and asking whether it looks like
-      // a URL is asking the wrong question.
-      const capturesAValue = rule.secretGroup != null;
-      if (
-        rule.category === "secret" &&
-        (isPlaceholder(secretValue, following) ||
-          (capturesAValue &&
-            (isNotSecretShaped(secretValue) ||
-              isPlaceholder(match[0], following) ||
-              isNotSecretShaped(match[0]) ||
-              keyDescribesRatherThanHolds(match[0]))))
-      )
-        continue;
-      if (
-        rule.entropyThreshold != null &&
-        entropy(secretValue) < rule.entropyThreshold
-      )
-        continue;
-      if (rule.validate != null && !rule.validate(secretValue)) continue;
-
-      const hasContext =
-        !rule.contextWords || rule.contextWords.length === 0
-          ? true
-          : hasNearbyContextWord(
-              text,
-              matchStart,
-              matchEnd,
-              rule.contextWords,
-              rule.contextWindow ?? effectiveContextWindow,
-            );
-
-      // Rules that require context (e.g. bare postal codes) are dropped when
-      // no context label is nearby, to avoid flagging every 5-digit number.
-      if (rule.requireContext && !hasContext) continue;
-
-      // And the other way: a word nearby that says this is not what the rule is
-      // for. `git clone git@github.com:…` and `ssh deploy@host` are addresses by
-      // shape, and the command in front of them is what says they are not
-      // anyone's mail.
-      if (
-        rule.excludeContext &&
-        rule.excludeContext.length > 0 &&
-        hasNearbyContextWord(
-          text,
-          matchStart,
-          matchEnd,
-          rule.excludeContext,
-          rule.contextWindow ?? effectiveContextWindow,
-        )
-      ) {
-        continue;
-      }
-
-      findings.push({
-        ruleId: rule.id,
-        description: rule.description,
-        category: rule.category,
-        matchRedacted: redact(secretValue),
-        secretValue,
-        score: hasContext ? 1.0 : 0.4,
-      });
-    }
+    findings.push(...scanRule(rule, text));
   }
 
   return findings;
+}
+
+export interface WindowTrip {
+  start: number;
+  end: number;
+}
+
+// Bounded scanning: one budget for the whole text lets adversarial input
+// (e.g. 100KB of dot-chains) exhaust it and fail the entire message open.
+// Windows partition the budget so a poisoned region trips alone; the caller
+// substitutes an explicit marker for tripped ranges (fail-closed, bounded).
+export const SCAN_WINDOW_CHARS = 65_536;
+export const SCAN_WINDOW_OVERLAP = 8_192;
+
+export function mergeRanges(ranges: WindowTrip[]): WindowTrip[] {
+  const sorted = [...ranges].sort((a, b) => a.start - b.start);
+  const merged: WindowTrip[] = [];
+  for (const range of sorted) {
+    const last = merged[merged.length - 1];
+    if (last && range.start <= last.end) {
+      last.end = Math.max(last.end, range.end);
+    } else {
+      merged.push({ ...range });
+    }
+  }
+  return merged;
+}
+
+// Poison that repeats stops being probed: after this many consecutive
+// trips the rest is omitted unseen. Bounds total attempts when V8 timeouts
+// fire late; legitimate slow runs rarely trip twice in a row, let alone five
+// times, and single-slice texts never reach the cutoff.
+const MAX_CONSECUTIVE_TRIPS = 5;
+// Per-rule V8 caps stay small on purpose: timeouts overshoot several-fold,
+// so a small cap bounds the damage while the floor below keeps legitimate
+// slow rules (email-scale, ~200ms on hostile shapes) passing with margin.
+// Per-rule V8 caps stay small on purpose: timeouts overshoot several-fold,
+// so a small cap bounds the damage. The floor keeps legitimate slow rules
+// (email-scale, ~200ms on hostile shapes) passing with margin; without it,
+// small shares would false-trip on realistic inputs like minified JS, which
+// is worse than slow poison handling (poison is rare, minified JS is not).
+const MIN_RULE_BUDGET_MS = 500;
+
+export function scanWindows(
+  text: string,
+  categories: ReadonlySet<Category> = ALL_CATEGORIES,
+): { findings: Finding[]; trips: WindowTrip[] } {
+  const findings: Finding[] = [];
+  const trips: WindowTrip[] = [];
+  if (text.length === 0) return { findings, trips };
+  const step = SCAN_WINDOW_CHARS - SCAN_WINDOW_OVERLAP;
+  const slices: WindowTrip[] = [];
+  for (let start = 0; start < text.length; start += step) {
+    const end = Math.min(start + SCAN_WINDOW_CHARS, text.length);
+    slices.push({ start, end });
+    if (end === text.length) break;
+  }
+  // Envelope measured locally so spending accumulates: each slice shares
+  // what is LEFT, never a fresh full budget. The V8 cap scales with the
+  // share (a flat +2000ms slack would dominate small shares and defeat
+  // the envelope for many-slice inputs).
+  const startedAt = Date.now();
+  const totalBudget = remainingBudget();
+  if (totalBudget <= 0) {
+    trips.push({ start: 0, end: text.length });
+    return { findings, trips };
+  }
+  let consecutiveTrips = 0;
+  for (let i = 0; i < slices.length; i++) {
+    const slice = slices[i];
+    const remaining = totalBudget - (Date.now() - startedAt);
+    // Fail closed once the envelope is spent or poison repeats: everything
+    // from here on becomes one omitted span instead of passing through.
+    if (remaining <= 0 || consecutiveTrips >= MAX_CONSECUTIVE_TRIPS) {
+      trips.push({ start: slice.start, end: text.length });
+      break;
+    }
+    const sliceBudget = remaining / (slices.length - i);
+    // Per-rule isolation: a poisoned rule trips alone and the slice keeps
+    // every other rule's findings (a tripped slice previously discarded
+    // findings its completed rules had already earned).
+    const sliceText = text.slice(slice.start, slice.end);
+    const ruleShare = sliceBudget / RULES.length;
+    const ruleCap = Math.max(MIN_RULE_BUDGET_MS, ruleShare * 2);
+    let sliceTripped = false;
+    for (const rule of RULES) {
+      if (!categories.has(rule.category)) continue;
+      try {
+        findings.push(...runInterruptibly(() => scanRule(rule, sliceText), ruleCap));
+      } catch (error) {
+        if (error instanceof ScanBudgetExceeded) {
+          sliceTripped = true;
+          continue;
+        }
+        throw error;
+      }
+    }
+    if (sliceTripped) {
+      trips.push({ ...slice });
+      consecutiveTrips++;
+    } else {
+      consecutiveTrips = 0;
+    }
+  }
+  return { findings, trips: mergeRanges(trips) };
 }

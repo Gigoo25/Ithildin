@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { compileRule, RULES, scan } from "./rules.ts";
+import { beginScanBudget, compileRule, RULES, scan, scanWindows, SCAN_WINDOW_CHARS } from "./rules.ts";
 
 describe("upstream detector parity", () => {
   it("loads every detector block from the pinned upstream config", async () => {
@@ -361,6 +361,19 @@ it("detects avenue address", () => {
     expect(findings.some((f) => f.ruleId === 'pii-street-address' && f.secretValue === '5 Park Avenue')).toBe(true);
   });
 
+it("detects coordinate pairs but not bare number pairs", () => {
+  for (const text of [
+    "meet at 40.7128, -74.0060",
+    "40°42'46\"N 74°00'22\"W",
+    "40°N, 74°W",
+  ]) {
+    expect(scan(text).some((f) => f.ruleId === "pii-geo-decimal" || f.ruleId === "pii-geo-dms")).toBe(true);
+  }
+  for (const text of ["options 1, 2, 3", "call 5, 6", "v1.2, 3.4", "200, 300"]) {
+    expect(scan(text).some((f) => f.ruleId === "pii-geo-decimal" || f.ruleId === "pii-geo-dms")).toBe(false);
+  }
+});
+
 it("rejects prose lookalikes for inventory rules", () => {
     for (const [text, id] of [
       [" Lake House retreat", "pii-labeled-name"],
@@ -380,6 +393,42 @@ it("rejects prose lookalikes for inventory rules", () => {
       [`key = ${ageKey}`, "age-secret-key"],
     ] as const) {
       expect(scan(text).some((f) => f.ruleId === id)).toBe(true);
+    }
+  });
+});
+
+describe("bounded scanning", () => {
+  it("matches unchunked results on normal texts", () => {
+    for (const text of [
+      "deploy to __CANARY_HOST_1__ tonight",
+      `api_key = "${"K7mQ2vX9pL4sW8eR1tY6uI3oP5aS0dF9gH2jK6"}" and host 10.1.2.3 up`,
+      "nothing sensitive here, just prose about lunch",
+      "contact bob@example.com about it",
+    ]) {
+      const plain = scan(text).map((f) => `${f.ruleId}=${f.secretValue}`).sort();
+      const windowed = scanWindows(text);
+      expect(windowed.trips).toEqual([]);
+      expect(windowed.findings.map((f) => `${f.ruleId}=${f.secretValue}`).sort()).toEqual(plain);
+    }
+  });
+
+  it("catches values straddling a window edge", () => {
+    const secret = "10.2.3.4";
+    const at = SCAN_WINDOW_CHARS - 4;
+    const text = `${"x".repeat(at)} ${secret} ${"y".repeat(70_000 - at - secret.length - 2)}`;
+    const { findings, trips } = scanWindows(text);
+    expect(trips).toEqual([]);
+    expect(findings.some((f) => f.secretValue === secret)).toBe(true);
+  });
+
+  it("omits the whole span when the budget is already spent", () => {
+    beginScanBudget(0);
+    try {
+      const { findings, trips } = scanWindows("host 10.3.3.3 up");
+      expect(findings).toEqual([]);
+      expect(trips).toEqual([{ start: 0, end: 16 }]);
+    } finally {
+      beginScanBudget(null);
     }
   });
 });
