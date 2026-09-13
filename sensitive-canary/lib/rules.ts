@@ -9,7 +9,7 @@ import {
   isPlaceholder,
   keyDescribesRatherThanHolds,
 } from "./shapes.ts";
-import { getValidator } from "./validators.ts";
+import { getValidator, isReservedIpv4 } from "./validators.ts";
 
 export type Category = "secret" | "pii";
 
@@ -374,6 +374,18 @@ function buildRules(): Rule[] {
   return defaultRules;
 }
 
+// IBAN mod-97: rearrange, expand letters (A=10..Z=35), remainder must be 1.
+function ibanValid(value: string): boolean {
+  const rearranged = value.slice(4) + value.slice(0, 4);
+  let remainder = 0;
+  for (const char of rearranged) {
+    const code = char >= "0" && char <= "9" ? Number(char) : char.charCodeAt(0) - 55;
+    if (code < 0 || code > 35) return false;
+    remainder = (remainder * (code > 9 ? 100 : 10) + code) % 97;
+  }
+  return remainder === 1;
+}
+
 // Attribute-path labels that make an internal-host-shaped match Nix code
 // (config.home, env.local) rather than a hostname.
 const NIX_ATTR_LABELS: ReadonlySet<string> = new Set([
@@ -481,6 +493,31 @@ const LOCAL_RULES: Rule[] = [
     category: "secret",
   },
   {
+    id: "btc-address",
+    description: "Bitcoin address (identifier, not a spending key)",
+    regex: /\b(?:bc1[ac-hj-np-z02-9]{11,71}|[13][a-km-zA-HJ-NP-Z1-9]{25,34})\b/g,
+    category: "pii",
+  },
+  {
+    id: "eth-address",
+    description: "Ethereum address",
+    regex: /\b0x[0-9a-fA-F]{40}\b/g,
+    category: "pii",
+  },
+  {
+    id: "wif-private-key",
+    description: "Bitcoin WIF private key",
+    regex: /\b[5KL][1-9A-HJ-NP-Za-km-z]{50,51}\b/g,
+    category: "secret",
+  },
+  {
+    id: "iban",
+    description: "IBAN (mod-97 validated)",
+    regex: /\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b/g,
+    validate: ibanValid,
+    category: "pii",
+  },
+  {
     id: "totp-uri",
     description: "TOTP provisioning URI (seed in otpauth://)",
     regex: /otpauth:\/\/[^\s"'<>]+/gi,
@@ -505,6 +542,23 @@ const LOCAL_RULES: Rule[] = [
     description: "WiFi preshared key / passphrase assignment",
     regex: /\b(?:psk|passphrase|presharedkey|pre-shared-key)\s*[:=]\s*["']([^"'`\n]{8,64})["']/gi,
     secretGroup: 1,
+    category: "secret",
+  },
+  {
+    // Bare secrets with no label (`printenv KEY`, `echo $TOKEN`, base64
+    // blobs): every other entropy rule is label-anchored and misses these.
+    // Entire line must be one token so code and prose never match; digests,
+    // UUIDs, SSH public keys, and nix store hashes are excluded by shape.
+    id: "lone-token-line",
+    description: "Bare high-entropy token on its own line",
+    regex: /^([A-Za-z0-9+/=_.-]{24,})\r?$/gim,
+    secretGroup: 1,
+    entropyThreshold: 4.5,
+    validate: (value: string) =>
+      !/^[0-9a-f]+$/i.test(value) &&
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value) &&
+      !/^[a-z0-9]{32}$/.test(value) &&
+      !/^(?:ssh-(?:rsa|ed25519|dss)|ecdsa-sha2-nistp\d+|sk-ssh-)/.test(value),
     category: "secret",
   },
   {
@@ -587,6 +641,17 @@ const LOCAL_RULES: Rule[] = [
     category: "pii",
   },
   {
+    // Bare public IPs with no label (`curl ifconfig.me` output). Version
+    // numbers die on the octet check; private ranges stay with pii-ipv4.
+    id: "pii-ipv4-lone",
+    description: "Bare public IPv4 on its own line",
+    regex: /^(\d{1,3}(?:\.\d{1,3}){3})\r?$/gim,
+    validate: (value: string) =>
+      value.split(".").every((octet) => Number(octet) <= 255) &&
+      !isReservedIpv4(value),
+    category: "pii",
+  },
+  {
     id: "pii-mac",
     description: "MAC address (device fingerprint)",
     regex: /\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b/g,
@@ -604,6 +669,24 @@ const LOCAL_RULES: Rule[] = [
     description: "WiFi network name assignment",
     regex: /\bssid\s*[:=]\s*["']([^"'`\n]{1,32})["']/gi,
     secretGroup: 1,
+    category: "pii",
+  },
+  // US financial/travel identifiers have no checksum or fixed prefix, so
+  // both require a nearby label; bare digit runs stay untouched.
+  {
+    id: "pii-us-bank-account",
+    description: "US bank account number (context-gated)",
+    regex: /\b\d{8,17}\b/g,
+    requireContext: true,
+    contextWords: ["bank", "account", "routing", "aba", "ach", "wire", "checking", "savings"],
+    category: "pii",
+  },
+  {
+    id: "pii-us-passport",
+    description: "US passport number (context-gated)",
+    regex: /\b\d{9}\b/g,
+    requireContext: true,
+    contextWords: ["passport"],
     category: "pii",
   },
   {

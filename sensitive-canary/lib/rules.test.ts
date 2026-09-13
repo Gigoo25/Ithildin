@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { RULES, scan } from "./rules.ts";
+import { compileRule, RULES, scan } from "./rules.ts";
 
 describe("upstream detector parity", () => {
   it("loads every detector block from the pinned upstream config", async () => {
@@ -10,6 +10,21 @@ describe("upstream detector parity", () => {
 
     expect(config.rules).toHaveLength(76);
     expect(config.rules.every((rule) => loadedIds.has(rule.id))).toBe(true);
+  });
+});
+
+describe("personal inventory template", () => {
+  it("ships inert rules that all compile", async () => {
+    const config = (await Bun.file(`${import.meta.dir}/../user-config.example.json`).json()) as {
+      rules: Array<{ id: string; category: string }>;
+    };
+    expect(config.rules.length).toBeGreaterThan(0);
+    for (const rule of config.rules) {
+      expect(rule.category).toBe("pii");
+      expect(() => compileRule(rule as never)).not.toThrow();
+    }
+    // Inert: the example values match nothing a user would type.
+    expect(scan("deploy tonight").some((f) => f.ruleId.startsWith("pii-personal-"))).toBe(false);
   });
 });
 
@@ -220,6 +235,83 @@ describe("local rule additions", () => {
       ["mysql -u root db", "curl-basic-auth"],
       ['curl -u "$USER:$PASS" https://x', "curl-basic-auth"],
       ['psk = "x"', "wifi-psk"],
+    ] as const) {
+      expect(scan(text).some((f) => f.ruleId === id)).toBe(false);
+    }
+  });
+
+  it("detects bare high-entropy tokens on their own line", () => {
+    const token = "K7mQ2vX9pL4sW8eR1tY6uI3oP5aS0dF9gH2jK6";
+    const findings = scan(`key is\n${token}\ndeployed`);
+    expect(findings.some((f) => f.ruleId === "lone-token-line")).toBe(true);
+    expect(
+      findings.some((f) => f.ruleId === "lone-token-line" && f.secretValue === token),
+    ).toBe(true);
+  });
+
+  it("does not fire lone-token on digests, ids, keys, or prose", () => {
+    for (const text of [
+      "a3f9c1d7e2b8405fa3f9c1d7e2b8405f",
+      "123e4567-e89b-12d3-a456-426614174000",
+      "zp1x80dxy3sisrxg5a76pa65np98fhss",
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBn0SNDbMs8czytggZLhjLEmjoSSYNV6CUeWphzDU",
+      "supercalifragilisticexpialidocious",
+      "short-value",
+    ]) {
+      expect(scan(text).some((f) => f.ruleId === "lone-token-line")).toBe(false);
+    }
+  });
+
+  it("detects bare public IPs but not versions or private ranges", () => {
+    const findings = scan("8.8.8.8");
+    expect(findings.some((f) => f.ruleId === "pii-ipv4-lone")).toBe(true);
+    expect(
+      findings.some((f) => f.ruleId === "pii-ipv4-lone" && f.secretValue === "8.8.8.8"),
+    ).toBe(true);
+    for (const [text, id] of [
+      ["192.168.1.10", "pii-ipv4-lone"],
+      ["999.1.1.1", "pii-ipv4-lone"],
+      ["2026.09.13.1", "pii-ipv4-lone"],
+      ["v1.2.3.4", "pii-ipv4-lone"],
+      ["1.2.3", "pii-ipv4-lone"],
+    ] as const) {
+      expect(scan(text).some((f) => f.ruleId === id)).toBe(false);
+    }
+    expect(scan("192.168.1.10").some((f) => f.ruleId === "pii-ipv4")).toBe(true);
+  });
+
+  it("detects wallet addresses, WIF keys, and valid IBANs", () => {
+    for (const [text, id, secretValue] of [
+      ["pay 1A2B3C4D5E6F7G8H9J2K3M4N5P6Q7R8", "btc-address", "1A2B3C4D5E6F7G8H9J2K3M4N5P6Q7R8"],
+      ["pay bc1qpzry9x8gf2tvdw0s3jn54khce6mua7lqpzry9x8g", "btc-address", "bc1qpzry9x8gf2tvdw0s3jn54khce6mua7lqpzry9x8g"],
+      ["to 0x1234567890abcdef1234567890abcdef12345678", "eth-address", "0x1234567890abcdef1234567890abcdef12345678"],
+      [`key 5${"J".repeat(50)}`, "wif-private-key", `5${"J".repeat(50)}`],
+      ["iban DE89370400440532013000", "iban", "DE89370400440532013000"],
+    ] as const) {
+      const findings = scan(text);
+      expect(findings.some((f) => f.ruleId === id)).toBe(true);
+      expect(
+        findings.some((f) => f.ruleId === id && f.secretValue === secretValue),
+      ).toBe(true);
+    }
+    expect(scan("iban DE00123456789012345678").some((f) => f.ruleId === "iban")).toBe(false);
+    expect(scan("0x1234").some((f) => f.ruleId === "eth-address")).toBe(false);
+  });
+
+  it("detects context-gated US bank and passport numbers", () => {
+    for (const [text, id, secretValue] of [
+      ["routing 021000021 account 12345678", "pii-us-bank-account", "12345678"],
+      ["passport 123456789", "pii-us-passport", "123456789"],
+    ] as const) {
+      const findings = scan(text);
+      expect(findings.some((f) => f.ruleId === id)).toBe(true);
+      expect(
+        findings.some((f) => f.ruleId === id && f.secretValue === secretValue),
+      ).toBe(true);
+    }
+    for (const [text, id] of [
+      ["order 12345678 shipped", "pii-us-bank-account"],
+      ["call 123456789 now", "pii-us-passport"],
     ] as const) {
       expect(scan(text).some((f) => f.ruleId === id)).toBe(false);
     }
