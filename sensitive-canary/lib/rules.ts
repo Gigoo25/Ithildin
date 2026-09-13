@@ -689,6 +689,33 @@ const LOCAL_RULES: Rule[] = [
     contextWords: ["passport"],
     category: "pii",
   },
+  // Institution account numbers are exact-prefix exact-length: no checksum
+  // or context needed, and nothing else looks like them.
+  {
+    id: "pii-bank-account-prefix",
+    description: "Bank account number (known prefix)",
+    regex: /\b(?:8158|8282)(?:\d{12}|(?:[\s-]?\d{4}){3})\b/g,
+    category: "pii",
+  },
+  // A bare capitalized pair ("Lake House") is prose as often as a name,
+  // so names require an identity label. Usernames and hostnames have their
+  // own rules and their word-internal boundaries never match \bname here.
+  {
+    id: "pii-labeled-name",
+    description: "Personal name behind an identity label",
+    regex: /(?:\bname|\bfull name|\bpatient|\bcustomer|\bcontact|\battn)\s*[:=]\s*([A-Z][a-z]+(?:[ -][A-Z][a-z.]+){1,2})/gi,
+    secretGroup: 1,
+    category: "pii",
+  },
+  // Street addresses carry their own suffix vocabulary, so the shape is
+  // precise without context words: the match must terminate on a suffix,
+  // which bare "2 Road" prose never does.
+  {
+    id: "pii-street-address",
+    description: "US street address",
+    regex: /\b\d{1,5}[A-Za-z]?\s+[A-Za-z0-9][\w.'-]*(?:\s+[A-Za-z0-9][\w.'-]*){0,3}\s+(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Lane|Ln|Drive|Dr|Court|Ct|Circle|Cir|Parkway|Pkwy|Terrace|Place|Pl|Plaza)\.?\b/g,
+    category: "pii",
+  },
   {
     id: "pii-user-at-host",
     description: "Username in user@host address (generic)",

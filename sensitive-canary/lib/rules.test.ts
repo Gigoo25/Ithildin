@@ -28,6 +28,19 @@ describe("personal inventory template", () => {
   });
 });
 
+describe("upstream PII parity", () => {
+  it("detects Luhn-valid card numbers and rejects bad checksums", () => {
+    const findings = scan("card 4532015112830366");
+    expect(findings.some((f) => f.ruleId === "pii-credit-card")).toBe(true);
+    expect(scan("card 4111111111111112").some((f) => f.ruleId === "pii-credit-card")).toBe(false);
+  });
+
+  it("exempts published gateway test numbers", () => {
+    // Blocking on documentation fixtures trains users to disable the tool.
+    expect(scan("card 4111111111111111").some((f) => f.ruleId === "pii-credit-card")).toBe(false);
+  });
+});
+
 describe("generic secret detection", () => {
   it("detects values behind quoted JSON keys", () => {
     const value = "0123456789abcdef".repeat(3).slice(0, 40);
@@ -317,12 +330,54 @@ describe("local rule additions", () => {
     }
   });
 
+  it("detects bank plain", () => {
+    const findings = scan('acct 8158123456789012');
+    expect(findings.some((f) => f.ruleId === 'pii-bank-account-prefix')).toBe(true);
+    expect(findings.some((f) => f.ruleId === 'pii-bank-account-prefix' && f.secretValue === '8158123456789012')).toBe(true);
+  });
+it("detects bank grouped", () => {
+    const findings = scan('acct 8158-1234-5678-9012');
+    expect(findings.some((f) => f.ruleId === 'pii-bank-account-prefix')).toBe(true);
+    expect(findings.some((f) => f.ruleId === 'pii-bank-account-prefix' && f.secretValue === '8158-1234-5678-9012')).toBe(true);
+  });
+it("detects labeled name", () => {
+    const findings = scan('Name: Jane Exampleperson');
+    expect(findings.some((f) => f.ruleId === 'pii-labeled-name')).toBe(true);
+    expect(findings.some((f) => f.ruleId === 'pii-labeled-name' && f.secretValue === 'Jane Exampleperson')).toBe(true);
+  });
+it("detects patient name", () => {
+    const findings = scan('patient: Ann Lee');
+    expect(findings.some((f) => f.ruleId === 'pii-labeled-name')).toBe(true);
+    expect(findings.some((f) => f.ruleId === 'pii-labeled-name' && f.secretValue === 'Ann Lee')).toBe(true);
+  });
+it("detects street address", () => {
+    const findings = scan('ship to 123 Main St');
+    expect(findings.some((f) => f.ruleId === 'pii-street-address')).toBe(true);
+    expect(findings.some((f) => f.ruleId === 'pii-street-address' && f.secretValue === '123 Main St')).toBe(true);
+  });
+it("detects avenue address", () => {
+    const findings = scan('unit 5 Park Avenue');
+    expect(findings.some((f) => f.ruleId === 'pii-street-address')).toBe(true);
+    expect(findings.some((f) => f.ruleId === 'pii-street-address' && f.secretValue === '5 Park Avenue')).toBe(true);
+  });
+
+it("rejects prose lookalikes for inventory rules", () => {
+    for (const [text, id] of [
+      [" Lake House retreat", "pii-labeled-name"],
+      ["username = __CANARY_USER_2__", "pii-labeled-name"],
+      ["took 2 Road trips", "pii-street-address"],
+      ["version 8159 track", "pii-bank-account-prefix"],
+    ] as const) {
+      expect(scan(text).some((f) => f.ruleId === id)).toBe(false);
+    }
+  });
+
   it("detects Tailscale keys and age secret keys", () => {
     const ageKey = `AGE-SECRET-KEY-1${"qpzry9x8gf2tvdw0s3jn54khce6mua7l".repeat(2).slice(0, 58)}`;
     for (const [text, id] of [
       [`auth: tskey-auth-${"aB3xK9mQ2wR7vT5zY8cN1jF4hL6pD0sGqW"}`, "tailscale-key"],
       [`token: tskey-api-${"aB3xK9mQ2wR7vT5zY8cN1jF4hL6pD0sGqW"}`, "tailscale-key"],
-      [`key = "${ageKey}"`, "age-secret-key"],
+      [`key = ${ageKey}`, "age-secret-key"],
     ] as const) {
       expect(scan(text).some((f) => f.ruleId === id)).toBe(true);
     }
