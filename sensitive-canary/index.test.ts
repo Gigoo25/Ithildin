@@ -208,7 +208,7 @@ describe("sensitive-canary port", () => {
     const res = await handlers.tool_result(
       {
         toolName: "bash",
-        content: [{ type: "text", text: `API_KEY=${AWS_KEY}` }, { type: "text", text: "\n\n[sensitive-canary] Some sensitive values in this context were replaced with synthetic placeholders. Treat them as non-real data; preserve their structure only. Do not use placeholders as file paths, command arguments, URLs, or identifiers." }],
+        content: [{ type: "text", text: `API_KEY=${AWS_KEY}` }, { type: "text", text: "\n\n[sensitive-canary] Synthesized placeholders above are not real data — use only as labels. Never pass to tools, use as paths/commands/identifiers, or reverse." }],
       },
       ctx,
     );
@@ -287,6 +287,31 @@ describe("sensitive-canary port", () => {
         ctx,
       ),
     ).toBeUndefined();
+  });
+
+  it("flushes a value-free finding ledger per response", async () => {
+    const { mkdtempSync, readFileSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const dir = mkdtempSync(join(tmpdir(), "canary-ledger-"));
+    const previous = process.env.PI_SESSION_FILE;
+    process.env.PI_SESSION_FILE = join(dir, "session.jsonl");
+    try {
+      handlers.agent_start({}, ctx);
+      await handlers.context(
+        { messages: [{ role: "user", content: `API_KEY=${AWS_KEY}` }] },
+        ctx,
+      );
+      await handlers.agent_end({}, ctx);
+      const ledger = JSON.parse(readFileSync(`${process.env.PI_SESSION_FILE}.canary-ledger.json`, "utf8"));
+      expect(ledger.totalHits).toBeGreaterThan(0);
+      expect(Object.keys(ledger.byRule).length).toBeGreaterThan(0);
+      expect(JSON.stringify(ledger)).not.toContain(AWS_KEY);
+    } finally {
+      if (previous === undefined) delete process.env.PI_SESSION_FILE;
+      else process.env.PI_SESSION_FILE = previous;
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("allows PII but continues to synthesize secrets", async () => {

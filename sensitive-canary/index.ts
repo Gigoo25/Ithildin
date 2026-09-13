@@ -35,6 +35,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { randomBytes } from "node:crypto";
+import { writeFileSync } from "node:fs";
 import path from "node:path";
 import { type Finding, scan } from "./lib/rules.ts";
 import {
@@ -197,6 +198,43 @@ function clearCaches(): void {
   TOKEN_COUNTERS.clear();
 }
 
+// Value-free audit ledger: rule IDs and counts only, never values. Every
+// finding that survives allow-tag filtering passes through redactText, so
+// this one hook records context, provider-payload, tool-result, and
+// persistence redactions with the same per-stage semantics as the warnings.
+const LEDGER = new Map<string, { category: string; count: number }>();
+
+function recordLedger(findings: Finding[]): void {
+  for (const finding of findings) {
+    const entry = LEDGER.get(finding.ruleId) ?? { category: finding.category, count: 0 };
+    entry.count++;
+    LEDGER.set(finding.ruleId, entry);
+  }
+}
+
+function ledgerPath(): string | undefined {
+  const sessionFile = process.env.PI_SESSION_FILE;
+  return sessionFile ? `${sessionFile}.canary-ledger.json` : undefined;
+}
+
+function flushLedger(): void {
+  if (LEDGER.size === 0) return;
+  const byRule: Record<string, { category: string; count: number }> = {};
+  let totalHits = 0;
+  for (const [id, entry] of LEDGER) {
+    byRule[id] = { ...entry };
+    totalHits += entry.count;
+  }
+  LEDGER.clear();
+  const dest = ledgerPath();
+  if (!dest) return;
+  try {
+    writeFileSync(dest, `${JSON.stringify({ updatedAt: new Date().toISOString(), totalHits, byRule })}\n`, { mode: 0o600 });
+  } catch {
+    // Audit must never break the agent.
+  }
+}
+
 function redactText(text: string, allowTags: Set<string> = new Set()): { text: string; hits: number } {
   let cookieHits = 0;
   if (!allowTags.has("secret")) {
@@ -210,6 +248,7 @@ function redactText(text: string, allowTags: Set<string> = new Set()): { text: s
     ),
     allowTags,
   );
+  recordLedger(findings);
   for (const finding of findings) {
     const replacement =
       finding.category === "pii"
@@ -385,7 +424,7 @@ function synthesizeEnvChunks(content: readonly unknown[]): {
 }
 
 const SYNTHESIS_NOTICE =
-  "[sensitive-canary] Some sensitive values in this context were replaced with synthetic placeholders. Treat them as non-real data; preserve their structure only. Do not use placeholders as file paths, command arguments, URLs, or identifiers.";
+  "[sensitive-canary] Synthesized placeholders above are not real data — use only as labels. Never pass to tools, use as paths/commands/identifiers, or reverse.";
 
 const SYNTHESIS_SYSTEM_REMINDER =
   "SENSITIVE-CANARY: Sensitive values can be synthetic placeholders. These placeholders are not real credentials, identities, contact details, or production data. Preserve only their structure and relationships. Never pass a placeholder to a tool or attempt to reverse it. If one blocks the task, stop and ask the user to re-run with [allow-pii].";
@@ -452,10 +491,12 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
   pi.on("agent_start", () => {
     pendingWarningCount = 0;
     allowTags = new Set<string>();
+    LEDGER.clear();
   });
 
   pi.on("agent_end", (_event, ctx) => {
     flushWarning(ctx);
+    flushLedger();
   });
 
   pi.on("before_agent_start", (event) => {
