@@ -195,6 +195,24 @@ const OPAQUE_PROVIDER_FIELDS: Record<string, true> = {
   encrypted_content: true,
   encryptedContent: true,
 };
+// Responses wire enums are never free text. When the shared scan budget is
+// exhausted, fail-closed omission rewrites e.g. include[0] into
+// "[sensitive-canary: omitted ...]", and the provider rejects the call
+// (400 include[0]: unknown variant). Pass these control keys through so a
+// starved budget cannot corrupt the call. Content fields (input text,
+// instructions, tool arguments, data/url, etc.) remain scanned.
+const PROTOCOL_PASSTHROUGH_FIELDS: Record<string, true> = {
+  include: true,
+  reasoning: true,
+  effort: true,
+  summary: true,
+  service_tier: true,
+  serviceTier: true,
+  tool_choice: true,
+  toolChoice: true,
+  type: true,
+  role: true,
+};
 
 function clearCaches(): void {
   SCAN_CACHE.clear();
@@ -378,7 +396,7 @@ function redactValue(
   key?: string,
   parent?: Record<string, unknown>,
 ): { value: unknown; hits: number } {
-  if (key !== undefined && OPAQUE_PROVIDER_FIELDS[key] === true) {
+  if (key !== undefined && (OPAQUE_PROVIDER_FIELDS[key] === true || PROTOCOL_PASSTHROUGH_FIELDS[key] === true)) {
     return { value, hits: 0 };
   }
   if (typeof value === "string") {

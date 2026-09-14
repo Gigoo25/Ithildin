@@ -558,4 +558,25 @@ describe("sensitive-canary port", () => {
     expect(res.input[1].encryptedContent).toBe(encrypted);
     expect(res.input[2].text).not.toBe(`api_key=${payloadSecret}`);
   });
+
+  it("preserves Responses control enums even when the scan budget is exhausted", async () => {
+    const payload = {
+      include: ["reasoning.encrypted_content"],
+      reasoning: { effort: "medium", summary: "auto" },
+      service_tier: "auto",
+      input: [{ type: "message", role: "user", text: `api_key=${AWS_KEY}` }],
+    };
+    beginScanBudget(0);
+    try {
+      const res = await handlers.before_provider_request({ payload }, ctx);
+      expect(res.include).toEqual(["reasoning.encrypted_content"]);
+      expect(res.reasoning).toEqual({ effort: "medium", summary: "auto" });
+      expect(res.service_tier).toBe("auto");
+      expect(res.input[0].type).toBe("message");
+      expect(res.input[0].role).toBe("user");
+      expect(JSON.stringify(res)).not.toContain(AWS_KEY);
+    } finally {
+      beginScanBudget(null);
+    }
+  });
 });
