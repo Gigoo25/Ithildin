@@ -44,5 +44,10 @@
       "flags": "g",
       "category": "pii"
     }
+  ],
+  "inventory": [
+    { "id": "fullname", "literal": "Jane Exampleperson", "match": "phrase" },
+    { "id": "handle", "literal": "example_handle", "match": "token" },
+    { "id": "org", "literal": "ExampleCorp", "match": "token", "caseSensitive": false }
   ]
 }

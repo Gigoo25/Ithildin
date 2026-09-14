@@ -1,0 +1,130 @@
+{
+  "version": 1,
+  "runtime": "v24.20.0",
+  "summary": {
+    "fixtures": 12,
+    "misses": 0,
+    "exposedChars": 0,
+    "falseRedactions": 0,
+    "omissions": 0,
+    "unsupported": 1,
+    "limitations": 1
+  },
+  "fixtures": [
+    {
+      "id": "secret-anthropic-key",
+      "support": "supported",
+      "misses": 0,
+      "exposedChars": 0,
+      "falseRedactions": 0,
+      "trips": 0,
+      "hits": 1
+    },
+    {
+      "id": "secret-bearer-header",
+      "support": "supported",
+      "misses": 0,
+      "exposedChars": 0,
+      "falseRedactions": 0,
+      "trips": 0,
+      "hits": 1
+    },
+    {
+      "id": "pii-labeled-username",
+      "support": "supported",
+      "misses": 0,
+      "exposedChars": 0,
+      "falseRedactions": 0,
+      "trips": 0,
+      "hits": 1
+    },
+    {
+      "id": "harmless-code-identifier",
+      "support": "supported",
+      "misses": 0,
+      "exposedChars": 0,
+      "falseRedactions": 0,
+      "trips": 0,
+      "hits": 0
+    },
+    {
+      "id": "harmless-uuid",
+      "support": "supported",
+      "misses": 0,
+      "exposedChars": 0,
+      "falseRedactions": 0,
+      "trips": 0,
+      "hits": 0
+    },
+    {
+      "id": "substring-regression",
+      "support": "supported",
+      "misses": 0,
+      "exposedChars": 0,
+      "falseRedactions": 0,
+      "trips": 0,
+      "hits": 1
+    },
+    {
+      "id": "repeated-value",
+      "support": "supported",
+      "misses": 0,
+      "exposedChars": 0,
+      "falseRedactions": 0,
+      "trips": 0,
+      "hits": 1
+    },
+    {
+      "id": "overlap-synthetic",
+      "support": "supported",
+      "misses": 0,
+      "exposedChars": 0,
+      "falseRedactions": 0,
+      "trips": 0,
+      "hits": 1
+    },
+    {
+      "id": "json-labeled-secret",
+      "support": "supported",
+      "misses": 0,
+      "exposedChars": 0,
+      "falseRedactions": 0,
+      "trips": 0,
+      "hits": 1
+    },
+    {
+      "id": "json-numeric-account",
+      "support": "unsupported",
+      "misses": 0,
+      "exposedChars": 0,
+      "falseRedactions": 0,
+      "trips": 0,
+      "hits": 1
+    },
+    {
+      "id": "business-prose-limitation",
+      "support": "limitation",
+      "misses": 0,
+      "exposedChars": 0,
+      "falseRedactions": 0,
+      "trips": 0,
+      "hits": 0
+    },
+    {
+      "id": "window-seam",
+      "support": "supported",
+      "misses": 0,
+      "exposedChars": 0,
+      "falseRedactions": 0,
+      "trips": 0,
+      "hits": 1
+    }
+  ],
+  "codeFingerprint": {
+    "home-manager/config/pi/extensions/sensitive-canary/index.ts": "29af896c5b7f2796",
+    "home-manager/config/pi/extensions/sensitive-canary/lib/rules.ts": "ea410f1037f184de",
+    "home-manager/config/pi/extensions/sensitive-canary/bench/corpus.ts": "86d59a4c2bdce4f2",
+    "home-manager/config/pi/extensions/sensitive-canary/bench/harness.ts": "b5df653cae1379fe"
+  },
+  "note": "Frozen working-tree baseline. Keep unchanged; new fixtures must use new ids."
+}

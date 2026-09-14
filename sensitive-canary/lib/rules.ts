@@ -22,6 +22,23 @@ export interface Finding {
   score?: number;
 }
 
+// Half-open UTF-16 offsets into the exact text that was scanned:
+// text.slice(start, end) === secretValue.
+export interface LocatedFinding extends Finding {
+  start: number;
+  end: number;
+}
+
+// Normalize a rule regex once so match indices are always available.
+// Preserves every other flag and matching semantics; only adds g/d.
+function ensureIndices(re: RegExp): RegExp {
+  let flags = re.flags;
+  if (!flags.includes("g")) flags += "g";
+  if (!flags.includes("d")) flags += "d";
+  if (flags === re.flags) return re;
+  return new RegExp(re.source, flags);
+}
+
 interface Rule {
   id: string;
   description: string;
@@ -63,6 +80,42 @@ export interface RuleConfig {
 export interface CanaryConfig {
   contextWindow?: number;
   rules: RuleConfig[];
+  inventory?: InventoryEntry[];
+}
+
+export interface InventoryEntry {
+  id: string;
+  literal: string;
+  match: "token" | "phrase";
+  caseSensitive?: boolean;
+}
+
+export const INVENTORY_ID_PREFIX = "pii-inventory-";
+export const MAX_INVENTORY_ENTRIES = 500;
+
+export function escapeRegExp(literal: string): string {
+  return literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+export function compileInventoryEntry(entry: unknown): Rule {
+  if (typeof entry !== "object" || entry === null) throw new Error("inventory entry must be an object");
+  const { id, literal, match, caseSensitive } = entry as Record<string, unknown>;
+  if (typeof id !== "string" || id.length === 0 || /\s/.test(id)) throw new Error('inventory entry needs a whitespace-free "id"');
+  if (typeof literal !== "string" || literal.trim().length === 0) throw new Error(`inventory "${String(id)}" has an empty literal`);
+  if (match !== "token" && match !== "phrase") throw new Error(`inventory "${String(id)}" needs match "token" or "phrase"`);
+  if (caseSensitive !== undefined && typeof caseSensitive !== "boolean") throw new Error(`inventory "${String(id)}" needs boolean caseSensitive`);
+  const sensitive = caseSensitive ?? true;
+  const body = escapeRegExp(literal);
+  // Unicode letter/number/underscore boundaries, not ASCII-only \b.
+  const source = match === "token"
+    ? `(?<![\\p{L}\\p{N}_])${body}(?![\\p{L}\\p{N}_])`
+    : body;
+  return {
+    id: `${INVENTORY_ID_PREFIX}${id}`,
+    description: `Private inventory "${id}" (exact match)`,
+    regex: ensureIndices(new RegExp(source, sensitive ? "gu" : "giu")),
+    category: "pii",
+  };
 }
 
 const ALL_CATEGORIES: ReadonlySet<Category> = new Set(["secret", "pii"]);
@@ -260,16 +313,14 @@ export function compileRule(rc: RuleConfig): Rule {
   const withG = flagStr.includes("g") ? flagStr : `${flagStr}g`;
   const rule: Rule = {
     ...rest,
-    regex: new RegExp(source, withG),
+    regex: ensureIndices(new RegExp(source, withG)),
   };
   if (validateName) {
     const fn = getValidator(validateName);
     if (fn) {
       rule.validate = fn;
     } else {
-      process.stderr.write(
-        `sensitive-canary: unknown validator "${validateName}" in rule "${rc.id}" — validation disabled\n`,
-      );
+      throw new Error("unknown validator");
     }
   }
   return rule;
@@ -291,7 +342,7 @@ function loadUserConfig(): CanaryConfig | null {
     // already; this path was the one that did not.
     if (!statSync(USER_CONFIG_PATH).isFile()) {
       process.stderr.write(
-        `sensitive-canary: user config "${USER_CONFIG_PATH}" is not a regular file, ignoring\n`,
+        "sensitive-canary: user config is not a regular file, ignoring\n",
       );
       return null;
     }
@@ -299,17 +350,26 @@ function loadUserConfig(): CanaryConfig | null {
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== "ENOENT") {
       process.stderr.write(
-        `sensitive-canary: could not read user config "${USER_CONFIG_PATH}": ${e instanceof Error ? e.message : String(e)}\n`,
+        "sensitive-canary: could not read user config (details withheld)\n",
       );
     }
     return null;
   }
 }
 
-// Build the final rule list: default rules first, then user rules. A user rule
-// with the same id as a built-in rule replaces it; new ids are appended.
-// Invalid user rules (bad regex, etc.) are skipped with a warning so that one
-// bad entry does not break the entire hook.
+// Raw user rule configs seen at startup. Applied once against defaults PLUS
+// local rules (see applyUserOverrides) so a custom override of a local rule
+// actually replaces it; buildRules only loads defaults and records these.
+const pendingUserRuleConfigs: RuleConfig[] = [];
+const pendingInventoryEntries: unknown[] = [];
+
+export function pendingUserConfigsForTest(): { rules: RuleConfig[]; inventory: unknown[] } {
+  return { rules: [...pendingUserRuleConfigs], inventory: [...pendingInventoryEntries] };
+}
+
+// Build the default rule list and record user configs for the later override
+// pass. Invalid built-ins are skipped with a warning; user entries are
+// validated later by applyUserOverrides/compileInventoryEntry.
 function buildRules(): Rule[] {
   const defaultConfig = loadDefaultConfig();
   effectiveContextWindow = defaultConfig.contextWindow ?? 3;
@@ -344,34 +404,40 @@ function buildRules(): Rule[] {
       );
     }
     if (Array.isArray(userConfig.rules) && userConfig.rules.length) {
-      const userRules: Rule[] = [];
-      for (const rc of userConfig.rules) {
-        try {
-          userRules.push(compileRule(rc));
-        } catch (e) {
-          process.stderr.write(
-            `sensitive-canary: skipping user rule "${(rc as { id?: unknown })?.id ?? "(unknown)"}": ${e instanceof Error ? e.message : String(e)}\n`,
-          );
-        }
+      for (const rc of userConfig.rules) pendingUserRuleConfigs.push(rc as RuleConfig);
+    }
+    if (userConfig.inventory != null) {
+      if (!Array.isArray(userConfig.inventory)) {
+        process.stderr.write(`sensitive-canary: "inventory" in user config must be an array, ignoring\n`);
+      } else {
+        for (const entry of userConfig.inventory) pendingInventoryEntries.push(entry);
       }
-      // De-duplicate by id (last definition wins) so duplicate ids in the
-      // user config don't produce duplicate rules and duplicate findings.
-      const byId = new Map<string, Rule>();
-      for (const rule of userRules) {
-        if (byId.has(rule.id)) {
-          process.stderr.write(
-            `sensitive-canary: duplicate user rule id "${rule.id}" — using the last definition\n`,
-          );
-        }
-        byId.set(rule.id, rule);
-      }
-      return defaultRules
-        .filter((r) => !byId.has(r.id))
-        .concat(Array.from(byId.values()));
     }
   }
 
   return defaultRules;
+}
+
+export function compileInventoryList(entries: unknown[]): Rule[] {
+  const out: Rule[] = [];
+  const seen = new Set<string>();
+  if (entries.length > MAX_INVENTORY_ENTRIES) {
+    process.stderr.write(`sensitive-canary: inventory has ${entries.length} entries (max ${MAX_INVENTORY_ENTRIES}), truncating\n`);
+  }
+  for (const entry of entries.slice(0, MAX_INVENTORY_ENTRIES)) {
+    try {
+      const rule = compileInventoryEntry(entry);
+      if (seen.has(rule.id)) {
+        process.stderr.write("sensitive-canary: duplicate inventory id rejected — keeping first entry\n");
+      } else {
+        seen.add(rule.id);
+        out.push(rule);
+      }
+    } catch (e) {
+      process.stderr.write("sensitive-canary: invalid inventory entry rejected (details withheld)\n");
+    }
+  }
+  return out;
 }
 
 // IBAN mod-97: rearrange, expand letters (A=10..Z=35), remainder must be 1.
@@ -564,7 +630,8 @@ const LOCAL_RULES: Rule[] = [
   {
     id: "bearer",
     description: "Bearer Authorization Token",
-    regex: /\bbearer\s+[A-Za-z0-9\-._~+/]{20,}/gi,
+    regex: /\bbearer\s+([A-Za-z0-9\-._~+/]{20,})/gi,
+    secretGroup: 1,
     category: "secret",
   },
   {
@@ -794,7 +861,68 @@ const LOCAL_RULES: Rule[] = [
   },
 ];
 
-export const RULES: Rule[] = buildRules().concat(LOCAL_RULES);
+for (const local of LOCAL_RULES) local.regex = ensureIndices(local.regex);
+
+export function applyUserOverrides(base: Rule[], userConfigs: RuleConfig[]): Rule[] {
+  const compiled: Rule[] = [];
+  for (const rc of userConfigs) {
+    try {
+      const rule = compileRule(rc);
+      if (rule.id.startsWith(INVENTORY_ID_PREFIX)) throw new Error("reserved inventory id");
+      if (base.find(original => original.id === rule.id)?.validate && !rule.validate) throw new Error("override drops validator");
+      compiled.push(rule);
+    } catch (e) {
+      process.stderr.write(
+        "sensitive-canary: invalid user rule rejected (details withheld)\n",
+      );
+    }
+  }
+  const byId = new Map<string, Rule>();
+  for (const rule of compiled) {
+    if (byId.has(rule.id)) {
+      process.stderr.write(
+        "sensitive-canary: duplicate user rule id — using the last valid definition\n",
+      );
+    }
+    byId.set(rule.id, rule);
+  }
+  // An invalid override must not silently disable validation: if the custom
+  // rule dropped a validator the built-in had, keep the built-in instead.
+  const effective = new Map<string, Rule>(byId);
+  for (const original of base) {
+    const override = effective.get(original.id);
+    if (override && original.validate && !override.validate) {
+      process.stderr.write(
+        "sensitive-canary: user override drops validator — keeping built-in\n",
+      );
+      effective.delete(original.id);
+    }
+  }
+  return base.filter((r) => !effective.has(r.id)).concat(Array.from(effective.values()));
+}
+
+function dedupeByIdLastWins(rules: Rule[]): Rule[] {
+  const byId = new Map<string, Rule>();
+  for (const rule of rules) byId.set(rule.id, rule);
+  return Array.from(byId.values());
+}
+
+const __defaultRules = buildRules();
+const __userRuleConfigs: RuleConfig[] = [...pendingUserRuleConfigs];
+const __inventoryRules: Rule[] = compileInventoryList([...pendingInventoryEntries]);
+// A local rule with the same id as a default replaces it (previously both
+// ran and reported the same occurrence twice).
+export const RULES: Rule[] = applyUserOverrides(
+  dedupeByIdLastWins(__defaultRules.concat(LOCAL_RULES)),
+  __userRuleConfigs,
+).concat(__inventoryRules);
+
+// User rules collected during buildRules so LOCAL_RULES share the same
+// override pass. Stored aside because module init order defines LOCAL_RULES
+// after buildRules runs.
+function pendingUserRules(): RuleConfig[] {
+  return [...pendingUserRuleConfigs];
+}
 
 // Enough of a value to say which one was found, and no more.
 //
@@ -846,7 +974,23 @@ export function beginScanBudget(totalMs: number | null = SCAN_BUDGET_MS): void {
   deadline = totalMs === null ? null : Date.now() + totalMs;
 }
 
+// Share one deadline across all strings in a synchronous hook, restoring any
+// outer deadline even on failure. Nested sanitizers cannot replenish a budget.
+export function withScanBudget<T>(work: () => T, totalMs = SCAN_BUDGET_MS): T {
+  const previous = deadline;
+  deadline = Math.min(previous ?? Infinity, Date.now() + totalMs);
+  try {
+    return work();
+  } finally {
+    deadline = previous;
+  }
+}
+
 // What is left of the budget, or the whole of it when none was begun.
+export function assertScanBudget(): void {
+  if (remainingBudget() <= 0) throw new ScanBudgetExceeded("document/render", SCAN_BUDGET_MS);
+}
+
 function remainingBudget(): number {
   return deadline === null ? SCAN_BUDGET_MS : deadline - Date.now();
 }
@@ -867,7 +1011,7 @@ function runInterruptibly<T>(work: () => T, limitMs: number): T {
   slots[SCAN_SLOT] = work;
   try {
     return vm.runInThisContext(`globalThis.${SCAN_SLOT}()`, {
-      timeout: limitMs,
+      timeout: Math.max(1, Math.floor(limitMs)),
       displayErrors: false,
     }) as T;
   } catch (error) {
@@ -882,7 +1026,7 @@ function runInterruptibly<T>(work: () => T, limitMs: number): T {
 export function scan(
   text: string,
   categories: ReadonlySet<Category> = ALL_CATEGORIES,
-): Finding[] {
+): LocatedFinding[] {
   const remaining = remainingBudget();
   if (remaining <= 0)
     throw new ScanBudgetExceeded("this call's total", SCAN_BUDGET_MS);
@@ -895,8 +1039,8 @@ export function scan(
 // One rule's matches over the text: pure over (rule, text) with no budget
 // state, so the whole-text and windowed drivers share it. A poisoned rule
 // trips only itself here; each driver decides what a trip means.
-function scanRule(rule: Rule, text: string): Finding[] {
-  const findings: Finding[] = [];
+function scanRule(rule: Rule, text: string): LocatedFinding[] {
+  const findings: LocatedFinding[] = [];
   for (const match of text.matchAll(rule.regex)) {
     const secretValue =
       rule.secretGroup != null ? match[rule.secretGroup] : match[0];
@@ -965,6 +1109,23 @@ function scanRule(rule: Rule, text: string): Finding[] {
       continue;
     }
 
+    // Exact source location via the d-flag indices; never indexOf the value.
+    const indices = (match as unknown as { indices?: Array<[number, number] | undefined> }).indices;
+    let start = matchStart;
+    let end = matchEnd;
+    if (rule.secretGroup != null) {
+      const groupSpan = indices?.[rule.secretGroup];
+      if (!groupSpan) continue;
+      start = groupSpan[0];
+      end = groupSpan[1];
+    } else {
+      const whole = indices?.[0];
+      if (whole) {
+        start = whole[0];
+        end = whole[1];
+      }
+    }
+    if (text.slice(start, end) !== secretValue) continue;
     findings.push({
       ruleId: rule.id,
       description: rule.description,
@@ -972,6 +1133,8 @@ function scanRule(rule: Rule, text: string): Finding[] {
       matchRedacted: redact(secretValue),
       secretValue,
       score: hasContext ? 1.0 : 0.4,
+      start,
+      end,
     });
   }
   return findings;
@@ -981,8 +1144,8 @@ function scanUninterrupted(
   text: string,
   categories: ReadonlySet<Category>,
   budgetMs: number,
-): Finding[] {
-  const findings: Finding[] = [];
+): LocatedFinding[] {
+  const findings: LocatedFinding[] = [];
   const startedAt = Date.now();
 
   for (const rule of RULES) {
@@ -1029,9 +1192,6 @@ export function mergeRanges(ranges: WindowTrip[]): WindowTrip[] {
 // times, and single-slice texts never reach the cutoff.
 const MAX_CONSECUTIVE_TRIPS = 5;
 // Per-rule V8 caps stay small on purpose: timeouts overshoot several-fold,
-// so a small cap bounds the damage while the floor below keeps legitimate
-// slow rules (email-scale, ~200ms on hostile shapes) passing with margin.
-// Per-rule V8 caps stay small on purpose: timeouts overshoot several-fold,
 // so a small cap bounds the damage. The floor keeps legitimate slow rules
 // (email-scale, ~200ms on hostile shapes) passing with margin; without it,
 // small shares would false-trip on realistic inputs like minified JS, which
@@ -1041,8 +1201,8 @@ const MIN_RULE_BUDGET_MS = 500;
 export function scanWindows(
   text: string,
   categories: ReadonlySet<Category> = ALL_CATEGORIES,
-): { findings: Finding[]; trips: WindowTrip[] } {
-  const findings: Finding[] = [];
+): { findings: LocatedFinding[]; trips: WindowTrip[] } {
+  const findings: LocatedFinding[] = [];
   const trips: WindowTrip[] = [];
   if (text.length === 0) return { findings, trips };
   const step = SCAN_WINDOW_CHARS - SCAN_WINDOW_OVERLAP;
@@ -1082,15 +1242,36 @@ export function scanWindows(
     let sliceTripped = false;
     for (const rule of RULES) {
       if (!categories.has(rule.category)) continue;
+      const ruleRemaining = totalBudget - (Date.now() - startedAt);
+      if (ruleRemaining <= 0) {
+        trips.push({ start: slice.start, end: text.length });
+        return { findings, trips: mergeRanges(trips) };
+      }
       try {
-        findings.push(...runInterruptibly(() => scanRule(rule, sliceText), ruleCap));
+        // The comfort floor never overrides the remaining envelope. V8 can
+        // overshoot, so also check between rules, not only between windows.
+        const located = runInterruptibly(() => scanRule(rule, sliceText), Math.min(ruleCap, ruleRemaining));
+        for (const f of located) findings.push({ ...f, start: f.start + slice.start, end: f.end + slice.start });
       } catch (error) {
         if (error instanceof ScanBudgetExceeded) {
+          // A timeout allocated the entire remaining envelope. Millisecond
+          // rounding can leave a fraction on the wall clock; do not start
+          // another rule with that apparent remainder.
+          if (ruleRemaining <= ruleCap) {
+            trips.push({ start: slice.start, end: text.length });
+            return { findings, trips: mergeRanges(trips) };
+          }
           sliceTripped = true;
           continue;
         }
         throw error;
       }
+    }
+    // Include the final rule: a single-window scan has no next iteration in
+    // which to notice an overshoot. Unfinished coverage must stay explicit.
+    if (totalBudget - (Date.now() - startedAt) <= 0) {
+      trips.push({ start: slice.start, end: text.length });
+      return { findings, trips: mergeRanges(trips) };
     }
     if (sliceTripped) {
       trips.push({ ...slice });
@@ -1099,5 +1280,14 @@ export function scanWindows(
       consecutiveTrips = 0;
     }
   }
-  return { findings, trips: mergeRanges(trips) };
+  // Overlapping windows report the same occurrence twice; collapse by
+  // exact location so the renderer sees each occurrence once.
+  const seen = new Set<string>();
+  const deduped = findings.filter((f) => {
+    const key = `${f.ruleId}\u0000${f.category}\u0000${f.start}\u0000${f.end}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  return { findings: deduped, trips: mergeRanges(trips) };
 }

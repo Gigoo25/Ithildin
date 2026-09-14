@@ -20,6 +20,7 @@ sensitiveCanary({
   },
 } as any);
 const ctx = {
+  sessionManager: { getSessionFile: (): string | undefined => undefined },
   ui: {
     notify: (message: string) => notifications.push(message),
   },
@@ -308,24 +309,39 @@ describe("sensitive-canary port", () => {
     }
   });
 
-  it("flushes a value-free finding ledger per response", async () => {
-    const { mkdtempSync, readFileSync, rmSync } = await import("node:fs");
+  it("writes private value-free ledgers to the active session, never the inherited shell session", async () => {
+    const { existsSync, mkdtempSync, readFileSync, rmSync, statSync } = await import("node:fs");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
     const dir = mkdtempSync(join(tmpdir(), "canary-ledger-"));
     const previous = process.env.PI_SESSION_FILE;
-    process.env.PI_SESSION_FILE = join(dir, "session.jsonl");
+    const inherited = join(dir, "parent.jsonl");
+    let sessionFile: string | undefined;
+    const sessionCtx = { ...ctx, sessionManager: { getSessionFile: () => sessionFile } };
+    delete process.env.PI_SESSION_FILE;
     try {
-      handlers.agent_start({}, ctx);
-      await handlers.context(
-        { messages: [{ role: "user", content: `API_KEY=${AWS_KEY}` }] },
-        ctx,
-      );
-      await handlers.agent_end({}, ctx);
-      const ledger = JSON.parse(readFileSync(`${process.env.PI_SESSION_FILE}.canary-ledger.json`, "utf8"));
-      expect(ledger.totalHits).toBeGreaterThan(0);
-      expect(Object.keys(ledger.byRule).length).toBeGreaterThan(0);
-      expect(JSON.stringify(ledger)).not.toContain(AWS_KEY);
+      for (const name of ["first", "resumed"]) {
+        sessionFile = join(dir, `${name}.jsonl`);
+        await handlers.agent_start({}, sessionCtx);
+        await handlers.context(
+          { messages: [{ role: "user", content: `API_KEY=${AWS_KEY}` }] },
+          sessionCtx,
+        );
+        await handlers.agent_end({}, sessionCtx);
+        const dest = `${sessionFile}.canary-ledger.json`;
+        const ledger = JSON.parse(readFileSync(dest, "utf8"));
+        expect(ledger.totalHits).toBeGreaterThan(0);
+        expect(Object.keys(ledger.byRule).length).toBeGreaterThan(0);
+        expect(JSON.stringify(ledger)).not.toContain(AWS_KEY);
+        expect(statSync(dest).mode & 0o777).toBe(0o600);
+        process.env.PI_SESSION_FILE = inherited;
+      }
+      // An ephemeral session must not fall back to a parent agent's file.
+      sessionFile = undefined;
+      await handlers.agent_start({}, sessionCtx);
+      await handlers.context({ messages: [{ role: "user", content: AWS_KEY }] }, sessionCtx);
+      await handlers.agent_end({}, sessionCtx);
+      expect(existsSync(`${inherited}.canary-ledger.json`)).toBe(false);
     } finally {
       if (previous === undefined) delete process.env.PI_SESSION_FILE;
       else process.env.PI_SESSION_FILE = previous;

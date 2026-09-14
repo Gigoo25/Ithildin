@@ -19,11 +19,29 @@ untracked user config the engine already loads:
 
 Notes:
 
-- User rules with the same `id` as a built-in replace it; new ids append.
-  Prefer new ids (e.g. `pii-personal-*`) so updates never silently drop you.
+- User rules with the same `id` as a built-in replace it (defaults and local
+  rules share one override pass); new ids append. Prefer new ids
+  (e.g. `pii-personal-*`) so updates never silently drop you.
+- If an override drops a validator the built-in had, the built-in is kept
+  and a stderr warning is printed.
 - `secretGroup: 0` on the GitHub-URL rule synthesizes `github.com/you` as
   one unit instead of leaving a half-redacted URL behind.
 - Validators by name (`public-ipv4`, …) are available via `"validate"`, and
   `contextWords` + `requireContext` work exactly as in the built-ins.
 - The template's example values are inert: they match nothing you will
   type, so copying it verbatim changes nothing until you fill it in.
+- The `inventory` list is the simpler alternative to hand-written regex:
+  `{ "id": "nickname", "literal": "Your Exact Name", "match": "token" }`
+  compiles to a `pii-inventory-nickname` rule. `match: "phrase"` matches
+  the exact phrase including spaces; `caseSensitive: false` opts into
+  case-insensitive matching. Token matching uses Unicode
+  letter/number/underscore boundaries. Empty literals, duplicate ids, and
+  wrongly typed fields are rejected with safe diagnostics (values never
+  printed). Duplicate entries are rejected while the first valid entry is kept.
+  Inventory entries only append — they never override built-ins. The existing
+  500-entry ceiling remains; entries beyond it are not loaded and produce a
+  warning. This is a capacity limit, not a fail-closed policy boundary.
+- Invalid regexes and unknown validators reject that definition without printing
+  the supplied identifier, regex body, validator name or config contents. The
+  last valid custom rule definition is retained. Import-time loading is covered
+  by an isolated fresh-process test, not only pure helper tests.

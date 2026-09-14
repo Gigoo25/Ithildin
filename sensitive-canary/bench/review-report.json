@@ -1,0 +1,859 @@
+{
+  "version": 2,
+  "runtime": "v24.20.0",
+  "fingerprint": {
+    "corpus.ts": "d887cc22a5d7a1477e4e70881f993d3b31e2b4affe54d9dcf5c419477335bf07",
+    "review-corpus.ts": "9ad47e2b2c9e88fc5fa2d93694ba48f691a619525601360744144a22742af20b",
+    "harness.ts": "42ff42894e37e22588bc4f4285ea4be85da99184e241bf8fc015c0de80ebd548",
+    "run.ts": "4e2ffaa5a431a576ab503be1060307b407761cee24d5452bae39e20bc08a85b8",
+    "../index.ts": "ad9f81b3c63472b0bc19fb85ed49bc1480b83e96a6fce6c9451f42e0b8b737fd",
+    "../lib/rules.ts": "40b932dab221490dc65b104d164f3f1ac05d824465535f4743a52581ae4c43b1",
+    "../lib/redaction-spans.ts": "660d98c78d38e2228b58cf444dc8f720c2255ad3722e5abd52a91a8d526403b0",
+    "../lib/structured-text.ts": "36734e6dfffe2313a3b082d33aa97efcde8a9688e62d59dda7114724ea8c0eb8",
+    "../lib/cookies.ts": "1936db090607db9a21bb11fb4e7744c4de6643d60b382b84e2cb554f3328e1b8"
+  },
+  "historicalBaseline": "baseline.json was captured after implementation and fixture changes; INVALID for before/after claims. Preserved unchanged.",
+  "metricDefinition": "Misses are uncovered authored sensitive occurrences in direct detections; exposure counts surviving source characters after edits. Omissions are separate, never useful detections. Cookie coordinates are mapped back to source.",
+  "legacy": {
+    "summary": {
+      "fixtures": 12,
+      "misses": 2,
+      "exposedChars": 2,
+      "falseRedactions": 0,
+      "omissions": 0,
+      "unsupported": 1,
+      "limitations": 1,
+      "omittedChars": 0,
+      "syntaxFailures": 0,
+      "measurementUnavailable": 0
+    },
+    "fixtures": [
+      {
+        "id": "secret-anthropic-key",
+        "support": "supported",
+        "misses": 0,
+        "exposedChars": 0,
+        "falseRedactions": 0,
+        "omissions": 0,
+        "omittedChars": 0,
+        "syntaxFailures": 0,
+        "measurementUnavailable": false
+      },
+      {
+        "id": "secret-bearer-header",
+        "support": "supported",
+        "misses": 0,
+        "exposedChars": 0,
+        "falseRedactions": 0,
+        "omissions": 0,
+        "omittedChars": 0,
+        "syntaxFailures": 0,
+        "measurementUnavailable": false
+      },
+      {
+        "id": "pii-labeled-username",
+        "support": "supported",
+        "misses": 0,
+        "exposedChars": 0,
+        "falseRedactions": 0,
+        "omissions": 0,
+        "omittedChars": 0,
+        "syntaxFailures": 0,
+        "measurementUnavailable": false
+      },
+      {
+        "id": "harmless-code-identifier",
+        "support": "supported",
+        "misses": 0,
+        "exposedChars": 0,
+        "falseRedactions": 0,
+        "omissions": 0,
+        "omittedChars": 0,
+        "syntaxFailures": 0,
+        "measurementUnavailable": false
+      },
+      {
+        "id": "harmless-uuid",
+        "support": "supported",
+        "misses": 0,
+        "exposedChars": 0,
+        "falseRedactions": 0,
+        "omissions": 0,
+        "omittedChars": 0,
+        "syntaxFailures": 0,
+        "measurementUnavailable": false
+      },
+      {
+        "id": "substring-regression",
+        "support": "supported",
+        "misses": 1,
+        "exposedChars": 2,
+        "falseRedactions": 0,
+        "omissions": 0,
+        "omittedChars": 0,
+        "syntaxFailures": 0,
+        "measurementUnavailable": false
+      },
+      {
+        "id": "repeated-value",
+        "support": "supported",
+        "misses": 1,
+        "exposedChars": 0,
+        "falseRedactions": 0,
+        "omissions": 0,
+        "omittedChars": 0,
+        "syntaxFailures": 0,
+        "measurementUnavailable": false
+      },
+      {
+        "id": "overlap-synthetic",
+        "support": "supported",
+        "misses": 0,
+        "exposedChars": 0,
+        "falseRedactions": 0,
+        "omissions": 0,
+        "omittedChars": 0,
+        "syntaxFailures": 0,
+        "measurementUnavailable": false
+      },
+      {
+        "id": "json-labeled-secret",
+        "support": "supported",
+        "misses": 0,
+        "exposedChars": 0,
+        "falseRedactions": 0,
+        "omissions": 0,
+        "omittedChars": 0,
+        "syntaxFailures": 0,
+        "measurementUnavailable": false
+      },
+      {
+        "id": "json-numeric-account",
+        "support": "unsupported",
+        "misses": 0,
+        "exposedChars": 0,
+        "falseRedactions": 0,
+        "omissions": 0,
+        "omittedChars": 0,
+        "syntaxFailures": 0,
+        "measurementUnavailable": false
+      },
+      {
+        "id": "business-prose-limitation",
+        "support": "limitation",
+        "misses": 0,
+        "exposedChars": 0,
+        "falseRedactions": 0,
+        "omissions": 0,
+        "omittedChars": 0,
+        "syntaxFailures": 0,
+        "measurementUnavailable": false
+      },
+      {
+        "id": "window-seam",
+        "support": "supported",
+        "misses": 0,
+        "exposedChars": 0,
+        "falseRedactions": 0,
+        "omissions": 0,
+        "omittedChars": 0,
+        "syntaxFailures": 0,
+        "measurementUnavailable": false
+      }
+    ]
+  },
+  "review": {
+    "summary": {
+      "fixtures": 24,
+      "misses": 0,
+      "exposedChars": 0,
+      "falseRedactions": 0,
+      "omissions": 0,
+      "unsupported": 0,
+      "limitations": 0,
+      "omittedChars": 0,
+      "syntaxFailures": 0,
+      "measurementUnavailable": 0
+    },
+    "fixtures": [
+      {
+        "id": "review-credential-format",
+        "support": "supported",
+        "misses": 0,
+        "exposedChars": 0,
+        "falseRedactions": 0,
+        "omissions": 0,
+        "omittedChars": 0,
+        "syntaxFailures": 0,
+        "measurementUnavailable": false
+      },
+      {
+        "id": "review-credential-lookalike",
+        "support": "supported",
+        "misses": 0,
+        "exposedChars": 0,
+        "falseRedactions": 0,
+        "omissions": 0,
+        "omittedChars": 0,
+        "syntaxFailures": 0,
+        "measurementUnavailable": false
+      },
+      {
+        "id": "review-bearer-positive",
+        "support": "supported",
+        "misses": 0,
+        "exposedChars": 0,
+        "falseRedactions": 0,
+        "omissions": 0,
+        "omittedChars": 0,
+        "syntaxFailures": 0,
+        "measurementUnavailable": false
+      },
+      {
+        "id": "review-bearer-negative",
+        "support": "supported",
+        "misses": 0,
+        "exposedChars": 0,
+        "falseRedactions": 0,
+        "omissions": 0,
+        "omittedChars": 0,
+        "syntaxFailures": 0,
+        "measurementUnavailable": false
+      },
+      {
+        "id": "review-cookie-positive",
+        "support": "supported",
+        "misses": 0,
+        "exposedChars": 0,
+        "falseRedactions": 0,
+        "omissions": 0,
+        "omittedChars": 0,
+        "syntaxFailures": 0,
+        "measurementUnavailable": false
+      },
+      {
+        "id": "review-cookie-negative",
+        "support": "supported",
+        "misses": 0,
+        "exposedChars": 0,
+        "falseRedactions": 0,
+        "omissions": 0,
+        "omittedChars": 0,
+        "syntaxFailures": 0,
+        "measurementUnavailable": false
+      },
+      {
+        "id": "review-identity-positive",
+        "support": "supported",
+        "misses": 0,
+        "exposedChars": 0,
+        "falseRedactions": 0,
+        "omissions": 0,
+        "omittedChars": 0,
+        "syntaxFailures": 0,
+        "measurementUnavailable": false
+      },
+      {
+        "id": "review-identity-negative",
+        "support": "supported",
+        "misses": 0,
+        "exposedChars": 0,
+        "falseRedactions": 0,
+        "omissions": 0,
+        "omittedChars": 0,
+        "syntaxFailures": 0,
+        "measurementUnavailable": false
+      },
+      {
+        "id": "review-home-positive",
+        "support": "supported",
+        "misses": 0,
+        "exposedChars": 0,
+        "falseRedactions": 0,
+        "omissions": 0,
+        "omittedChars": 0,
+        "syntaxFailures": 0,
+        "measurementUnavailable": false
+      },
+      {
+        "id": "review-home-negative",
+        "support": "supported",
+        "misses": 0,
+        "exposedChars": 0,
+        "falseRedactions": 0,
+        "omissions": 0,
+        "omittedChars": 0,
+        "syntaxFailures": 0,
+        "measurementUnavailable": false
+      },
+      {
+        "id": "review-host-positive",
+        "support": "supported",
+        "misses": 0,
+        "exposedChars": 0,
+        "falseRedactions": 0,
+        "omissions": 0,
+        "omittedChars": 0,
+        "syntaxFailures": 0,
+        "measurementUnavailable": false
+      },
+      {
+        "id": "review-host-negative",
+        "support": "supported",
+        "misses": 0,
+        "exposedChars": 0,
+        "falseRedactions": 0,
+        "omissions": 0,
+        "omittedChars": 0,
+        "syntaxFailures": 0,
+        "measurementUnavailable": false
+      },
+      {
+        "id": "review-financial-positive",
+        "support": "supported",
+        "misses": 0,
+        "exposedChars": 0,
+        "falseRedactions": 0,
+        "omissions": 0,
+        "omittedChars": 0,
+        "syntaxFailures": 0,
+        "measurementUnavailable": false
+      },
+      {
+        "id": "review-financial-negative",
+        "support": "supported",
+        "misses": 0,
+        "exposedChars": 0,
+        "falseRedactions": 0,
+        "omissions": 0,
+        "omittedChars": 0,
+        "syntaxFailures": 0,
+        "measurementUnavailable": false
+      },
+      {
+        "id": "review-hash-negative",
+        "support": "supported",
+        "misses": 0,
+        "exposedChars": 0,
+        "falseRedactions": 0,
+        "omissions": 0,
+        "omittedChars": 0,
+        "syntaxFailures": 0,
+        "measurementUnavailable": false
+      },
+      {
+        "id": "review-version-negative",
+        "support": "supported",
+        "misses": 0,
+        "exposedChars": 0,
+        "falseRedactions": 0,
+        "omissions": 0,
+        "omittedChars": 0,
+        "syntaxFailures": 0,
+        "measurementUnavailable": false
+      },
+      {
+        "id": "review-lockfile-negative",
+        "support": "supported",
+        "misses": 0,
+        "exposedChars": 0,
+        "falseRedactions": 0,
+        "omissions": 0,
+        "omittedChars": 0,
+        "syntaxFailures": 0,
+        "measurementUnavailable": false
+      },
+      {
+        "id": "review-unicode-seam",
+        "support": "supported",
+        "misses": 0,
+        "exposedChars": 0,
+        "falseRedactions": 0,
+        "omissions": 0,
+        "omittedChars": 0,
+        "syntaxFailures": 0,
+        "measurementUnavailable": false
+      },
+      {
+        "id": "review-json-bank",
+        "support": "supported",
+        "misses": 0,
+        "exposedChars": 0,
+        "falseRedactions": 0,
+        "omissions": 0,
+        "omittedChars": 0,
+        "syntaxFailures": 0,
+        "measurementUnavailable": false
+      },
+      {
+        "id": "review-json-escaped",
+        "support": "supported",
+        "misses": 0,
+        "exposedChars": 0,
+        "falseRedactions": 0,
+        "omissions": 0,
+        "omittedChars": 0,
+        "syntaxFailures": 0,
+        "measurementUnavailable": false
+      },
+      {
+        "id": "review-json-lookalike",
+        "support": "supported",
+        "misses": 0,
+        "exposedChars": 0,
+        "falseRedactions": 0,
+        "omissions": 0,
+        "omittedChars": 0,
+        "syntaxFailures": 0,
+        "measurementUnavailable": false
+      },
+      {
+        "id": "review-assignment-spaces",
+        "support": "supported",
+        "misses": 0,
+        "exposedChars": 0,
+        "falseRedactions": 0,
+        "omissions": 0,
+        "omittedChars": 0,
+        "syntaxFailures": 0,
+        "measurementUnavailable": false
+      },
+      {
+        "id": "review-assignment-negative",
+        "support": "supported",
+        "misses": 0,
+        "exposedChars": 0,
+        "falseRedactions": 0,
+        "omissions": 0,
+        "omittedChars": 0,
+        "syntaxFailures": 0,
+        "measurementUnavailable": false
+      },
+      {
+        "id": "review-payload-controls",
+        "support": "supported",
+        "misses": 0,
+        "exposedChars": 0,
+        "falseRedactions": 0,
+        "omissions": 0,
+        "omittedChars": 0,
+        "syntaxFailures": 0,
+        "measurementUnavailable": false
+      }
+    ]
+  },
+  "timing": {
+    "enabled": true,
+    "definition": "Cold: first fixture scan in fresh Node, imports excluded. Warm: five scans per fixture in this Node, independent sessions/caches reset; JIT may be warm.",
+    "fixtures": [
+      {
+        "id": "review-credential-format",
+        "cold": {
+          "samples": 1,
+          "minMs": 49.63475399999999,
+          "p50Ms": 49.63475399999999,
+          "p95Ms": 49.63475399999999,
+          "maxMs": 49.63475399999999
+        },
+        "warm": {
+          "samples": 5,
+          "minMs": 33.41779199999996,
+          "p50Ms": 36.172354999999925,
+          "p95Ms": 42.42312500000003,
+          "maxMs": 44.530035
+        }
+      },
+      {
+        "id": "review-credential-lookalike",
+        "cold": {
+          "samples": 1,
+          "minMs": 35.35581099999999,
+          "p50Ms": 35.35581099999999,
+          "p95Ms": 35.35581099999999,
+          "maxMs": 35.35581099999999
+        },
+        "warm": {
+          "samples": 5,
+          "minMs": 14.399245999999948,
+          "p50Ms": 17.912111000000095,
+          "p95Ms": 19.063678999999865,
+          "maxMs": 19.068068999999923
+        }
+      },
+      {
+        "id": "review-bearer-positive",
+        "cold": {
+          "samples": 1,
+          "minMs": 54.74919399999999,
+          "p50Ms": 54.74919399999999,
+          "p95Ms": 54.74919399999999,
+          "maxMs": 54.74919399999999
+        },
+        "warm": {
+          "samples": 5,
+          "minMs": 14.48620400000027,
+          "p50Ms": 17.200810000000274,
+          "p95Ms": 19.11537300000009,
+          "maxMs": 22.41501900000003
+        }
+      },
+      {
+        "id": "review-bearer-negative",
+        "cold": {
+          "samples": 1,
+          "minMs": 72.51779100000002,
+          "p50Ms": 72.51779100000002,
+          "p95Ms": 72.51779100000002,
+          "maxMs": 72.51779100000002
+        },
+        "warm": {
+          "samples": 5,
+          "minMs": 34.01890300000014,
+          "p50Ms": 37.92563999999993,
+          "p95Ms": 47.733138000000054,
+          "maxMs": 72.26152499999989
+        }
+      },
+      {
+        "id": "review-cookie-positive",
+        "cold": {
+          "samples": 1,
+          "minMs": 62.57192699999999,
+          "p50Ms": 62.57192699999999,
+          "p95Ms": 62.57192699999999,
+          "maxMs": 62.57192699999999
+        },
+        "warm": {
+          "samples": 5,
+          "minMs": 15.587082999999893,
+          "p50Ms": 16.63448500000004,
+          "p95Ms": 17.51583000000028,
+          "maxMs": 17.720050999999785
+        }
+      },
+      {
+        "id": "review-cookie-negative",
+        "cold": {
+          "samples": 1,
+          "minMs": 37.85490800000002,
+          "p50Ms": 37.85490800000002,
+          "p95Ms": 37.85490800000002,
+          "maxMs": 37.85490800000002
+        },
+        "warm": {
+          "samples": 5,
+          "minMs": 14.73050000000012,
+          "p50Ms": 16.33785399999988,
+          "p95Ms": 16.95368099999996,
+          "maxMs": 17.5043840000003
+        }
+      },
+      {
+        "id": "review-identity-positive",
+        "cold": {
+          "samples": 1,
+          "minMs": 62.629932,
+          "p50Ms": 62.629932,
+          "p95Ms": 62.629932,
+          "maxMs": 62.629932
+        },
+        "warm": {
+          "samples": 5,
+          "minMs": 14.368390999999974,
+          "p50Ms": 17.069888999999876,
+          "p95Ms": 31.603010999999697,
+          "maxMs": 34.23600699999997
+        }
+      },
+      {
+        "id": "review-identity-negative",
+        "cold": {
+          "samples": 1,
+          "minMs": 97.61650099999997,
+          "p50Ms": 97.61650099999997,
+          "p95Ms": 97.61650099999997,
+          "maxMs": 97.61650099999997
+        },
+        "warm": {
+          "samples": 5,
+          "minMs": 17.101720999999998,
+          "p50Ms": 21.993795999999747,
+          "p95Ms": 26.18714699999964,
+          "maxMs": 31.981568000000152
+        }
+      },
+      {
+        "id": "review-home-positive",
+        "cold": {
+          "samples": 1,
+          "minMs": 47.95075399999999,
+          "p50Ms": 47.95075399999999,
+          "p95Ms": 47.95075399999999,
+          "maxMs": 47.95075399999999
+        },
+        "warm": {
+          "samples": 5,
+          "minMs": 14.62275099999988,
+          "p50Ms": 17.117815999999948,
+          "p95Ms": 23.772328000000016,
+          "maxMs": 32.49863699999969
+        }
+      },
+      {
+        "id": "review-home-negative",
+        "cold": {
+          "samples": 1,
+          "minMs": 40.61399,
+          "p50Ms": 40.61399,
+          "p95Ms": 40.61399,
+          "maxMs": 40.61399
+        },
+        "warm": {
+          "samples": 5,
+          "minMs": 14.49242200000026,
+          "p50Ms": 17.36427900000035,
+          "p95Ms": 18.966637999999875,
+          "maxMs": 27.32289700000001
+        }
+      },
+      {
+        "id": "review-host-positive",
+        "cold": {
+          "samples": 1,
+          "minMs": 58.314009999999996,
+          "p50Ms": 58.314009999999996,
+          "p95Ms": 58.314009999999996,
+          "maxMs": 58.314009999999996
+        },
+        "warm": {
+          "samples": 5,
+          "minMs": 16.305553000000145,
+          "p50Ms": 19.12460699999974,
+          "p95Ms": 20.351528000000144,
+          "maxMs": 20.64385200000015
+        }
+      },
+      {
+        "id": "review-host-negative",
+        "cold": {
+          "samples": 1,
+          "minMs": 45.749142000000006,
+          "p50Ms": 45.749142000000006,
+          "p95Ms": 45.749142000000006,
+          "maxMs": 45.749142000000006
+        },
+        "warm": {
+          "samples": 5,
+          "minMs": 14.716545000000224,
+          "p50Ms": 16.23442900000009,
+          "p95Ms": 18.125207000000046,
+          "maxMs": 19.282889999999497
+        }
+      },
+      {
+        "id": "review-financial-positive",
+        "cold": {
+          "samples": 1,
+          "minMs": 76.417249,
+          "p50Ms": 76.417249,
+          "p95Ms": 76.417249,
+          "maxMs": 76.417249
+        },
+        "warm": {
+          "samples": 5,
+          "minMs": 13.966480999999476,
+          "p50Ms": 21.572087999999894,
+          "p95Ms": 24.286434999999983,
+          "maxMs": 34.4870920000003
+        }
+      },
+      {
+        "id": "review-financial-negative",
+        "cold": {
+          "samples": 1,
+          "minMs": 35.536204,
+          "p50Ms": 35.536204,
+          "p95Ms": 35.536204,
+          "maxMs": 35.536204
+        },
+        "warm": {
+          "samples": 5,
+          "minMs": 13.991995000000315,
+          "p50Ms": 17.88067299999966,
+          "p95Ms": 18.292410000000018,
+          "maxMs": 19.839216000000306
+        }
+      },
+      {
+        "id": "review-hash-negative",
+        "cold": {
+          "samples": 1,
+          "minMs": 35.663099999999986,
+          "p50Ms": 35.663099999999986,
+          "p95Ms": 35.663099999999986,
+          "maxMs": 35.663099999999986
+        },
+        "warm": {
+          "samples": 5,
+          "minMs": 13.701732999999876,
+          "p50Ms": 17.16007300000001,
+          "p95Ms": 17.37088500000027,
+          "maxMs": 25.67764100000022
+        }
+      },
+      {
+        "id": "review-version-negative",
+        "cold": {
+          "samples": 1,
+          "minMs": 51.18338,
+          "p50Ms": 51.18338,
+          "p95Ms": 51.18338,
+          "maxMs": 51.18338
+        },
+        "warm": {
+          "samples": 5,
+          "minMs": 19.784021999999823,
+          "p50Ms": 20.709993000000395,
+          "p95Ms": 31.52544399999988,
+          "maxMs": 36.59931899999992
+        }
+      },
+      {
+        "id": "review-lockfile-negative",
+        "cold": {
+          "samples": 1,
+          "minMs": 35.75086300000001,
+          "p50Ms": 35.75086300000001,
+          "p95Ms": 35.75086300000001,
+          "maxMs": 35.75086300000001
+        },
+        "warm": {
+          "samples": 5,
+          "minMs": 14.40077199999996,
+          "p50Ms": 15.948239999999714,
+          "p95Ms": 16.27747399999953,
+          "maxMs": 21.193481000000247
+        }
+      },
+      {
+        "id": "review-unicode-seam",
+        "cold": {
+          "samples": 1,
+          "minMs": 83.705106,
+          "p50Ms": 83.705106,
+          "p95Ms": 83.705106,
+          "maxMs": 83.705106
+        },
+        "warm": {
+          "samples": 5,
+          "minMs": 38.30498799999987,
+          "p50Ms": 39.80104100000062,
+          "p95Ms": 44.05625599999985,
+          "maxMs": 48.67718700000023
+        }
+      },
+      {
+        "id": "review-json-bank",
+        "cold": {
+          "samples": 1,
+          "minMs": 50.45378299999999,
+          "p50Ms": 50.45378299999999,
+          "p95Ms": 50.45378299999999,
+          "maxMs": 50.45378299999999
+        },
+        "warm": {
+          "samples": 5,
+          "minMs": 14.117439999999988,
+          "p50Ms": 17.189690999999584,
+          "p95Ms": 17.23449100000107,
+          "maxMs": 17.294254999998884
+        }
+      },
+      {
+        "id": "review-json-escaped",
+        "cold": {
+          "samples": 1,
+          "minMs": 58.477742000000006,
+          "p50Ms": 58.477742000000006,
+          "p95Ms": 58.477742000000006,
+          "maxMs": 58.477742000000006
+        },
+        "warm": {
+          "samples": 5,
+          "minMs": 18.701352999998562,
+          "p50Ms": 20.705724000001283,
+          "p95Ms": 22.21216800000002,
+          "maxMs": 23.810112999999546
+        }
+      },
+      {
+        "id": "review-json-lookalike",
+        "cold": {
+          "samples": 1,
+          "minMs": 38.28241299999999,
+          "p50Ms": 38.28241299999999,
+          "p95Ms": 38.28241299999999,
+          "maxMs": 38.28241299999999
+        },
+        "warm": {
+          "samples": 5,
+          "minMs": 13.996816000000763,
+          "p50Ms": 15.386763999998948,
+          "p95Ms": 17.370913999999175,
+          "maxMs": 20.694813000000067
+        }
+      },
+      {
+        "id": "review-assignment-spaces",
+        "cold": {
+          "samples": 1,
+          "minMs": 53.177081000000015,
+          "p50Ms": 53.177081000000015,
+          "p95Ms": 53.177081000000015,
+          "maxMs": 53.177081000000015
+        },
+        "warm": {
+          "samples": 5,
+          "minMs": 16.103673999999955,
+          "p50Ms": 16.875271999999313,
+          "p95Ms": 17.310225999999602,
+          "maxMs": 17.46190800000113
+        }
+      },
+      {
+        "id": "review-assignment-negative",
+        "cold": {
+          "samples": 1,
+          "minMs": 37.066102,
+          "p50Ms": 37.066102,
+          "p95Ms": 37.066102,
+          "maxMs": 37.066102
+        },
+        "warm": {
+          "samples": 5,
+          "minMs": 13.804315000001225,
+          "p50Ms": 16.54246400000011,
+          "p95Ms": 18.195998000001055,
+          "maxMs": 20.76696499999889
+        }
+      },
+      {
+        "id": "review-payload-controls",
+        "cold": {
+          "samples": 1,
+          "minMs": 61.354851999999994,
+          "p50Ms": 61.354851999999994,
+          "p95Ms": 61.354851999999994,
+          "maxMs": 61.354851999999994
+        },
+        "warm": {
+          "samples": 5,
+          "minMs": 18.222726999998486,
+          "p50Ms": 22.29718700000012,
+          "p95Ms": 23.18413700000019,
+          "maxMs": 26.83939400000054
+        }
+      }
+    ]
+  }
+}

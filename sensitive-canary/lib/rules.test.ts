@@ -377,7 +377,7 @@ it("detects coordinate pairs but not bare number pairs", () => {
 it("rejects prose lookalikes for inventory rules", () => {
     for (const [text, id] of [
       [" Lake House retreat", "pii-labeled-name"],
-      ["username = __CANARY_USER_2__", "pii-labeled-name"],
+      ["username = ordinary_handle", "pii-labeled-name"],
       ["took 2 Road trips", "pii-street-address"],
       ["version 8159 track", "pii-bank-account-prefix"],
     ] as const) {
@@ -400,7 +400,7 @@ it("rejects prose lookalikes for inventory rules", () => {
 describe("bounded scanning", () => {
   it("matches unchunked results on normal texts", () => {
     for (const text of [
-      "deploy to __CANARY_HOST_1__ tonight",
+      "deploy to fixture.lan tonight",
       `api_key = "${"K7mQ2vX9pL4sW8eR1tY6uI3oP5aS0dF9gH2jK6"}" and host 10.1.2.3 up`,
       "nothing sensitive here, just prose about lunch",
       "contact bob@example.com about it",

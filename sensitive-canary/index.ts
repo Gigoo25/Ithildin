@@ -37,7 +37,10 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import path from "node:path";
-import { type Finding, mergeRanges, scanWindows, SCAN_WINDOW_OVERLAP } from "./lib/rules.ts";
+import { type Finding, type LocatedFinding, mergeRanges, scanWindows, SCAN_WINDOW_OVERLAP, withScanBudget, assertScanBudget } from "./lib/rules.ts";
+import { planRedaction } from "./lib/redaction-spans.ts";
+import { reportRedaction } from "./lib/redaction-audit.ts";
+import { assignmentEdits, inspectDocument } from "./lib/structured-text.ts";
 import {
   applyAllowTags,
   dedupeFindings,
@@ -80,12 +83,12 @@ function isTextChunk(value: unknown): value is TextChunk {
 
 // Bounded memo so the context handler does not re-scan the whole transcript on
 // every API call. Keyed by exact text.
-const SCAN_CACHE = new Map<string, { findings: Finding[]; trips: Array<{ start: number; end: number }> }>();
+const SCAN_CACHE = new Map<string, { findings: LocatedFinding[]; trips: Array<{ start: number; end: number }> }>();
 // Budget the memo by bytes, not entries: 512 × 2 MB keys is a gigabyte of RAM.
 const SCAN_CACHE_MAX_BYTES = 32_000_000;
 let scanCacheBytes = 0;
 
-function cachedScan(text: string): { findings: Finding[]; trips: Array<{ start: number; end: number }> } {
+function cachedScan(text: string): { findings: LocatedFinding[]; trips: Array<{ start: number; end: number }> } {
   const hit = SCAN_CACHE.get(text);
   if (hit) return hit;
   const found = scanWindows(text);
@@ -134,6 +137,7 @@ function storeSynthetic(value: string, synthetic: string): void {
 // so repeated values keep their identity. Secrets keep realistic
 // shape-preserving synthesis.
 function tokenTagFor(ruleId: string): string {
+  if (ruleId === "unchanged-secret") return "SECRET";
   if (/ip/i.test(ruleId)) return "IP";
   if (/host/i.test(ruleId)) return "HOST";
   if (/user|login|owner/i.test(ruleId)) return "USER";
@@ -174,6 +178,9 @@ function syntheticValue(value: string): string {
       return char;
     })
     .join("");
+  // Punctuation-only credentials (or random short-value collisions) must not
+  // pass through unchanged merely to preserve their shape.
+  if (synthetic === value) return syntheticToken("unchanged-secret", value);
   storeSynthetic(value, synthetic);
   return synthetic;
 }
@@ -212,12 +219,7 @@ function recordLedger(findings: Finding[]): void {
   }
 }
 
-function ledgerPath(): string | undefined {
-  const sessionFile = process.env.PI_SESSION_FILE;
-  return sessionFile ? `${sessionFile}.canary-ledger.json` : undefined;
-}
-
-function flushLedger(): void {
+function flushLedger(sessionFile: string | undefined): void {
   if (LEDGER.size === 0) return;
   const byRule: Record<string, { category: string; count: number }> = {};
   let totalHits = 0;
@@ -226,10 +228,9 @@ function flushLedger(): void {
     totalHits += entry.count;
   }
   LEDGER.clear();
-  const dest = ledgerPath();
-  if (!dest) return;
+  if (!sessionFile) return;
   try {
-    writeFileSync(dest, `${JSON.stringify({ updatedAt: new Date().toISOString(), totalHits, byRule })}\n`, { mode: 0o600 });
+    writeFileSync(`${sessionFile}.canary-ledger.json`, `${JSON.stringify({ updatedAt: new Date().toISOString(), totalHits, byRule })}\n`, { mode: 0o600 });
   } catch {
     // Audit must never break the agent.
   }
@@ -254,29 +255,82 @@ function applyTripMarkers(text: string, trips: Array<{ start: number; end: numbe
 }
 
 function redactText(text: string, allowTags: Set<string> = new Set()): { text: string; hits: number } {
+  const sourceLength = text.length;
+  const cookieEdits: Array<{start:number;end:number;replacementLength:number}> = [];
+  const toOriginal = (range: {start:number;end:number}) => {
+    const project = (at:number, end:boolean) => {
+      let delta=0;
+      for(const edit of cookieEdits) {
+        const left=edit.start+delta, right=left+edit.replacementLength;
+        if(at < left || (at === left && !end)) break;
+        if(at < right || (at === right && end)) return end ? edit.end : edit.start;
+        delta += edit.replacementLength-(edit.end-edit.start);
+      }
+      return at-delta;
+    };
+    return {start:project(range.start,false),end:project(range.end,true)};
+  };
   let cookieHits = 0;
   if (!allowTags.has("secret")) {
-    const cookieResult = redactCookieHeaders(text, syntheticValue, isSyntheticValue);
+    const cookieResult = redactCookieHeaders(text, syntheticValue, isSyntheticValue, (start,end,replacementLength)=>cookieEdits.push({start,end,replacementLength}));
     text = cookieResult.text;
     cookieHits = cookieResult.hits;
   }
   const { findings: raw, trips } = cachedScan(text);
-  const findings = applyAllowTags(
-    dedupeFindings(raw.filter(
-      (finding) => !isSyntheticValue(finding.secretValue),
-    )),
-    allowTags,
+  const allowed = allowTags.has("all") ? [] : raw.filter((f) => !isSyntheticValue(f.secretValue));
+  // Structured document edits join the same renderer; filter them by the
+  // same allow-tags before planning so an allowed category cannot exempt an
+  // overlapping forbidden secret.
+  const omitted = () => {
+    reportRedaction({ sourceLength, detections: [], replacements: [], omissions: [{start:0,end:sourceLength}], coordinateSystem: "original" });
+    return { text: `[sensitive-canary: omitted ${text.length} chars (scan budget exceeded or incomplete document inspection)]`, hits: cookieHits + 1 };
+  };
+  const document = inspectDocument(text);
+  if (document.status === "incomplete") return omitted();
+  let extra: LocatedFinding[];
+  try {
+    extra = allowTags.has("all") ? [] : [...document.findings, ...(document.status === "json" ? [] : assignmentEdits(text))]
+      .filter((f) => !isSyntheticValue(f.secretValue) && !isSyntheticValue(f.secretValue.startsWith('"') ? JSON.parse(f.secretValue) : f.secretValue));
+  } catch { return omitted(); }
+  const findings = applyAllowTags([...allowed, ...extra], allowTags) as LocatedFinding[];
+  const uniqueFindings = dedupeFindings(findings);
+  recordLedger(uniqueFindings);
+  const expandedTrips = mergeRanges(
+    trips.map((trip) => ({
+      start: Math.max(0, trip.start - SCAN_WINDOW_OVERLAP),
+      end: Math.min(text.length, trip.end + SCAN_WINDOW_OVERLAP),
+    })),
   );
-  recordLedger(findings);
-  if (trips.length > 0) text = applyTripMarkers(text, trips);
-  for (const finding of findings) {
-    const replacement =
-      finding.category === "pii"
-        ? syntheticToken(finding.ruleId, finding.secretValue)
-        : syntheticValue(finding.secretValue);
-    text = text.replaceAll(finding.secretValue, replacement);
+  const planned = planRedaction({
+    text,
+    findings,
+    trips: expandedTrips,
+    scalars: document.scalars,
+    checkBudget: assertScanBudget,
+    replacementFor: (finding) =>
+      (finding as LocatedFinding & { jsonKind?: string }).jsonKind || finding.ruleId.startsWith("structured-")
+        ? structuredReplacement(finding)
+        : finding.category === "pii"
+          ? syntheticToken(finding.ruleId, finding.secretValue)
+          : syntheticValue(finding.secretValue),
+  });
+  if (document.status === "json") {
+    try { JSON.parse(planned.text); assertScanBudget(); } catch { return omitted(); }
   }
-  return { text, hits: cookieHits + findings.length + trips.length };
+  reportRedaction({ sourceLength, detections: [...cookieEdits.map(({start,end})=>({start,end})), ...findings.map(toOriginal)], replacements: [...cookieEdits.map(({start,end})=>({start,end})), ...planned.edits.filter(e=>!e.replacement.startsWith("[sensitive-canary: omitted")).map(toOriginal)], omissions: planned.edits.filter(e=>e.replacement.startsWith("[sensitive-canary: omitted")).map(toOriginal), coordinateSystem: "original" });
+  return { text: planned.text, hits: cookieHits + uniqueFindings.length + trips.length + (planned.text !== text && uniqueFindings.length === 0 && trips.length === 0 ? 1 : 0) };
+}
+
+function structuredReplacement(finding: LocatedFinding): string {
+  const kind = (finding as { jsonKind?: string }).jsonKind;
+  const value = kind === "json-string" ? JSON.parse(finding.secretValue) as string : finding.secretValue;
+  const synthetic =
+    finding.category === "pii"
+      ? syntheticToken(finding.ruleId, value)
+      : syntheticValue(value);
+  if (kind === "json-string") return JSON.stringify(synthetic);
+  if (kind === "json-number") return JSON.stringify(synthetic);
+  return synthetic;
 }
 
 // Applies redactText to every text chunk. Shared by the ingress (context)
@@ -457,7 +511,7 @@ function withSynthesisNotice(content: readonly unknown[]): unknown[] {
   ) {
     return [...content];
   }
-  return [...content, { type: "text", text: `\n\n${SYNTHESIS_NOTICE}` }];
+  return [...content, { type: "text", text: `\n\n${SYNTHESIS_NOTICE} Sensitive numeric document fields may be rendered as strings; document schema types are not preserved.` }];
 }
 
 function latestAllowTags(messages: Message[]): Set<string> {
@@ -487,13 +541,13 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
   let pendingWarningCount = 0;
   let allowTags = new Set<string>();
 
-  pi.events.on("sensitive-canary:sanitize-stored-text", (event: { text: string; certified: boolean }) => {
+  pi.events.on("sensitive-canary:sanitize-stored-text", (event: { text: string; certified: boolean }) => withScanBudget(() => {
     if (typeof event.text !== "string") return;
     event.text = event.text.length > MAX_SCAN_BYTES
       ? syntheticValue(event.text)
       : redactText(event.text).text;
     event.certified = true;
-  });
+  }));
 
   function recordWarning(hits: number): void {
     pendingWarningCount += hits;
@@ -516,7 +570,9 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
 
   pi.on("agent_end", (_event, ctx) => {
     flushWarning(ctx);
-    flushLedger();
+    // PI_SESSION_FILE exists only in shell-tool children (or may be inherited
+    // from a parent agent). Resolve the active session at flush time instead.
+    flushLedger(ctx.sessionManager.getSessionFile());
   });
 
   pi.on("before_agent_start", (event) => {
@@ -540,7 +596,7 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
   });
 
   // ── ingress: user-authored text, before it reaches the provider ───────────
-  pi.on("context", async (event, ctx) => {
+  pi.on("context", (event, ctx) => withScanBudget(() => {
     const all = event.messages as readonly unknown[] as Message[];
     allowTags = latestAllowTags(all);
     if (allowTags.has("all")) return;
@@ -583,20 +639,20 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
     if (total === 0) return;
     recordWarning(total);
     return { messages };
-  });
+  }));
 
   // ── final egress: scan the exact provider payload ─────────────────────────
-  pi.on("before_provider_request", async (event, ctx) => {
+  pi.on("before_provider_request", (event, ctx) => withScanBudget(() => {
     if (allowTags.has("all")) return;
     const { value, hits } = redactValue(event.payload, allowTags);
     if (hits === 0) return;
 
     recordWarning(hits);
     return value;
-  });
+  }));
 
   // ── egress: synthesize sensitive values before they enter the transcript ─
-  pi.on("tool_result", async (event, ctx) => {
+  pi.on("tool_result", (event, ctx) => withScanBudget(() => {
     const input = event.input ?? {};
     const command = String(input.command ?? "");
     const targets =
@@ -614,7 +670,7 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
 
     recordWarning(hits);
     return { content: finalContent };
-  });
+  }));
   // ── persistence: store the redacted view, never the original ────────────
   // The context/tool_result handlers patch provider-bound copies; session
   // entries keep the originals, and compaction re-sends those originals
@@ -623,7 +679,7 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
   // provider saw is all compaction can re-send. Allow-tags behave exactly
   // as on the wire, so approved values keep working across turns.
   // Tool-call argument chunks are left alone: execution already ran on them.
-  pi.on("message_end", async (event) => {
+  pi.on("message_end", (event) => withScanBudget(() => {
     const message = event.message as { role?: string; content?: unknown; details?: unknown };
     if (!message || typeof message !== "object") return;
     const tags =
@@ -664,7 +720,7 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
     if (hits === 0) return;
     recordWarning(hits);
     return { message: { ...message, content, details } };
-  });
+  }));
   pi.on("session_shutdown", () => {
     allowTags.clear();
     clearCaches();
