@@ -320,7 +320,11 @@ function redactText(text: string, allowTags: Set<string> = new Set()): { text: s
     extra = allowTags.has("all") ? [] : [...document.findings, ...(document.status === "json" ? [] : assignmentEdits(text))]
       .filter((f) => !isSyntheticValue(f.secretValue) && !isSyntheticValue(f.secretValue.startsWith('"') ? JSON.parse(f.secretValue) : f.secretValue));
   } catch { return omitted(); }
-  const findings = applyAllowTags([...allowed, ...extra], allowTags) as LocatedFinding[];
+  const boilerplate = boilerplateSpans(text);
+  const intersectsBoilerplate = (finding: { start: number; end: number }): boolean =>
+    boilerplate.some((span) => finding.start < span.end && span.start < finding.end);
+  const findings = (applyAllowTags([...allowed, ...extra], allowTags) as LocatedFinding[])
+    .filter((finding) => !intersectsBoilerplate(finding));
   const uniqueFindings = dedupeFindings(findings);
   recordLedger(uniqueFindings);
   const expandedTrips = mergeRanges(
@@ -400,6 +404,46 @@ function redactCookieField(
   return { value: scanned.text, hits: cookieResult.hits + scanned.hits };
 }
 
+// Provider-issued chain references must never be rewritten: replaying a
+// redacted reasoning id or previous_response_id fails closed at the
+// provider (400 invalid reasoning item id). The values are opaque routing
+// tokens, not content, so only the exact reference keys pass — never the
+// surrounding text. Reasoning-item ids are scoped to their item type so a
+// customer `id` field elsewhere in the payload still scans normally.
+const CHAIN_REFERENCE_PARENT_TYPES: Record<string, true> = {
+  reasoning: true,
+  compaction: true,
+  function_call: true,
+  function_call_output: true,
+  // Completions-API call items (assistant tool_calls entries, kimi custom
+  // calls) route by the same rules as Responses function calls.
+  function: true,
+  custom: true,
+};
+
+function isChainReference(key: string | undefined, parent?: Record<string, unknown>): boolean {
+  // call_id / tool_call_id route tool calls to their results; rewriting one
+  // (or bloating it with an omission marker past provider length limits)
+  // misroutes or 400s the whole request. Both are exclusively routing keys
+  // on either wire API, as is previous_response_id.
+  if (key === "previous_response_id" || key === "call_id" || key === "tool_call_id") return true;
+  // A call item's `name` routes with its id: redact it and the call can no
+  // longer dispatch. Scoped to call shapes (id/arguments siblings) so a CRM
+  // `name` field elsewhere still scans normally.
+  if (
+    key === "name" &&
+    parent !== undefined &&
+    ("call_id" in parent || "tool_call_id" in parent || "arguments" in parent)
+  ) {
+    return true;
+  }
+  if (key !== "id" || parent === undefined) return false;
+  if (typeof parent.type === "string" && CHAIN_REFERENCE_PARENT_TYPES[parent.type] === true) return true;
+  // Persisted details mirror provider objects without their type tag:
+  // an id next to encrypted content is a chain reference, not content.
+  return "encrypted_content" in parent || "encryptedContent" in parent;
+}
+
 function redactValue(
   value: unknown,
   allowTags: Set<string>,
@@ -407,6 +451,9 @@ function redactValue(
   parent?: Record<string, unknown>,
 ): { value: unknown; hits: number } {
   if (key !== undefined && (OPAQUE_PROVIDER_FIELDS[key] === true || PROTOCOL_PASSTHROUGH_FIELDS[key] === true)) {
+    return { value, hits: 0 };
+  }
+  if (isChainReference(key, parent)) {
     return { value, hits: 0 };
   }
   if (typeof value === "string") {
@@ -486,6 +533,34 @@ function commandReadsEnv(command: string): boolean {
     );
 }
 
+// The local canary inventory holds real PII used as match patterns. The model
+// must never read it back: exfiltrated inventory values would dodge the very
+// rules built from them. Covers the default location, $SENSITIVE_CANARY_CONFIG,
+// and ~/$HOME spellings. The shipped inert template stays readable.
+function expandHomePrefix(filePath: string): string {
+  const home = process.env.HOME ?? "";
+  if (filePath.startsWith("~/")) return `${home}${filePath.slice(1)}`;
+  if (home && filePath.startsWith("$HOME/")) return `${home}${filePath.slice(5)}`;
+  if (home && filePath.startsWith("${HOME}/")) return `${home}${filePath.slice(7)}`;
+  return filePath;
+}
+
+function isCanaryInventory(filePath: string): boolean {
+  if (!filePath) return false;
+  const expanded = expandHomePrefix(filePath.split(/[?:]/)[0] ?? filePath);
+  if (expanded.endsWith("/.config/sensitive-canary/config.json")) return true;
+  const override = process.env.SENSITIVE_CANARY_CONFIG;
+  return override !== undefined && override !== "" && expanded === override;
+}
+
+function commandReadsCanaryInventory(command: string): boolean {
+  return command
+    .split(/[\s|;&<>]+/)
+    .some((token) =>
+      isCanaryInventory(token.replace(/^["'`()$]+|["'`()]+$/g, "")),
+    );
+}
+
 // Candidate path inputs across Pi's file-touching tools.
 function candidatePaths(input: Record<string, unknown>): string[] {
   const out: string[] = [];
@@ -528,8 +603,34 @@ function synthesizeEnvChunks(content: readonly unknown[]): {
 const SYNTHESIS_NOTICE =
   "[sensitive-canary] Synthesized placeholders above are not real data — use only as labels. Never pass to tools, use as paths/commands/identifiers, or reverse.";
 
+const SYNTHESIS_NOTICE_SUFFIX =
+  " Sensitive numeric document fields may be rendered as strings; document schema types are not preserved.";
+
 const SYNTHESIS_SYSTEM_REMINDER =
-  "SENSITIVE-CANARY: Sensitive values can be synthetic placeholders. These placeholders are not real credentials, identities, contact details, or production data. Preserve only their structure and relationships. Never pass a placeholder to a tool or attempt to reverse it. If one blocks the task, stop and ask the user to re-run with [allow-pii].";
+  "SENSITIVE-CANARY: Sensitive values can be synthetic placeholders. These placeholders are not real credentials, identities, contact details, or production data. Preserve only their structure and relationships. Never pass a placeholder to a tool or attempt to reverse it. Never cd into, read, or execute a path containing a placeholder: resolve the dynamic segment at runtime ($HOME, $(id -un), positional selection) instead of reusing redacted text. If one blocks the task, stop and ask the user to re-run with [allow-pii].";
+
+// Canary's own boilerplate must never be redacted: a user inventory word
+// colliding with it (e.g. a case-insensitive acronym matching ordinary
+// prose in the notice) would otherwise rewrite the notice, the system
+// reminder, and every message carrying them — corrupting guidance and
+// inflating warnings. Findings intersecting these fixed strings are dropped
+// at the single choke point all interception paths share. Trip markers still
+// fire there: fail-closed omission stays honest even inside boilerplate.
+const BOILERPLATE_MARKERS = [SYNTHESIS_NOTICE, SYNTHESIS_NOTICE_SUFFIX, SYNTHESIS_SYSTEM_REMINDER];
+
+function boilerplateSpans(text: string): Array<{ start: number; end: number }> {
+  const spans: Array<{ start: number; end: number }> = [];
+  for (const marker of BOILERPLATE_MARKERS) {
+    let from = 0;
+    while (true) {
+      const at = text.indexOf(marker, from);
+      if (at < 0) break;
+      spans.push({ start: at, end: at + marker.length });
+      from = at + 1;
+    }
+  }
+  return spans;
+}
 
 function withSynthesisNotice(content: readonly unknown[]): unknown[] {
   if (
@@ -539,7 +640,7 @@ function withSynthesisNotice(content: readonly unknown[]): unknown[] {
   ) {
     return [...content];
   }
-  return [...content, { type: "text", text: `\n\n${SYNTHESIS_NOTICE} Sensitive numeric document fields may be rendered as strings; document schema types are not preserved.` }];
+  return [...content, { type: "text", text: `\n\n${SYNTHESIS_NOTICE}${SYNTHESIS_NOTICE_SUFFIX}` }];
 }
 
 function latestAllowTags(messages: Message[]): Set<string> {
@@ -547,11 +648,40 @@ function latestAllowTags(messages: Message[]): Set<string> {
   return resolveTagPriority(latestUser ? userTypedText(latestUser) : "").effectiveAllow;
 }
 
-function blocksSecretAccess(toolName: string, command: string, targets: string[], allowTags: Set<string>): boolean {
-  if (allowTags.has("secret")) return false;
+// Placeholders are fake by design, so executing them always fails confusingly
+// (no such path, user, or host). Fail fast with recovery guidance instead.
+// The tag maps back to the allow-tag category, exactly like tokenTagFor.
+const PLACEHOLDER_RE = /__CANARY_([A-Z]+)_\d+__/g;
+
+function placeholderViolations(input: unknown, allowTags: Set<string>): string | undefined {
+  if (allowTags.has("all")) return;
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(input ?? {});
+  } catch {
+    return;
+  }
+  for (const match of serialized.matchAll(PLACEHOLDER_RE)) {
+    const category = match[1] === "SECRET" ? "secret" : "pii";
+    if (!allowTags.has(category)) return match[0];
+  }
+  return;
+}
+
+function blocksSecretAccess(toolName: string, command: string, targets: string[], allowTags: Set<string>): boolean {  if (allowTags.has("secret")) return false;
   return (
     (toolName === "bash" && (commandReadsEnv(command) || commandSendsCookies(command))) ||
     targets.some(isEnvFile)
+  );
+}
+
+// Inventory reads are PII-gated rather than secret-gated: the file holds
+// match patterns, and [allow-pii]/[allow-all] is the matching bypass.
+function blocksInventoryAccess(toolName: string, command: string, targets: string[], allowTags: Set<string>): boolean {
+  if (allowTags.has("pii") || allowTags.has("all")) return false;
+  return (
+    (toolName === "bash" && commandReadsCanaryInventory(command)) ||
+    targets.some(isCanaryInventory)
   );
 }
 
@@ -672,6 +802,19 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
       return {
         block: true,
         reason: "sensitive-canary: refusing direct secret access or transmission. Add [allow-secrets] or [allow-all] to the current user prompt to bypass this check.",
+      };
+    }
+    if (blocksInventoryAccess(event.toolName, command, targets, allowTags)) {
+      return {
+        block: true,
+        reason: "sensitive-canary: refusing to read the local PII inventory — its values would dodge the rules built from them. Add [allow-pii] or [allow-all] to the current user prompt to bypass this check.",
+      };
+    }
+    const placeholder = placeholderViolations(event.input, allowTags);
+    if (placeholder !== undefined) {
+      return {
+        block: true,
+        reason: `sensitive-canary: ${placeholder} is a synthetic placeholder, not a real path or identifier — the call cannot succeed with it. Resolve the real value at runtime ($HOME, $(id -un), positional selection) instead of reusing redacted text. Add [allow-pii] or [allow-all] to the current user prompt to bypass this check.`,
       };
     }
   });

@@ -489,6 +489,23 @@ describe("sensitive-canary port", () => {
     ).toBeUndefined();
   });
 
+  it("blocks reads of the local PII inventory", async () => {
+    const inv = "~/.config/sensitive-canary/config.json";
+    expect(await handlers.tool_call({ toolName: "read", input: { path: inv } })).toMatchObject({ block: true });
+    expect((await handlers.tool_call({ toolName: "read", input: { path: inv } }) as { reason: string }).reason).toContain("PII inventory");
+    expect(await handlers.tool_call({ toolName: "bash", input: { command: `cat ${inv}` } })).toMatchObject({ block: true });
+    const homeAbs = `${process.env.HOME}/.config/sensitive-canary/config.json`;
+    expect(await handlers.tool_call({ toolName: "read", input: { path: homeAbs } })).toMatchObject({ block: true });
+    // Inert shipped template and fake-only spec stay readable.
+    expect(await handlers.tool_call({ toolName: "read", input: { path: "home-manager/config/pi/extensions/sensitive-canary/user-config.example.json" } })).toBeUndefined();
+    expect(await handlers.tool_call({ toolName: "read", input: { path: "~/.config/sensitive-canary/CUSTOMER-RULES-SPEC.md" } })).toBeUndefined();
+  });
+
+  it("lets allow-pii bypass the inventory block", async () => {
+    await handlers.context({ messages: [{ role: "user", content: "[allow-pii]\nshow config" }] }, ctx);
+    expect(await handlers.tool_call({ toolName: "read", input: { path: "~/.config/sensitive-canary/config.json" } })).toBeUndefined();
+  });
+
   it("blocks sensitive env reads before execution", async () => {
     expect(
       await handlers.tool_call({ toolName: "bash", input: { command: "head < .env" } }),
@@ -691,5 +708,126 @@ describe("sensitive-canary port", () => {
       noCanaryFlag = false;
       await handlers.session_start({}, { ...ctx, sessionManager: { getBranch: () => [], getSessionFile: () => undefined } });
     }
+  });
+
+  it("blocks placeholders passed to tools with recovery guidance", async () => {
+    const blocked = await handlers.tool_call({ toolName: "bash", input: { command: "ls /home/__CANARY_USER_9__/project" } });
+    expect(blocked).toMatchObject({ block: true });
+    expect(blocked.reason).toContain("__CANARY_USER_9__");
+    expect(blocked.reason).toContain("$HOME");
+    expect(await handlers.tool_call({ toolName: "read", input: { path: "/home/__CANARY_USER_9__/notes.md" } })).toMatchObject({ block: true });
+    expect(await handlers.tool_call({ toolName: "bash", input: { command: "ls ~/project" } })).toBeUndefined();
+  });
+
+  it("lets allow tags bypass the placeholder guard per category", async () => {
+    await handlers.context({ messages: [{ role: "user", content: "[allow-pii]\ncheck paths" }] }, ctx);
+    expect(await handlers.tool_call({ toolName: "bash", input: { command: "ls /home/__CANARY_USER_9__/project" } })).toBeUndefined();
+    // SECRET-tagged placeholders still need their own category.
+    expect(await handlers.tool_call({ toolName: "bash", input: { command: "echo __CANARY_SECRET_9__" } })).toMatchObject({ block: true });
+    await handlers.context({ messages: [{ role: "user", content: "[allow-all]\ncheck all" }] }, ctx);
+    expect(await handlers.tool_call({ toolName: "bash", input: { command: "echo __CANARY_SECRET_9__" } })).toBeUndefined();
+  });
+
+  it("passes provider chain references through even when a rule matches them", async () => {
+    // A rule-shaped value in a reasoning id or previous_response_id must
+    // survive: the provider rejects redacted chain references (400). The
+    // 11070-shaped value below is synthetic fixture data, not a real id.
+    const chainId = "1107046800026";
+    const res = await handlers.before_provider_request(
+      {
+        payload: {
+          previous_response_id: chainId,
+          input: [
+            { type: "reasoning", id: chainId, encrypted_content: "opaque" },
+            { type: "message", role: "user", text: `ref ${chainId}` },
+          ],
+        },
+      },
+      ctx,
+    );
+    expect(res.previous_response_id).toBe(chainId);
+    expect(res.input[0].id).toBe(chainId);
+    expect(res.input[0].encrypted_content).toBe("opaque");
+    // Same value outside a chain reference still scans.
+    expect(res.input[1].text).not.toContain(chainId);
+  });
+
+  it("preserves function call routing fields when the scan budget is exhausted", async () => {
+    // Starved budgets mark content with omission text; routing keys must
+    // stay byte-identical or the provider 400s (call_id length <= 64).
+    // Needs no user rules, so this test is hermetic.
+    const callId = "call_abc123def456ghi789jkl012mno345pq";
+    const payload = {
+      input: [
+        { type: "function_call", id: "fc_123", call_id: callId, name: "bash", arguments: "{\"command\":\"ls\"}" },
+        { type: "function_call_output", call_id: callId, output: "file1\nfile2" },
+      ],
+    };
+    beginScanBudget(0);
+    try {
+      const out = (await handlers.before_provider_request({ payload }, ctx)) ?? payload;
+      const text = JSON.stringify(out);
+      expect(text).toContain(`"call_id":"${callId}"`);
+      expect(text).not.toContain("call_id\":\"[sensitive-canary");
+    } finally {
+      beginScanBudget(null);
+    }
+  });
+
+  it("preserves completions-API routing fields", async () => {
+    // Assistant tool_calls ids, tool_call_id echoes, and the call item name
+    // route execution; only the arguments content still scans.
+    const callId = "call_1107046800026 insects";
+    const payload = {
+      messages: [
+        {
+          role: "assistant",
+          tool_calls: [
+            { id: "call_1107046800026", type: "function", function: { name: "bash", arguments: "{\"command\":\"ref 1107046800026\"}" } },
+          ],
+        },
+        { role: "tool", tool_call_id: "call_1107046800026", content: "ok" },
+      ],
+    };
+    expect(callId.length).toBeGreaterThan(0);
+    const out = (await handlers.before_provider_request({ payload }, ctx)) ?? payload;
+    const text = JSON.stringify(out);
+    expect(text).toContain("call_1107046800026");
+    expect(text).toContain("\"name\":\"bash\"");
+    // The arguments content itself still scans.
+    expect(text).not.toContain("ref 1107046800026");
+    // And an identical value outside routing shapes still scans.
+    const plain = await handlers.before_provider_request({ payload: { record: { id: "1107046800026" } } }, ctx);
+    expect(JSON.stringify(plain)).not.toContain("1107046800026");
+  });
+
+  it("never redacts canary boilerplate even when a user rule matches it", () => {
+    // Isolated fresh process: a user rule colliding with notice wording must
+    // not rewrite canary's own strings, anywhere they travel.
+    const { mkdtempSync, writeFileSync } = require("node:fs");
+    const { tmpdir } = require("node:os");
+    const { join } = require("node:path");
+    const home = mkdtempSync(join(tmpdir(), "canary-boilerplate-"));
+    const file = join(home, "config.json");
+    writeFileSync(file, JSON.stringify({ rules: [{ id: "pii-boilerplate-fixture", description: "fixture", regex: "\\bplaceholders\\b", category: "pii" }], inventory: [] }), { mode: 0o600 });
+    const script = [
+      "const m = await import(" + JSON.stringify(new URL("./index.ts", import.meta.url).href) + ");",
+      "const handlers = {};",
+      "m.default({ on: (n, fn) => { handlers[n] = fn; }, registerFlag(){}, registerCommand(){}, appendEntry(){}, getFlag: () => false, events: { on(){}, emit(){} } });",
+      "const ctx = { sessionManager: { getBranch: () => [], getSessionFile: () => undefined }, ui: { notify(){} } };",
+      "handlers.agent_start({}, ctx);",
+      "const key = \"AKIA\" + \"A\".repeat(16);",
+      "const seeded = await handlers.tool_result({ toolName: \"bash\", content: [{ type: \"text\", text: `k=${key}` }] }, ctx);",
+      "const notice = seeded.content.find((c) => c.type === \"text\" && c.text.includes(\"[sensitive-canary]\")).text;",
+      "const res = await handlers.tool_result({ toolName: \"bash\", content: [{ type: \"text\", text: `k=${key}` }, { type: \"text\", text: notice }] }, ctx);",
+      "const markers = res.content.filter((c) => c.type === \"text\" && c.text.includes(\"[sensitive-canary\]\"));",
+      "const reminder = (await handlers.before_agent_start({ prompt: \"p\", systemPrompt: \"base\" })).systemPrompt;",
+      "const via = await handlers.before_provider_request({ payload: { systemPrompt: reminder } }, ctx);",
+      "const live = await handlers.before_provider_request({ payload: { note: \"user placeholders here\" } }, ctx);",
+      "console.log(JSON.stringify({ markers: markers.length, noticeKept: res.content.some((c) => c.type === \"text\" && c.text === notice), reminderKept: via === undefined, liveFires: live !== undefined && JSON.stringify(live).includes(\"__CANARY_\") }));",
+    ].join("\n");
+    const child = Bun.spawnSync({ cmd: [process.execPath, "-e", script], env: { ...process.env, HOME: home, XDG_CACHE_HOME: join(home, "cache"), SENSITIVE_CANARY_CONFIG: file }, timeout: 30000 });
+    expect(child.exitCode).toBe(0);
+    expect(JSON.parse(child.stdout.toString())).toEqual({ markers: 1, noticeKept: true, reminderKept: true, liveFires: true });
   });
 });
