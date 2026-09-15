@@ -41,7 +41,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { randomBytes } from "node:crypto";
-import { writeFileSync } from "node:fs";
+import { realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { type Finding, type LocatedFinding, mergeRanges, scanWindows, SCAN_WINDOW_OVERLAP, withScanBudget, assertScanBudget } from "./lib/rules.ts";
 import { planRedaction } from "./lib/redaction-spans.ts";
@@ -321,10 +321,10 @@ function redactText(text: string, allowTags: Set<string> = new Set()): { text: s
       .filter((f) => !isSyntheticValue(f.secretValue) && !isSyntheticValue(f.secretValue.startsWith('"') ? JSON.parse(f.secretValue) : f.secretValue));
   } catch { return omitted(); }
   const boilerplate = boilerplateSpans(text);
-  const intersectsBoilerplate = (finding: { start: number; end: number }): boolean =>
-    boilerplate.some((span) => finding.start < span.end && span.start < finding.end);
+  const insideBoilerplate = (finding: { start: number; end: number }): boolean =>
+    boilerplate.some((span) => finding.start >= span.start && finding.end <= span.end);
   const findings = (applyAllowTags([...allowed, ...extra], allowTags) as LocatedFinding[])
-    .filter((finding) => !intersectsBoilerplate(finding));
+    .filter((finding) => !insideBoilerplate(finding));
   const uniqueFindings = dedupeFindings(findings);
   recordLedger(uniqueFindings);
   const expandedTrips = mergeRanges(
@@ -421,27 +421,25 @@ const CHAIN_REFERENCE_PARENT_TYPES: Record<string, true> = {
   custom: true,
 };
 
-function isChainReference(key: string | undefined, parent?: Record<string, unknown>): boolean {
-  // call_id / tool_call_id route tool calls to their results; rewriting one
-  // (or bloating it with an omission marker past provider length limits)
-  // misroutes or 400s the whole request. Both are exclusively routing keys
-  // on either wire API, as is previous_response_id.
-  if (key === "previous_response_id" || key === "call_id" || key === "tool_call_id") return true;
-  // A call item's `name` routes with its id: redact it and the call can no
-  // longer dispatch. Scoped to call shapes (id/arguments siblings) so a CRM
-  // `name` field elsewhere still scans normally.
-  if (
-    key === "name" &&
-    parent !== undefined &&
-    ("call_id" in parent || "tool_call_id" in parent || "arguments" in parent)
-  ) {
-    return true;
+function isChainReference(key: string | undefined, parent: Record<string, unknown> | undefined, location: readonly (string | number)[], providerPayload: boolean): boolean {
+  if (!parent || !key) return false;
+  const at = (...parts: Array<string | null>): boolean => location.length === parts.length &&
+    parts.every((part, i) => part === null ? typeof location[i] === "number" : location[i] === part);
+  // Persisted root details can be a provider object without a type tag.
+  // Never extend this exception to arbitrary nested records.
+  if (!providerPayload) return at("id") && ("encrypted_content" in parent || "encryptedContent" in parent);
+  if (key === "previous_response_id") return at(key);
+  if (at("input", null, key)) {
+    if (key === "id") return typeof parent.type === "string" && CHAIN_REFERENCE_PARENT_TYPES[parent.type] === true;
+    if (key === "call_id") return parent.type === "function_call" || parent.type === "function_call_output";
+    if (key === "name") return parent.type === "function_call";
   }
-  if (key !== "id" || parent === undefined) return false;
-  if (typeof parent.type === "string" && CHAIN_REFERENCE_PARENT_TYPES[parent.type] === true) return true;
-  // Persisted details mirror provider objects without their type tag:
-  // an id next to encrypted content is a chain reference, not content.
-  return "encrypted_content" in parent || "encryptedContent" in parent;
+  if (key === "tool_call_id") return at("messages", null, key) && parent.role === "tool";
+  if (key === "id" && at("messages", null, "tool_calls", null, key)) {
+    return parent.type === "function" || parent.type === "custom";
+  }
+  return key === "name" && (at("messages", null, "tool_calls", null, "function", key) ||
+    at("messages", null, "tool_calls", null, "custom", key));
 }
 
 function redactValue(
@@ -449,11 +447,13 @@ function redactValue(
   allowTags: Set<string>,
   key?: string,
   parent?: Record<string, unknown>,
+  location: readonly (string | number)[] = [],
+  providerPayload = false,
 ): { value: unknown; hits: number } {
   if (key !== undefined && (OPAQUE_PROVIDER_FIELDS[key] === true || PROTOCOL_PASSTHROUGH_FIELDS[key] === true)) {
     return { value, hits: 0 };
   }
-  if (isChainReference(key, parent)) {
+  if (typeof value === "string" && isChainReference(key, parent, location, providerPayload)) {
     return { value, hits: 0 };
   }
   if (typeof value === "string") {
@@ -469,8 +469,8 @@ function redactValue(
   if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return { value, hits: 0 };
   if (Array.isArray(value)) {
     let hits = 0;
-    const out = value.map((item) => {
-      const result = redactValue(item, allowTags);
+    const out = value.map((item, index) => {
+      const result = redactValue(item, allowTags, undefined, undefined, [...location, index], providerPayload);
       hits += result.hits;
       return result.value;
     });
@@ -480,7 +480,7 @@ function redactValue(
     let hits = 0;
     const out = Object.fromEntries(
       Object.entries(value).map(([childKey, item]) => {
-        const result = redactValue(item, allowTags, childKey, value as Record<string, unknown>);
+        const result = redactValue(item, allowTags, childKey, value as Record<string, unknown>, [...location, childKey], providerPayload);
         hits += result.hits;
         return [childKey, result.value];
       }),
@@ -545,20 +545,29 @@ function expandHomePrefix(filePath: string): string {
   return filePath;
 }
 
-function isCanaryInventory(filePath: string): boolean {
-  if (!filePath) return false;
-  const expanded = expandHomePrefix(filePath.split(/[?:]/)[0] ?? filePath);
-  if (expanded.endsWith("/.config/sensitive-canary/config.json")) return true;
-  const override = process.env.SENSITIVE_CANARY_CONFIG;
-  return override !== undefined && override !== "" && expanded === override;
+function canonicalPath(filePath: string, cwd: string): string {
+  const expanded = path.resolve(cwd, expandHomePrefix(filePath.replace(/^@/, "")));
+  try { return realpathSync(expanded); } catch { return expanded; }
 }
 
-function commandReadsCanaryInventory(command: string): boolean {
-  return command
-    .split(/[\s|;&<>]+/)
-    .some((token) =>
-      isCanaryInventory(token.replace(/^["'`()$]+|["'`()]+$/g, "")),
-    );
+function isCanaryInventory(filePath: string, cwd: string): boolean {
+  if (!filePath) return false;
+  const override = process.env.SENSITIVE_CANARY_CONFIG;
+  if (/^\$(?:SENSITIVE_CANARY_CONFIG|\{SENSITIVE_CANARY_CONFIG\})$/.test(filePath)) {
+    if (!override) return false;
+    filePath = override;
+  }
+  const expanded = canonicalPath(filePath.split(/[?:]/)[0] ?? filePath, cwd);
+  const defaultPath = path.join(process.env.HOME ?? "", ".config", "sensitive-canary", "config.json");
+  if (expanded.endsWith("/.config/sensitive-canary/config.json") || expanded === canonicalPath(defaultPath, cwd)) return true;
+  return !!override && expanded === canonicalPath(override, cwd);
+}
+
+function commandReadsCanaryInventory(command: string, cwd: string): boolean {
+  // Retain quoted spaces and variable sigils. This recognizes direct path
+  // spellings, not arbitrary shell expansion or dynamically computed paths.
+  const tokens = command.match(/(?:"[^"\n]*"|'[^'\n]*'|[^\s|;&<>"'])+/g) ?? [];
+  return tokens.some((token) => isCanaryInventory(token.replace(/["'`]/g, "").replace(/^[()]+|[()]+$/g, ""), cwd));
 }
 
 // Candidate path inputs across Pi's file-touching tools.
@@ -571,6 +580,17 @@ function candidatePaths(input: Record<string, unknown>): string[] {
     }
   }
   return out;
+}
+
+const FILE_PATH_TOOLS = new Set(["read", "write", "edit", "grep", "find", "ls", "search_files"]);
+
+function hasNonRelativePath(toolName: string, targets: string[]): boolean {
+  if (!FILE_PATH_TOOLS.has(toolName)) return false;
+  return targets.some((target) => {
+    const value = target.replace(/^@/, "");
+    return path.isAbsolute(value) || path.win32.isAbsolute(value) ||
+      /^~|^\$(?:HOME|\{HOME\})(?:[\\/]|$)/.test(value);
+  });
 }
 
 function synthesizeEnvChunks(content: readonly unknown[]): {
@@ -613,7 +633,7 @@ const SYNTHESIS_SYSTEM_REMINDER =
 // colliding with it (e.g. a case-insensitive acronym matching ordinary
 // prose in the notice) would otherwise rewrite the notice, the system
 // reminder, and every message carrying them — corrupting guidance and
-// inflating warnings. Findings intersecting these fixed strings are dropped
+// inflating warnings. Findings wholly inside these fixed strings are dropped
 // at the single choke point all interception paths share. Trip markers still
 // fire there: fail-closed omission stays honest even inside boilerplate.
 const BOILERPLATE_MARKERS = [SYNTHESIS_NOTICE, SYNTHESIS_NOTICE_SUFFIX, SYNTHESIS_SYSTEM_REMINDER];
@@ -677,11 +697,11 @@ function blocksSecretAccess(toolName: string, command: string, targets: string[]
 
 // Inventory reads are PII-gated rather than secret-gated: the file holds
 // match patterns, and [allow-pii]/[allow-all] is the matching bypass.
-function blocksInventoryAccess(toolName: string, command: string, targets: string[], allowTags: Set<string>): boolean {
+function blocksInventoryAccess(toolName: string, command: string, targets: string[], allowTags: Set<string>, cwd: string): boolean {
   if (allowTags.has("pii") || allowTags.has("all")) return false;
   return (
-    (toolName === "bash" && commandReadsCanaryInventory(command)) ||
-    targets.some(isCanaryInventory)
+    (toolName === "bash" && commandReadsCanaryInventory(command, cwd)) ||
+    targets.some((target) => isCanaryInventory(target, cwd))
   );
 }
 
@@ -793,7 +813,7 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
   });
 
   // ── pre-exec: block direct sensitive-file reads ───────────────────────────
-  pi.on("tool_call", (event) => {
+  pi.on("tool_call", (event, ctx) => {
     if (!canaryEnabled) return;
     const input = (event.input ?? {}) as Record<string, unknown>;
     const command = String(input.command ?? "");
@@ -804,7 +824,7 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
         reason: "sensitive-canary: refusing direct secret access or transmission. Add [allow-secrets] or [allow-all] to the current user prompt to bypass this check.",
       };
     }
-    if (blocksInventoryAccess(event.toolName, command, targets, allowTags)) {
+    if (blocksInventoryAccess(event.toolName, command, targets, allowTags, ctx?.cwd ?? process.cwd())) {
       return {
         block: true,
         reason: "sensitive-canary: refusing to read the local PII inventory — its values would dodge the rules built from them. Add [allow-pii] or [allow-all] to the current user prompt to bypass this check.",
@@ -815,6 +835,12 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
       return {
         block: true,
         reason: `sensitive-canary: ${placeholder} is a synthetic placeholder, not a real path or identifier — the call cannot succeed with it. Resolve the real value at runtime ($HOME, $(id -un), positional selection) instead of reusing redacted text. Add [allow-pii] or [allow-all] to the current user prompt to bypass this check.`,
+      };
+    }
+    if (hasNonRelativePath(event.toolName, targets)) {
+      return {
+        block: true,
+        reason: "sensitive-canary: file-tool paths must be relative while canary is on. Retry with a path relative to the current working directory. For external paths, resolve them at runtime in Bash, or explicitly use /canary off.",
       };
     }
   });
@@ -870,7 +896,7 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
   pi.on("before_provider_request", (event, ctx) => withScanBudget(() => {
     if (!canaryEnabled) return;
     if (allowTags.has("all")) return;
-    const { value, hits } = redactValue(event.payload, allowTags);
+    const { value, hits } = redactValue(event.payload, allowTags, undefined, undefined, [], true);
     if (hits === 0) return;
 
     recordWarning(hits);

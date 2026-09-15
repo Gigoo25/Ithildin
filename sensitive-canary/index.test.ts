@@ -2,6 +2,7 @@
 // index.ts's @earendil-works/pi-coding-agent import is type-only, so Bun erases it
 // and a stub ExtensionAPI drives the real handlers.
 import { beforeEach, describe, expect, it } from "bun:test";
+import { join, relative } from "node:path";
 import { beginScanBudget } from "./lib/rules.ts";
 import sensitiveCanary from "./index.ts";
 
@@ -498,12 +499,12 @@ describe("sensitive-canary port", () => {
     expect(await handlers.tool_call({ toolName: "read", input: { path: homeAbs } })).toMatchObject({ block: true });
     // Inert shipped template and fake-only spec stay readable.
     expect(await handlers.tool_call({ toolName: "read", input: { path: "home-manager/config/pi/extensions/sensitive-canary/user-config.example.json" } })).toBeUndefined();
-    expect(await handlers.tool_call({ toolName: "read", input: { path: "~/.config/sensitive-canary/CUSTOMER-RULES-SPEC.md" } })).toBeUndefined();
+    expect(await handlers.tool_call({ toolName: "read", input: { path: relative(process.cwd(), join(process.env.HOME ?? ".", ".config", "sensitive-canary", "CUSTOMER-RULES-SPEC.md")) } })).toBeUndefined();
   });
 
   it("lets allow-pii bypass the inventory block", async () => {
     await handlers.context({ messages: [{ role: "user", content: "[allow-pii]\nshow config" }] }, ctx);
-    expect(await handlers.tool_call({ toolName: "read", input: { path: "~/.config/sensitive-canary/config.json" } })).toBeUndefined();
+    expect(await handlers.tool_call({ toolName: "read", input: { path: relative(process.cwd(), join(process.env.HOME ?? ".", ".config", "sensitive-canary", "config.json")) } })).toBeUndefined();
   });
 
   it("blocks sensitive env reads before execution", async () => {
