@@ -340,6 +340,42 @@ it("detects bank grouped", () => {
     expect(findings.some((f) => f.ruleId === 'pii-bank-account-prefix')).toBe(true);
     expect(findings.some((f) => f.ruleId === 'pii-bank-account-prefix' && f.secretValue === '8158-1234-5678-9012')).toBe(true);
   });
+it("detects customer export shapes", () => {
+  const mac = "2600FC" + "90700DEC";
+  expect(scan(`modem ${mac} online`).some((f) => f.ruleId === "pii-customer-mac")).toBe(true);
+  expect(scan("contact JOHN.CFFERING at EXAMPLE dot COM").some((f) => f.ruleId === "pii-customer-email")).toBe(false);
+  const email = "JOHN" + ".CFFERING" + "@" + "EXAMPLE" + ".COM";
+  expect(scan(`mail ${email} sent`).some((f) => f.ruleId === "pii-customer-email")).toBe(true);
+  expect(scan("name DOE,JOHN Q here").some((f) => f.ruleId === "pii-customer-name")).toBe(true);
+  expect(scan("home_phone: 5550149876 ok").some((f) => f.ruleId === "pii-customer-phone")).toBe(true);
+  expect(scan("customer_id 1000000000000 done").some((f) => f.ruleId === "pii-customer-id")).toBe(true);
+  expect(scan("wo_nbr 10000000000000 done").some((f) => f.ruleId === "pii-customer-wo")).toBe(true);
+});
+
+it("rejects customer-rule lookalikes", () => {
+  for (const text of ["ID", "FAIL", "C", "a1b2c3d4e5f", "012345678901"]) {
+    expect(scan(`status ${text} ok`).some((f) => f.ruleId === "pii-customer-mac")).toBe(false);
+  }
+  expect(scan("Smith, John here").some((f) => f.ruleId === "pii-customer-name")).toBe(false);
+  expect(scan("NULL, NULL here").some((f) => f.ruleId === "pii-customer-name")).toBe(false);
+  expect(scan("ticket 5550149876 closed").some((f) => f.ruleId === "pii-customer-phone")).toBe(false);
+  expect(scan("total 1000000000000 units").some((f) => f.ruleId === "pii-customer-id")).toBe(false);
+  expect(scan("count 10000000000000 rows").some((f) => f.ruleId === "pii-customer-wo")).toBe(false);
+});
+
+it("detects 11070 identifiers plain and grouped", () => {
+    const plain = "1107046800026";
+    const plainFindings = scan(`ref ${plain} done`);
+    expect(plainFindings.some((f) => f.ruleId === 'pii-11070-identifier' && f.secretValue === plain)).toBe(true);
+    const grouped = '11070 4680 0026';
+    const groupedFindings = scan(`ref ${grouped} done`);
+    expect(groupedFindings.some((f) => f.ruleId === 'pii-11070-identifier' && f.secretValue === grouped)).toBe(true);
+  });
+it("rejects short 11070 lookalikes", () => {
+    for (const text of ["version 11070 track", "id 11070123", "call 11070 now"]) {
+      expect(scan(text).some((f) => f.ruleId === 'pii-11070-identifier')).toBe(false);
+    }
+  });
 it("detects labeled name", () => {
     const findings = scan('Name: Jane Exampleperson');
     expect(findings.some((f) => f.ruleId === 'pii-labeled-name')).toBe(true);

@@ -18,6 +18,7 @@ const ibanAccount="QWER"+ibanBody.slice(0,14);
 let remainder=0;
 for(const c of ibanAccount+"GB00") for(const digit of /[A-Z]/.test(c) ? String(c.charCodeAt(0)-55) : c) remainder=(remainder*10+Number(digit))%97;
 const iban="GB"+String(98-remainder).padStart(2,"0")+ibanAccount;
+const localId="11070"+fakeToken("0123456789",8,555);
 export const REVIEW_FIXTURES:BenchFixture[]=[
   fixture("credential-format",`deploy key ${token} done`,[token],["deploy key","done"]),
   fixture("credential-lookalike","sk-ant-short-example",[],["sk-ant-short-example"]),
@@ -33,6 +34,8 @@ export const REVIEW_FIXTURES:BenchFixture[]=[
   fixture("host-negative","pkgs.stdenv.hostPlatform.system",[],["pkgs.stdenv.hostPlatform.system"]),
   fixture("financial-positive",`iban ${iban}`,[iban],["iban"]),
   fixture("financial-negative",`iban GB00${ibanAccount}`,[],[`GB00${ibanAccount}`]),
+  fixture("local-id-positive",`ref ${localId} done`,[localId],["ref","done"]),
+  fixture("local-id-negative","version 11070 track",[],["version 11070 track"]),
   fixture("hash-negative",'sha256 = '+"a1".repeat(32),[],["a1".repeat(32)]),
   fixture("version-negative","version = 1.23.45;",[],["version = 1.23.45;"]),
   fixture("lockfile-negative",'{"version":"1.2.3","integrity":"sha512-example-only","resolved":"package"}',[],['"integrity":"sha512-example-only"'],"document"),
