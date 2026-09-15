@@ -81,6 +81,10 @@ test("provider hooks use one scan envelope across payload fields, renewed on the
   const handlers: Record<string, Function> = {};
   sensitiveCanary({
     on: (name: string, fn: Function) => { handlers[name] = fn; },
+    registerFlag() {},
+    registerCommand() {},
+    appendEntry() {},
+    getFlag: () => false,
     events: { on() {}, emit() {} },
   } as any);
   handlers.session_shutdown(); // Clear memoized fixtures from other tests.

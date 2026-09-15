@@ -10,10 +10,17 @@ const handlers: Record<string, Handler> = {};
 const notifications: string[] = [];
 const emittedEvents: Array<{ name: string; event: unknown }> = [];
 const internalHandlers: Record<string, (event: any) => void> = {};
+let noCanaryFlag = false;
+let canaryCommand: { handler: Handler } | undefined;
+const appendedEntries: Array<{ customType: string; data: unknown }> = [];
 sensitiveCanary({
+  appendEntry: (customType: string, data?: unknown) => { appendedEntries.push({ customType, data }); },
+  getFlag: (name: string) => name === "no-canary" && noCanaryFlag,
   on: (name: string, fn: any) => {
     handlers[name] = fn;
   },
+  registerCommand: (name: string, command: any) => { if (name === "canary") canaryCommand = command; },
+  registerFlag: () => {},
   events: {
     emit: (name: string, event: unknown) => emittedEvents.push({ name, event }),
     on: (name: string, handler: (event: any) => void) => { internalHandlers[name] = handler; },
@@ -577,6 +584,112 @@ describe("sensitive-canary port", () => {
       expect(JSON.stringify(res)).not.toContain(AWS_KEY);
     } finally {
       beginScanBudget(null);
+    }
+  });
+
+  it("toggles redaction via /canary on|off", async () => {
+    const cmdCtx = { ui: { notify: (message: string) => notifications.push(message) } } as any;
+    await canaryCommand!.handler("off", cmdCtx);
+    expect(notifications.at(-1)).toContain("disabled");
+    // Every interception point passes through raw while off.
+    expect(
+      await handlers.context({ messages: [{ role: "user", content: `my key is ${AWS_KEY}` }] }, ctx),
+    ).toBeUndefined();
+    expect(
+      await handlers.before_provider_request({ payload: { prompt: `API_KEY=${AWS_KEY}` } }, ctx),
+    ).toBeUndefined();
+    expect(
+      await handlers.tool_result(
+        { toolName: "bash", content: [{ type: "text", text: `API_KEY=${AWS_KEY}` }] },
+        ctx,
+      ),
+    ).toBeUndefined();
+    expect(
+      await handlers.message_end({ message: { role: "user", content: `API_KEY=${AWS_KEY}` } }, ctx),
+    ).toBeUndefined();
+    expect(await handlers.before_agent_start({ prompt: "p", systemPrompt: "base" })).toBeUndefined();
+    expect(await handlers.tool_call({ toolName: "read", input: { path: ".env" } })).toBeUndefined();
+    const stored = { text: `API_KEY=${AWS_KEY}`, certified: false };
+    internalHandlers["sensitive-canary:sanitize-stored-text"](stored);
+    expect(stored.certified).toBeTrue();
+    expect(stored.text).toContain(AWS_KEY);
+    await canaryCommand!.handler("on", cmdCtx);
+    expect(notifications.at(-1)).toContain("enabled");
+    const res = await handlers.context(
+      { messages: [{ role: "user", content: `my key is ${AWS_KEY}` }] },
+      ctx,
+    );
+    expect(res.messages[0].content).not.toContain(AWS_KEY);
+  });
+
+  it("reports /canary status and usage", async () => {
+    const cmdCtx = { ui: { notify: (message: string) => notifications.push(message) } } as any;
+    await canaryCommand!.handler("status", cmdCtx);
+    expect(notifications.at(-1)).toContain("enabled");
+    await canaryCommand!.handler("off", cmdCtx);
+    await canaryCommand!.handler("status", cmdCtx);
+    expect(notifications.at(-1)).toContain("disabled");
+    await canaryCommand!.handler("on", cmdCtx);
+    await canaryCommand!.handler("bogus", cmdCtx);
+    expect(notifications.at(-1)).toContain("Usage: /canary [on|off|status]");
+  });
+
+  it("toggles on bare /canary", async () => {
+    const cmdCtx = { ui: { notify: (message: string) => notifications.push(message) } } as any;
+    await canaryCommand!.handler("", cmdCtx);
+    expect(notifications.at(-1)).toContain("disabled");
+    expect(emittedEvents.at(-1)).toEqual({ name: "sensitive-canary:mode", event: { enabled: false } });
+    expect(
+      await handlers.context({ messages: [{ role: "user", content: `my key is ${AWS_KEY}` }] }, ctx),
+    ).toBeUndefined();
+    await canaryCommand!.handler("  ", cmdCtx);
+    expect(notifications.at(-1)).toContain("enabled");
+    expect(emittedEvents.at(-1)).toEqual({ name: "sensitive-canary:mode", event: { enabled: true } });
+    const res = await handlers.context(
+      { messages: [{ role: "user", content: `my key is ${AWS_KEY}` }] },
+      ctx,
+    );
+    expect(res.messages[0].content).not.toContain(AWS_KEY);
+  });
+
+  it("announces toggle state for the footer", async () => {
+    const cmdCtx = { ui: { notify: () => {} } } as any;
+    await canaryCommand!.handler("off", cmdCtx);
+    expect(emittedEvents.at(-1)).toEqual({ name: "sensitive-canary:mode", event: { enabled: false } });
+    expect(appendedEntries.at(-1)).toMatchObject({ customType: "sensitive-canary", data: { enabled: false } });
+    await canaryCommand!.handler("on", cmdCtx);
+    expect(emittedEvents.at(-1)).toEqual({ name: "sensitive-canary:mode", event: { enabled: true } });
+  });
+
+  it("restores the persisted toggle on session_start", async () => {
+    const branch = [{ type: "custom", customType: "sensitive-canary", data: { enabled: false } }];
+    const sessionCtx = { ...ctx, sessionManager: { getBranch: () => branch, getSessionFile: () => undefined } };
+    await handlers.session_start({}, sessionCtx);
+    expect(
+      await handlers.context({ messages: [{ role: "user", content: `my key is ${AWS_KEY}` }] }, ctx),
+    ).toBeUndefined();
+    expect(emittedEvents.at(-1)).toEqual({ name: "sensitive-canary:mode", event: { enabled: false } });
+    // Restore the default so later tests see redaction on.
+    await handlers.session_start({}, { ...ctx, sessionManager: { getBranch: () => [], getSessionFile: () => undefined } });
+    const res = await handlers.context(
+      { messages: [{ role: "user", content: `my key is ${AWS_KEY}` }] },
+      ctx,
+    );
+    expect(res.messages[0].content).not.toContain(AWS_KEY);
+  });
+
+  it("forces redaction off at startup with --no-canary", async () => {
+    noCanaryFlag = true;
+    try {
+      const sessionCtx = { ...ctx, sessionManager: { getBranch: () => [], getSessionFile: () => undefined } };
+      await handlers.session_start({}, sessionCtx);
+      expect(
+        await handlers.context({ messages: [{ role: "user", content: `my key is ${AWS_KEY}` }] }, ctx),
+      ).toBeUndefined();
+      expect(emittedEvents.at(-1)).toEqual({ name: "sensitive-canary:mode", event: { enabled: false } });
+    } finally {
+      noCanaryFlag = false;
+      await handlers.session_start({}, { ...ctx, sessionManager: { getBranch: () => [], getSessionFile: () => undefined } });
     }
   });
 });

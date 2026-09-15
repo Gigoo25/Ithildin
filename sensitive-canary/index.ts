@@ -32,6 +32,12 @@
 // The latest user prompt can bypass one category or all checks with an
 // explicit allow tag. Older, quoted, and runtime-generated tags do not apply.
 // This scanner remains a defense in depth, not a confidentiality boundary.
+//
+// Redaction is on by default and can be toggled for local models: bare /canary
+// flips it (or /canary on|off|status explicitly; command only, no shortcut)
+// or the --no-canary CLI flag at startup. The toggle persists per session via an appendEntry record and is
+// announced on the `sensitive-canary:mode` event so the footer can show
+// CANARY ON/OFF. While off, every interception point passes through raw.
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { randomBytes } from "node:crypto";
@@ -59,6 +65,10 @@ import { isImagePayload } from "./lib/image-payload.ts";
 
 // Larger strings skip regex scanning and are synthesized in full.
 const MAX_SCAN_BYTES = 2_000_000;
+
+// Persisted toggle record (cf. readonly-mode's STATE_ENTRY pattern).
+const STATE_ENTRY = "sensitive-canary";
+type CanaryState = { enabled?: boolean };
 
 const FILE_READ_COMMANDS: Record<string, true> = {
   cat: true,
@@ -558,9 +568,45 @@ function sanitizeToolContent(
 export default function sensitiveCanary(pi: ExtensionAPI): void {
   let pendingWarningCount = 0;
   let allowTags = new Set<string>();
+  let canaryEnabled = true;
+
+  function applyCanary(next: boolean, ctx?: { ui?: { notify?: (message: string, level?: string) => void } }): void {
+    canaryEnabled = next;
+    pi.appendEntry(STATE_ENTRY, { enabled: next });
+    pi.events.emit("sensitive-canary:mode", { enabled: next });
+    ctx?.ui?.notify?.(
+      next
+        ? "Sensitive-canary enabled: values are synthesized before they reach the model"
+        : "Sensitive-canary disabled: raw values reach the model (for local models)",
+      "info",
+    );
+  }
+
+  pi.registerFlag("no-canary", {
+    description: "Start with sensitive-canary redaction disabled (for local models)",
+    type: "boolean",
+    default: false,
+  });
+
+  pi.registerCommand("canary", {
+    description: "Enable, disable, or inspect sensitive-canary redaction",
+    handler: async (args, ctx) => {
+      switch (args.trim().toLowerCase()) {
+        case "on": applyCanary(true, ctx); break;
+        case "off": applyCanary(false, ctx); break;
+        case "": applyCanary(!canaryEnabled, ctx); break;
+        case "status": ctx.ui.notify(`Sensitive-canary ${canaryEnabled ? "enabled" : "disabled"}`, "info"); break;
+        default: ctx.ui.notify("Usage: /canary [on|off|status] (bare /canary toggles)", "info"); return;
+      }
+    },
+  });
 
   pi.events.on("sensitive-canary:sanitize-stored-text", (event: { text: string; certified: boolean }) => withScanBudget(() => {
     if (typeof event.text !== "string") return;
+    if (!canaryEnabled) {
+      event.certified = true;
+      return;
+    }
     event.text = event.text.length > MAX_SCAN_BYTES
       ? syntheticValue(event.text)
       : redactText(event.text).text;
@@ -586,6 +632,21 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
     LEDGER.clear();
   });
 
+  pi.on("session_start", async (_event, ctx) => {
+    const state = ctx.sessionManager
+      .getBranch()
+      .filter((entry) => entry.type === "custom" && entry.customType === STATE_ENTRY)
+      .at(-1) as { data?: CanaryState } | undefined;
+    // --no-canary forces off at startup; otherwise restore the persisted
+    // toggle, defaulting to on. No toast on load: the footer tag shows it.
+    const next = pi.getFlag("no-canary") === true
+      ? false
+      : (typeof state?.data?.enabled === "boolean" ? state.data.enabled : true);
+    canaryEnabled = next;
+    pi.appendEntry(STATE_ENTRY, { enabled: next });
+    pi.events.emit("sensitive-canary:mode", { enabled: next });
+  });
+
   pi.on("agent_end", (_event, ctx) => {
     flushWarning(ctx);
     // PI_SESSION_FILE exists only in shell-tool children (or may be inherited
@@ -594,6 +655,7 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
   });
 
   pi.on("before_agent_start", (event) => {
+    if (!canaryEnabled) return;
     if (event.systemPrompt.includes(SYNTHESIS_SYSTEM_REMINDER)) return;
     return {
       systemPrompt: `${event.systemPrompt}\n\n${SYNTHESIS_SYSTEM_REMINDER}`,
@@ -602,6 +664,7 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
 
   // ── pre-exec: block direct sensitive-file reads ───────────────────────────
   pi.on("tool_call", (event) => {
+    if (!canaryEnabled) return;
     const input = (event.input ?? {}) as Record<string, unknown>;
     const command = String(input.command ?? "");
     const targets = candidatePaths(input);
@@ -615,6 +678,7 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
 
   // ── ingress: user-authored text, before it reaches the provider ───────────
   pi.on("context", (event, ctx) => withScanBudget(() => {
+    if (!canaryEnabled) return;
     const all = event.messages as readonly unknown[] as Message[];
     allowTags = latestAllowTags(all);
     if (allowTags.has("all")) return;
@@ -661,6 +725,7 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
 
   // ── final egress: scan the exact provider payload ─────────────────────────
   pi.on("before_provider_request", (event, ctx) => withScanBudget(() => {
+    if (!canaryEnabled) return;
     if (allowTags.has("all")) return;
     const { value, hits } = redactValue(event.payload, allowTags);
     if (hits === 0) return;
@@ -671,6 +736,7 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
 
   // ── egress: synthesize sensitive values before they enter the transcript ─
   pi.on("tool_result", (event, ctx) => withScanBudget(() => {
+    if (!canaryEnabled) return;
     const input = event.input ?? {};
     const command = String(input.command ?? "");
     const targets =
@@ -698,6 +764,7 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
   // as on the wire, so approved values keep working across turns.
   // Tool-call argument chunks are left alone: execution already ran on them.
   pi.on("message_end", (event) => withScanBudget(() => {
+    if (!canaryEnabled) return;
     const message = event.message as { role?: string; content?: unknown; details?: unknown };
     if (!message || typeof message !== "object") return;
     const tags =

@@ -4,7 +4,7 @@ import { assignmentEdits, structuredEdits } from "./structured-text.ts";
 
 function setup() {
   const handlers: Record<string, (e: any, c?: any) => any> = {};
-  sensitiveCanary({ on: (n: string, f: never) => void (handlers[n] = f), events: { on() {}, emit() {} } } as never);
+  sensitiveCanary({ on: (n: string, f: never) => void (handlers[n] = f), registerFlag() {}, registerCommand() {}, appendEntry() {}, getFlag: () => false, events: { on() {}, emit() {} } } as never);
   const ctx = { sessionManager: { getSessionFile: () => undefined }, ui: { notify() {} } } as never;
   handlers.agent_start({}, ctx);
   return { handlers, ctx };

@@ -57,7 +57,7 @@ export function assess(fixture:BenchFixture,rendered:string,audits:RedactionAudi
 }
 export function runFixture(fixture:BenchFixture):FixtureResult {
   const handlers:Record<string,(event:any,ctx?:any)=>any>={};
-  sensitiveCanary({on:(name:string,fn:any)=>{handlers[name]=fn;},events:{on(){},emit(){}}} as never);
+  sensitiveCanary({on:(name:string,fn:any)=>{handlers[name]=fn;},registerFlag(){},registerCommand(){},appendEntry(){},getFlag:()=>false,events:{on(){},emit(){}}} as never);
   const ctx={sessionManager:{getSessionFile:()=>undefined},ui:{notify(){}}};
   const audits:RedactionAudit[]=[];
   handlers.agent_start({},ctx);

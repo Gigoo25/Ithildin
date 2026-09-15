@@ -6,7 +6,7 @@ import sensitiveCanary from "../index.ts";
 const finding = (secretValue: string, start: number, category: "pii" | "secret" = "secret"): LocatedFinding => ({ ruleId:"fixture", description:"fixture", category, secretValue, start, end:start+secretValue.length, score:1, matchRedacted:"" });
 function sanitize(text: string, tag = "", repeat = false) {
   const handlers: Record<string, (...args:any[])=>any>={};
-  sensitiveCanary({on:(name:string,fn:any)=>{handlers[name]=fn;},events:{on(){},emit(){}}} as never);
+  sensitiveCanary({on:(name:string,fn:any)=>{handlers[name]=fn;},registerFlag(){},registerCommand(){},appendEntry(){},getFlag:()=>false,events:{on(){},emit(){}}} as never);
   const ctx={sessionManager:{getSessionFile:()=>undefined},ui:{notify(){}}};
   handlers.agent_start({},ctx);
   try {
