@@ -450,7 +450,18 @@ function redactValue(
   location: readonly (string | number)[] = [],
   providerPayload = false,
 ): { value: unknown; hits: number } {
-  if (key !== undefined && (OPAQUE_PROVIDER_FIELDS[key] === true || PROTOCOL_PASSTHROUGH_FIELDS[key] === true)) {
+  // Opaque ciphertext must survive everywhere it travels: provider replay
+  // and compaction both fail closed on a rewritten blob, so it passes
+  // through at any depth. Protocol control enums only need that protection
+  // inside the provider payload itself. Persisted details share no wire
+  // contract with the provider, so a user-controlled `type`/`role`/`include`
+  // key there must scan like any other field. (Within the payload these keys
+  // are core-set enums; narrowing them further by location would risk 400s
+  // on future protocol shapes for no measurable gain.)
+  if (key !== undefined && OPAQUE_PROVIDER_FIELDS[key] === true) {
+    return { value, hits: 0 };
+  }
+  if (providerPayload && key !== undefined && PROTOCOL_PASSTHROUGH_FIELDS[key] === true) {
     return { value, hits: 0 };
   }
   if (typeof value === "string" && isChainReference(key, parent, location, providerPayload)) {

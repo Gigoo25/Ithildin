@@ -83,6 +83,25 @@ it("preserves real Responses and Completions routing under normal and exhausted 
 	}
 });
 
+it("scans protocol-named fields in persisted details instead of passing them through", () => {
+	const { handlers, ctx } = harness();
+	const key = "AKIA" + "H".repeat(16);
+	const message = {
+		role: "toolResult",
+		content: [],
+		details: {
+			type: key,
+			role: key,
+			include: [key],
+			reasoning: { effort: key },
+			service_tier: key,
+			record: { type: key },
+		},
+	};
+	const persisted = handlers.message_end({ message }, ctx)?.message ?? message;
+	expect(JSON.stringify(persisted.details)).not.toContain(key);
+});
+
 it("preserves Completions custom calls and root ciphertext details without exempting nested data", () => {
 	const { handlers, ctx } = harness();
 	const reference = "AKIA" + "G".repeat(16);
