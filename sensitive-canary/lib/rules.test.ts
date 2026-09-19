@@ -468,3 +468,47 @@ describe("bounded scanning", () => {
     }
   });
 });
+
+describe("freeform name recall", () => {
+  it("catches unlabeled names starting with a gazetteer first name", () => {
+    for (const [text, value] of [
+      ["Marie Dubois called yesterday about the outage", "Marie Dubois"],
+      ["Carlos Mendez filed the ticket", "Carlos Mendez"],
+      ["met Louis St. Laurent at the venue", "Louis St. Laurent"],
+      ["Mary McDonald signed off", "Mary McDonald"],
+    ] as Array<[string, string]>) {
+      const findings = scan(text);
+      expect(findings.some((f) => f.ruleId === "pii-gazetteer-name" && f.secretValue === value)).toBe(true);
+    }
+  });
+
+  it("leaves non-name capitalized pairs alone", () => {
+    for (const text of [
+      "Lake House retreat next week",
+      "White House briefing notes",
+      "New York office relocation",
+    ]) {
+      expect(scan(text).filter((f) => f.category === "pii")).toEqual([]);
+    }
+  });
+
+  it("catches names behind titles without keeping the title", () => {
+    const titled = scan("Please contact Dr. Elena Vasquez before noon");
+    const hit = titled.find((f) => f.ruleId === "pii-titled-name");
+    expect(hit?.secretValue).toBe("Elena Vasquez");
+    expect(scan("Mr Smith will join").some((f) => f.ruleId === "pii-titled-name" && f.secretValue === "Smith")).toBe(true);
+  });
+
+  it("catches names behind sender-style labels", () => {
+    expect(scan("From: James Okafor").some((f) => f.ruleId === "pii-labeled-name")).toBe(true);
+    expect(scan("sender: Tom Becker").some((f) => f.ruleId === "pii-labeled-name")).toBe(true);
+    expect(scan("To: Priya Ramanathan").some((f) => f.ruleId === "pii-labeled-name")).toBe(true);
+  });
+
+  it("documents dual-use residuals as limitations, not regressions", () => {
+    // Common names that are also ordinary words fire on prose uses.
+    // "Grace Hopper" is worth "Grace Period": fail-closed beats clever.
+    expect(scan("Grace Period ends Friday").some((f) => f.ruleId === "pii-gazetteer-name")).toBe(true);
+    expect(scan("Dr Pepper is in the fridge").some((f) => f.ruleId === "pii-titled-name")).toBe(true);
+  });
+});

@@ -10,6 +10,7 @@ import {
   keyDescribesRatherThanHolds,
 } from "./shapes.ts";
 import { getValidator, isReservedIpv4 } from "./validators.ts";
+import { FIRST_NAMES } from "./first-names.ts";
 
 export type Category = "secret" | "pii";
 
@@ -825,9 +826,34 @@ const LOCAL_RULES: Rule[] = [
   {
     id: "pii-labeled-name",
     description: "Personal name behind an identity label",
-    regex: /(?:\bname|\bfull name|\bpatient|\bcustomer|\bcontact|\battn)\s*[:=]\s*([A-Z][a-z]+(?:[ -][A-Z][a-z.]+){1,2})/gi,
+    regex: /(?:\bname|\bfull name|\bpatient|\bcustomer|\bcontact|\battn|\bauthor|\bsender|\brecipient|\bregistrant|\bsigner|\bfrom|\bto|\bcc)\s*[:=]\s*([A-Z][a-z]+(?:[ -][A-Z][a-z.]+){1,2})/gi,
     secretGroup: 1,
     category: "pii",
+  },
+  // Titles are nearly unambiguous person markers: no prose shape looks
+  // like "Dr Smith". Case-sensitive on purpose (lowercase "dr jones" is
+  // informal enough to miss). Residual: "Dr Pepper" fires; no clean
+  // exclusion exists, and fail-closed beats clever here.
+  {
+    id: "pii-titled-name",
+    description: "Personal name behind a title (Mr/Mrs/Ms/Dr/Prof)",
+    regex: /(?:\bMr\.?|\bMrs\.?|\bMs\.?|\bMiss\b|\bDr\.?|\bProf\.?)\s+([A-Z][A-Za-z]{1,24}(?:[ -][A-Z][A-Za-z'.-]{0,28}[A-Za-z]){0,2})/g,
+    secretGroup: 1,
+    category: "pii",
+  },
+  // Freeform names with no label at all ("Marie Dubois called yesterday").
+  // Shape is a generic 2-3 capitalized-word run; FIRST_NAMES membership on
+  // the first word is the gate, so "Lake House" and "White House" stay
+  // untouched while real given names fire. Dual-use words that are also
+  // common names (Mark, Bill, Grace, Art) fire on prose uses too
+  // ("Grace Period"): accepted residual, documented in first-names.ts.
+  // Single-word names ("Madonna") stay out: any word could be one.
+  {
+    id: "pii-gazetteer-name",
+    description: "Personal name starting with a gazetteer first name",
+    regex: /\b([A-Z][A-Za-z]{1,24}(?:[ -][A-Z][A-Za-z'.-]{1,29}){0,1}(?:[ -][A-Z][A-Za-z'.-]{0,28}[A-Za-z]))/g,
+    category: "pii",
+    validate: (value: string) => FIRST_NAMES.has(value.split(/[ -]/)[0]!.toLowerCase()),
   },
   // Street addresses carry their own suffix vocabulary, so the shape is
   // precise without context words: the match must terminate on a suffix,

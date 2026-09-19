@@ -46,6 +46,10 @@ export const REVIEW_FIXTURES:BenchFixture[]=[
   fixture("assignment-spaces",'password = "invented phrase" # retain',["invented phrase"],[" # retain"]),
   fixture("assignment-negative",'password_hint = "retain"',[],['password_hint = "retain"']),
   fixture("payload-controls",'{"account_number":12345,"count":12345,"note":"12345"}',["12345"],['"count":12345,"note":"12345"'],"document"),
+  fixture("identity-gazetteer","called Marie Dubois yesterday",["Marie Dubois"],["called","yesterday"]),
+  fixture("identity-titled","Dr. Elena Vasquez on call",["Elena Vasquez"],["Dr.","on call"]),
+  fixture("identity-label-from","From: James Okafor",["James Okafor"],["From:"]),
+  fixture("identity-place-negative","Lake House retreat",[],["Lake House retreat"]),
 ];
 // Label-based numeric classification is occurrence-specific, not every equal
 // number. The runner supplies the authored sensitive range for this fixture.
