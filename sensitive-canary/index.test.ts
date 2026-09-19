@@ -203,7 +203,7 @@ describe("sensitive-canary port", () => {
     expect(notifications.length).toBe(before);
   });
 
-  it("separates synthesis notices from tool output", async () => {
+  it("emits no per-message notice on redacted tool output", async () => {
     const res = await handlers.tool_result(
       {
         toolName: "bash",
@@ -211,7 +211,9 @@ describe("sensitive-canary port", () => {
       },
       ctx,
     );
-    expect(res.content[1].text).toMatch(/^\n\n\[sensitive-canary\]/);
+    expect(res.content).toHaveLength(1);
+    expect(res.content[0].text).not.toContain(AWS_KEY);
+    expect(res.content[0].text).not.toContain("[sensitive-canary]");
   });
 
   it("does not duplicate an existing synthesis notice", async () => {
@@ -409,7 +411,7 @@ describe("sensitive-canary port", () => {
     const text = res?.messages?.[0]?.content;
     expect(text).toMatch(/__CANARY_EMAIL_\d+__/);
     expect(text).not.toContain(original);
-    expect(text).toContain("[sensitive-canary]");
+    expect(text).not.toContain("[sensitive-canary]");
   });
 
   it("synthesizes .env values without hiding keys", async () => {
@@ -819,16 +821,16 @@ describe("sensitive-canary port", () => {
       "handlers.agent_start({}, ctx);",
       "const key = \"AKIA\" + \"A\".repeat(16);",
       "const seeded = await handlers.tool_result({ toolName: \"bash\", content: [{ type: \"text\", text: `k=${key}` }] }, ctx);",
-      "const notice = seeded.content.find((c) => c.type === \"text\" && c.text.includes(\"[sensitive-canary]\")).text;",
-      "const res = await handlers.tool_result({ toolName: \"bash\", content: [{ type: \"text\", text: `k=${key}` }, { type: \"text\", text: notice }] }, ctx);",
+      
+      "const res = seeded;",
       "const markers = res.content.filter((c) => c.type === \"text\" && c.text.includes(\"[sensitive-canary\]\"));",
       "const reminder = (await handlers.before_agent_start({ prompt: \"p\", systemPrompt: \"base\" })).systemPrompt;",
       "const via = await handlers.before_provider_request({ payload: { systemPrompt: reminder } }, ctx);",
       "const live = await handlers.before_provider_request({ payload: { note: \"user placeholders here\" } }, ctx);",
-      "console.log(JSON.stringify({ markers: markers.length, noticeKept: res.content.some((c) => c.type === \"text\" && c.text === notice), reminderKept: via === undefined, liveFires: live !== undefined && JSON.stringify(live).includes(\"__CANARY_\") }));",
+      "console.log(JSON.stringify({ markers: markers.length, reminderKept: via === undefined, liveFires: live !== undefined && JSON.stringify(live).includes(\"__CANARY_\") }));",
     ].join("\n");
     const child = Bun.spawnSync({ cmd: [process.execPath, "-e", script], env: { ...process.env, HOME: home, XDG_CACHE_HOME: join(home, "cache"), SENSITIVE_CANARY_CONFIG: file }, timeout: 30000 });
     expect(child.exitCode).toBe(0);
-    expect(JSON.parse(child.stdout.toString())).toEqual({ markers: 1, noticeKept: true, reminderKept: true, liveFires: true });
+    expect(JSON.parse(child.stdout.toString())).toEqual({ markers: 0, reminderKept: true, liveFires: true });
   });
 });

@@ -636,7 +636,11 @@ const SYNTHESIS_NOTICE =
 
 const SYNTHESIS_NOTICE_SUFFIX =
   " Sensitive numeric document fields may be rendered as strings; document schema types are not preserved.";
-
+// No per-message notice: redacted output carries no guidance text.
+// Failure-time guidance lives in the system reminder (once per session)
+// and the tool_call block errors. Ablation (8 fresh muse-spark sessions,
+// 0 misuse events either way) showed the proactive notice adds nothing
+// measurable here; it cost ~65 tokens per redacted message.
 const SYNTHESIS_SYSTEM_REMINDER =
   "SENSITIVE-CANARY: Sensitive values can be synthetic placeholders. These placeholders are not real credentials, identities, contact details, or production data. Preserve only their structure and relationships. Never pass a placeholder to a tool or attempt to reverse it. Never cd into, read, or execute a path containing a placeholder: resolve the dynamic segment at runtime ($HOME, $(id -un), positional selection) instead of reusing redacted text. If one blocks the task, stop and ask the user to re-run with [allow-pii].";
 
@@ -663,16 +667,7 @@ function boilerplateSpans(text: string): Array<{ start: number; end: number }> {
   return spans;
 }
 
-function withSynthesisNotice(content: readonly unknown[]): unknown[] {
-  if (
-    content.some(
-      (chunk) => isTextChunk(chunk) && chunk.text.includes(SYNTHESIS_NOTICE),
-    )
-  ) {
-    return [...content];
-  }
-  return [...content, { type: "text", text: `\n\n${SYNTHESIS_NOTICE}${SYNTHESIS_NOTICE_SUFFIX}` }];
-}
+
 
 function latestAllowTags(messages: Message[]): Set<string> {
   const latestUser = [...messages].reverse().find((message) => message.role === "user");
@@ -880,7 +875,7 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
           total++;
           return {
             ...message,
-            content: `${syntheticValue(message.content)}\n\n${SYNTHESIS_NOTICE}`,
+            content: syntheticValue(message.content),
           };
         }
         const { text, hits } = redactText(message.content, allowTags);
@@ -888,14 +883,14 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
         total += hits;
         return {
           ...message,
-          content: `${text}\n\n${SYNTHESIS_NOTICE}`,
+          content: text,
         };
       }
       if (!Array.isArray(message.content)) return message;
       const { content, hits } = redactChunks(message.content, allowTags);
       if (hits === 0) return message;
       total += hits;
-      return { ...message, content: withSynthesisNotice(content) };
+      return { ...message, content };
     });
 
     if (total === 0) return;
@@ -925,7 +920,7 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
         : candidatePaths(input);
     const result = sanitizeToolContent(event.content, targets.some(isEnvFile), allowTags);
     const { content, hits } = result;
-    const finalContent = hits === 0 ? event.content : withSynthesisNotice(content);
+    const finalContent = hits === 0 ? event.content : content;
     pi.events.emit("sensitive-canary:tool-result-sanitized", {
       toolCallId: event.toolCallId,
       digest: toolResultDigest(finalContent),
@@ -958,19 +953,19 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
     if (message.role === "user" || message.role === "assistant") {
       if (typeof content === "string") {
         if (content.length > MAX_SCAN_BYTES) {
-          content = `${syntheticValue(content)}\n\n${SYNTHESIS_NOTICE}`;
+          content = syntheticValue(content);
           hits++;
         } else if (!content.includes(SYNTHESIS_NOTICE)) {
           const redacted = redactText(content, tags);
           if (redacted.hits > 0) {
-            content = `${redacted.text}\n\n${SYNTHESIS_NOTICE}`;
+            content = redacted.text;
             hits += redacted.hits;
           }
         }
       } else if (Array.isArray(content)) {
         const redacted = redactChunks(content, tags);
         if (redacted.hits > 0) {
-          content = withSynthesisNotice(redacted.content);
+          content = redacted.content;
           hits += redacted.hits;
         }
       }

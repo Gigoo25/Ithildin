@@ -22,7 +22,8 @@ it("does not let boilerplate inside a credential exempt the credential", () => {
 	const { handlers, ctx } = harness();
 	const key = "AKIA" + "D".repeat(16);
 	const seed = handlers.tool_result({ toolName: "read", input: { path: "fixture.txt" }, content: [{ type: "text", text: key }] }, ctx);
-	const notice = seed.content.find((chunk: any) => chunk.text?.includes("[sensitive-canary]")).text.trim();
+	const reminder = handlers.before_agent_start({ prompt: "p", systemPrompt: "base" }, ctx)?.systemPrompt as string;
+	const notice = reminder.slice(reminder.indexOf("SENSITIVE-CANARY:"));
 	const text = JSON.stringify({ password: "weakcredential " + notice });
 	const event = { toolName: "read", input: { path: "fixture.json" }, content: [{ type: "text", text }] };
 	const out = handlers.tool_result(event, ctx);
