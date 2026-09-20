@@ -1,18 +1,21 @@
 // Run with Node, the production V8 runtime, not Bun's node:vm compatibility layer.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { RULES, beginScanBudget, scanWindows, withScanBudget } from "./rules.ts";
+import { RULES, beginScanBudget, clearWindowCache, exportWindowCache, importWindowCache, scanWindows, setScanBudgetMs, withScanBudget } from "./rules.ts";
 import sensitiveCanary from "../index.ts";
 
 function withRules(work: () => void): void {
   const saved = RULES.splice(0);
   const now = Date.now;
+  clearWindowCache();
   try {
     work();
   } finally {
     RULES.splice(0, RULES.length, ...saved);
     Date.now = now;
     beginScanBudget(null);
+    setScanBudgetMs(null);
+    clearWindowCache();
   }
 }
 
@@ -60,16 +63,20 @@ test("V8 interrupts a running rule within the remaining budget, below the comfor
 
 test("scoped budgets share spending across strings and restore outer state on errors", () => withRules(() => {
   let clock = 0;
+  let calls = 0;
   Date.now = () => clock;
-  RULES.push(rule(() => { clock += 6; return true; }));
+  RULES.push(rule(() => { calls++; clock += 6; return true; }));
   withScanBudget(() => {
-    assert.deepEqual(scanWindows("probe").trips, []);
+    assert.deepEqual(scanWindows("probe one").trips, []);
     withScanBudget(() => {
-      assert.deepEqual(scanWindows("probe").trips, [{ start: 0, end: 5 }]);
+      // A different window: a cached one would bypass the spent envelope.
+      assert.deepEqual(scanWindows("probe two").trips, [{ start: 0, end: 9 }]);
     }, 1_000);
   }, 10);
   assert.throws(() => withScanBudget(() => { throw new Error("fixture"); }, 0));
-  assert.deepEqual(scanWindows("probe").trips, []);
+  // Fresh text so the cache cannot mask a leftover deadline.
+  assert.deepEqual(scanWindows("probe three").trips, []);
+  assert.ok(calls > 0);
 }));
 
 test("provider hooks use one scan envelope across payload fields, renewed on the next hook", () => withRules(() => {
@@ -88,6 +95,8 @@ test("provider hooks use one scan envelope across payload fields, renewed on the
     events: { on() {}, emit() {} },
   } as any);
   handlers.session_shutdown(); // Clear memoized fixtures from other tests.
+  // Pin the old envelope so the fixture costs below keep their meaning.
+  setScanBudgetMs(10_000);
   try {
     const result = handlers.before_provider_request({ payload: { a: "probe one", b: "probe two", c: "probe three" } });
     assert.ok(!result.a.includes("scan budget exceeded"));
@@ -99,3 +108,51 @@ test("provider hooks use one scan envelope across payload fields, renewed on the
     handlers.session_shutdown();
   }
 }));
+
+test("resumes at the first unscanned window after the envelope dies", () => withRules(() => {
+  let clock = 0;
+  let calls = 0;
+  Date.now = () => clock;
+  RULES.push(rule(() => { calls++; clock += 6; return true; }));
+  // One probe per window, placed clear of the overlap regions, so every
+  // window costs one fake rule call no matter which pass reaches it.
+  let text = "";
+  let at = 0;
+  for (const position of [1_000, 70_000, 130_000, 190_000]) {
+    text += " ".repeat(position - at) + "probe";
+    at = position + 5;
+  }
+  text += " ".repeat(200_000 - at);
+  beginScanBudget(20);
+  const first = scanWindows(text);
+  assert.ok(first.trips.length > 0, "the first pass must trip");
+  const callsAfterFirst = calls;
+  beginScanBudget(20);
+  const second = scanWindows(text);
+  assert.deepEqual(second.trips, [], "the second pass completes the text");
+  assert.equal(second.findings.length, 4);
+  assert.ok(calls - callsAfterFirst < 4, "cached windows must not re-run rules");
+}));
+
+test("exports completed windows without values and replays them", () => {
+  clearWindowCache();
+  try {
+    const secret = "AKIA" + "A".repeat(16);
+    const text = `key ${secret} ${"x".repeat(70_000)}`;
+    const first = scanWindows(text);
+    assert.deepEqual(first.trips, []);
+    assert.equal(first.findings.length, 1);
+    const snapshot = exportWindowCache();
+    assert.ok(snapshot.entries.length > 0);
+    assert.ok(!JSON.stringify(snapshot).includes(secret), "the snapshot must not carry the value");
+    clearWindowCache();
+    assert.ok(importWindowCache(snapshot) > 0);
+    const replay = scanWindows(text);
+    assert.deepEqual(replay.trips, []);
+    assert.equal(replay.findings.length, 1);
+    assert.equal(replay.findings[0].secretValue, secret);
+    assert.ok(replay.findings[0].description.length > 0);
+  } finally {
+    clearWindowCache();
+  }
+});

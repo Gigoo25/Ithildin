@@ -42,3 +42,22 @@ it("literal inventory preserves phrase spacing, domain punctuation and field typ
   expect(phrase.regex.test("Invented Team")).toBe(false);
   expect(()=>compileInventoryEntry({id:"bad",literal:"Fixture",match:"token",caseSensitive:null})).toThrow();
 });
+it("honors scanBudgetMs from the user config and the environment override",()=>{
+  const home=mkdtempSync(join(tmpdir(),"canary-budget-check-"));
+  const file=join(home,"config.json");
+  const script=`const m=await import(${JSON.stringify(new URL("./rules.ts",import.meta.url).href)}); console.log(JSON.stringify({budget:m.currentScanBudgetMs(),default:m.DEFAULT_SCAN_BUDGET_MS}));`;
+  const base={...process.env,HOME:home,XDG_CACHE_HOME:join(home,"cache"),SENSITIVE_CANARY_CONFIG:file};
+  delete base.SENSITIVE_CANARY_SCAN_BUDGET_MS;
+  writeFileSync(file,JSON.stringify({scanBudgetMs:45000,rules:[]}),{mode:0o600});
+  const fromConfig=Bun.spawnSync({cmd:[process.execPath,"-e",script],env:base,timeout:10000});
+  expect(fromConfig.exitCode).toBe(0);
+  expect(JSON.parse(fromConfig.stdout.toString()).budget).toBe(45000);
+  // The environment is the per-invocation override and wins over the file.
+  const fromEnv=Bun.spawnSync({cmd:[process.execPath,"-e",script],env:{...base,SENSITIVE_CANARY_SCAN_BUDGET_MS:"60000"},timeout:10000});
+  expect(JSON.parse(fromEnv.stdout.toString()).budget).toBe(60000);
+  // An invalid file value falls back to the default, never to zero.
+  writeFileSync(file,JSON.stringify({scanBudgetMs:-5,rules:[]}),{mode:0o600});
+  const invalid=Bun.spawnSync({cmd:[process.execPath,"-e",script],env:base,timeout:10000});
+  const report=JSON.parse(invalid.stdout.toString());
+  expect(report.budget).toBe(report.default);
+});

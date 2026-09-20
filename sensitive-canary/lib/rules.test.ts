@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { beginScanBudget, compileRule, RULES, scan, scanWindows, SCAN_WINDOW_CHARS } from "./rules.ts";
+import { beginScanBudget, compileRule, RULES, scan, scanWindows, SCAN_WINDOW_CHARS, assertScanBudget, currentScanBudgetMs, setScanBudgetMs, DEFAULT_SCAN_BUDGET_MS } from "./rules.ts";
 
 describe("upstream detector parity", () => {
   it("loads every detector block from the pinned upstream config", async () => {
@@ -489,6 +489,29 @@ describe("bounded scanning", () => {
     } finally {
       beginScanBudget(null);
     }
+  });
+});
+
+describe("scan budget configuration", () => {
+  it("uses the configured envelope when a hook opens one", () => {
+    const original = currentScanBudgetMs();
+    setScanBudgetMs(1);
+    try {
+      beginScanBudget();
+      const until = Date.now() + 10;
+      while (Date.now() < until) {
+        // Let the 1ms envelope expire. The 30s default would not throw here.
+      }
+      expect(() => assertScanBudget()).toThrow();
+    } finally {
+      beginScanBudget(null);
+      setScanBudgetMs(null);
+    }
+    expect(currentScanBudgetMs()).toBe(original);
+  });
+
+  it("exports the default envelope", () => {
+    expect(DEFAULT_SCAN_BUDGET_MS).toBeGreaterThanOrEqual(10_000);
   });
 });
 

@@ -42,9 +42,9 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { randomBytes } from "node:crypto";
-import { realpathSync, writeFileSync } from "node:fs";
+import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { type Finding, type LocatedFinding, mergeRanges, scanWindows, SCAN_WINDOW_OVERLAP, withScanBudget, assertScanBudget, ScanBudgetExceeded, setRuntimeInventory } from "./lib/rules.ts";
+import { type Finding, type LocatedFinding, mergeRanges, scanWindows, SCAN_WINDOW_OVERLAP, withScanBudget, assertScanBudget, ScanBudgetExceeded, setRuntimeInventory, clearWindowCache, exportWindowCache, importWindowCache, windowCacheRevision } from "./lib/rules.ts";
 import { planRedaction } from "./lib/redaction-spans.ts";
 import { reportRedaction } from "./lib/redaction-audit.ts";
 import { assignmentEdits, inspectDocument } from "./lib/structured-text.ts";
@@ -243,6 +243,8 @@ function clearCaches(): void {
   SYNTHETIC_OUTPUTS.clear();
   syntheticValuesBytes = 0;
   TOKEN_COUNTERS.clear();
+  clearWindowCache();
+  lastScanCacheRevision = -1;
 }
 
 // Value-free audit ledger: rule IDs and counts only, never values. Every
@@ -273,6 +275,34 @@ function flushLedger(sessionFile: string | undefined): void {
     writeFileSync(`${sessionFile}.canary-ledger.json`, `${JSON.stringify({ updatedAt: new Date().toISOString(), totalHits, byRule })}\n`, { mode: 0o600 });
   } catch {
     // Audit must never break the agent.
+  }
+}
+
+// Completed scan windows next to the session, value-free by construction (see
+// exportWindowCache). A resumed session reuses the windows a previous process
+// finished instead of re-paying them on every request.
+let lastScanCacheRevision = -1;
+
+function loadScanCache(sessionFile: string | undefined): void {
+  if (!sessionFile) return;
+  try {
+    importWindowCache(JSON.parse(readFileSync(`${sessionFile}.canary-scan-cache.json`, "utf-8")));
+  } catch {
+    // Absent or unreadable: the next scan is cold, nothing to report.
+  }
+}
+
+function flushScanCache(sessionFile: string | undefined): void {
+  if (!sessionFile) return;
+  const revision = windowCacheRevision();
+  if (revision === lastScanCacheRevision) return;
+  const snapshot = exportWindowCache();
+  if (snapshot.entries.length === 0) return;
+  try {
+    writeFileSync(`${sessionFile}.canary-scan-cache.json`, `${JSON.stringify(snapshot)}\n`, { mode: 0o600 });
+    lastScanCacheRevision = revision;
+  } catch {
+    // Cache loss is not worth breaking the agent over.
   }
 }
 
@@ -900,6 +930,7 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
     pi.events.emit("sensitive-canary:mode", { enabled: next });
     setRuntimeInventory(collectRuntimeIdentity({ ...identityFromOs(), ...identityFromGit() }));
     clearCaches();
+    loadScanCache(ctx.sessionManager.getSessionFile());
   });
 
   pi.on("agent_end", (_event, ctx) => {
@@ -907,6 +938,7 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
     // PI_SESSION_FILE exists only in shell-tool children (or may be inherited
     // from a parent agent). Resolve the active session at flush time instead.
     flushLedger(ctx.sessionManager.getSessionFile());
+    flushScanCache(ctx.sessionManager.getSessionFile());
   });
 
   pi.on("before_agent_start", (event) => {

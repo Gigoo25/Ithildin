@@ -363,6 +363,41 @@ describe("sensitive-canary port", () => {
     }
   });
 
+  it("persists completed scan windows next to the session, value-free", async () => {
+    const { existsSync, mkdtempSync, readFileSync, rmSync, statSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const dir = mkdtempSync(join(tmpdir(), "canary-window-"));
+    const sessionFile = join(dir, "session.jsonl");
+    const sessionCtx = { ...ctx, sessionManager: { getSessionFile: () => sessionFile } };
+    const startCtx = {
+      ...ctx,
+      sessionManager: { getSessionFile: () => sessionFile, getBranch: () => [] },
+    };
+    const longText = `API_KEY=${AWS_KEY} ${"x".repeat(70_000)}`;
+    try {
+      await handlers.session_start({}, startCtx);
+      handlers.agent_start({}, sessionCtx);
+      await handlers.context({ messages: [{ role: "user", content: longText }] }, sessionCtx);
+      await handlers.agent_end({}, sessionCtx);
+      const dest = `${sessionFile}.canary-scan-cache.json`;
+      expect(existsSync(dest)).toBeTrue();
+      expect(statSync(dest).mode & 0o777).toBe(0o600);
+      const snapshot = JSON.parse(readFileSync(dest, "utf8"));
+      expect(snapshot.entries.length).toBeGreaterThan(0);
+      expect(JSON.stringify(snapshot)).not.toContain(AWS_KEY);
+      // A reload at session start restores the completed windows.
+      await handlers.session_start({}, startCtx);
+      const reloaded = await handlers.context(
+        { messages: [{ role: "user", content: longText }] },
+        sessionCtx,
+      );
+      expect(reloaded.messages[0].content).not.toContain(AWS_KEY);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("allows PII but continues to synthesize secrets", async () => {
     const email = "person@realcompany.io";
     const prompt = `[allow-pii]\ncontact=${email}\nAPI_KEY=${AWS_KEY}`;

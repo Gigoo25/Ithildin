@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -80,6 +81,9 @@ export interface RuleConfig {
 // User config files use the same shape and can override built-in rules by id.
 export interface CanaryConfig {
   contextWindow?: number;
+  // Per-hook scan envelope in milliseconds. Optional: the default is sized
+  // for multi-megabyte sessions, and SENSITIVE_CANARY_SCAN_BUDGET_MS wins.
+  scanBudgetMs?: number;
   rules: RuleConfig[];
   inventory?: InventoryEntry[];
 }
@@ -346,9 +350,9 @@ function loadDefaultConfig(): CanaryConfig {
 function loadUserConfig(): CanaryConfig | null {
   try {
     // A FIFO or a device here would block the read until something wrote to
-    // it, and a hook that never returns is killed by the timeout, which does
-    // not block. The transcript reader and the file scanner already pay this stat.
-    // This path was the one that did not pay it.
+    // it, and a hook that never returns stalls the turn. The transcript reader
+    // and the file scanner already pay this stat. This path was the one that
+    // did not pay it.
     if (!statSync(USER_CONFIG_PATH).isFile()) {
       process.stderr.write(
         "sensitive-canary: user config is not a regular file, ignoring\n",
@@ -371,6 +375,20 @@ function loadUserConfig(): CanaryConfig | null {
 // actually replaces it. buildRules only loads defaults and records these.
 const pendingUserRuleConfigs: RuleConfig[] = [];
 const pendingInventoryEntries: unknown[] = [];
+
+// Scan-budget override recorded while the config loads. Declared before
+// buildRules runs (the budget section initializes after it) so module init
+// order cannot leave the default in place.
+let configuredScanBudgetMs: number | null = null;
+
+// A positive whole number of milliseconds, or null for "not configured".
+// `Number` rejects trailing junk that parseInt would silently drop.
+function parseScanBudget(value: unknown): number | null {
+  const parsed = typeof value === "string" ? Number(value) : value;
+  return typeof parsed === "number" && Number.isInteger(parsed) && parsed >= 1
+    ? parsed
+    : null;
+}
 
 export function pendingUserConfigsForTest(): { rules: RuleConfig[]; inventory: unknown[] } {
   return { rules: [...pendingUserRuleConfigs], inventory: [...pendingInventoryEntries] };
@@ -395,6 +413,7 @@ function buildRules(): Rule[] {
   }
 
   const userConfig = loadUserConfig();
+  const envBudget = parseScanBudget(process.env.SENSITIVE_CANARY_SCAN_BUDGET_MS);
   if (userConfig) {
     if (
       typeof userConfig.contextWindow === "number" &&
@@ -422,7 +441,19 @@ function buildRules(): Rule[] {
         for (const entry of userConfig.inventory) pendingInventoryEntries.push(entry);
       }
     }
+    if (envBudget === null) {
+      const configBudget = parseScanBudget(userConfig.scanBudgetMs);
+      if (configBudget !== null) {
+        configuredScanBudgetMs = configBudget;
+      } else if (userConfig.scanBudgetMs != null) {
+        process.stderr.write(
+          "sensitive-canary: invalid scanBudgetMs in user config, ignoring\n",
+        );
+      }
+    }
   }
+  // Env wins over the file: it is the per-invocation override.
+  if (envBudget !== null) configuredScanBudgetMs = envBudget;
 
   return defaultRules;
 }
@@ -1020,6 +1051,8 @@ export const RULES: Rule[] = applyUserOverrides(
 let runtimeInventoryRules: Rule[] = [];
 
 export function setRuntimeInventory(entries: InventoryEntry[]): void {
+  // The active rule list is part of every cached window's identity.
+  invalidateWindowCache();
   if (entries.length === 0) {
     runtimeInventoryRules = [];
     return;
@@ -1073,18 +1106,38 @@ export function redact(str: string): string {
   return `${head}****${tail}`;
 }
 
-// Longer than any honest scan and far shorter than the hook timeout. A rule
-// that backtracks badly takes minutes on a megabyte, and a hook killed by the
-// timeout does not block, so the damage is silent. The patterns that did that
-// are bounded. This catches the next one of that shape rather than letting it
-// repeat. The check sits between rules because a single `matchAll` cannot be
-// interrupted.
-export const SCAN_BUDGET_MS = 10_000;
+// Default envelope for one hook invocation, in milliseconds. A rule that
+// backtracks badly takes minutes on a megabyte, and the check sits between
+// rules because a single `matchAll` cannot be interrupted. The patterns that
+// did that are bounded; this catches the next one of that shape rather than
+// letting it repeat.
+//
+// Pi runs extension handlers inline and has no watchdog (dist/core/extensions/
+// runner.js awaits handlers directly), so the bound is user-perceived latency,
+// not a kill. Too small a value fails closed and omits text a multi-megabyte
+// payload cannot finish; too large a value stalls the turn. 30s covers a cold
+// multi-megabyte session, and the window cache below makes the next request
+// cheap. Override with SENSITIVE_CANARY_SCAN_BUDGET_MS or the user config's
+// `scanBudgetMs` (env wins).
+export const DEFAULT_SCAN_BUDGET_MS = 30_000;
+
+// Set by buildRules from env/config before the first hook, or by tests.
+let activeScanBudgetMs = configuredScanBudgetMs ?? DEFAULT_SCAN_BUDGET_MS;
+
+// `null` restores the default.
+export function setScanBudgetMs(totalMs: number | null): void {
+  activeScanBudgetMs =
+    totalMs === null ? DEFAULT_SCAN_BUDGET_MS : Math.max(1, Math.floor(totalMs));
+}
+
+export function currentScanBudgetMs(): number {
+  return activeScanBudgetMs;
+}
 
 export class ScanBudgetExceeded extends Error {
   constructor(ruleId: string, elapsed: number) {
     super(
-      `the scan passed ${SCAN_BUDGET_MS}ms (${elapsed}ms at rule "${ruleId}")`,
+      `the scan passed ${activeScanBudgetMs}ms (${elapsed}ms at rule "${ruleId}")`,
     );
     this.name = "ScanBudgetExceeded";
   }
@@ -1094,20 +1147,20 @@ export class ScanBudgetExceeded extends Error {
 // call is a small part of the work: `scanEnvironment` scans once per variable,
 // a file is scanned at both ends, and `Object.keys(process.env)` sets the
 // multiplier. Per call, each stays inside the budget while the total runs past
-// the hook timeout — and a hook killed by the timeout does not block.
+// what one hook should spend.
 //
 // Set once by each hook entry point. Left unset, every call gets the full
 // budget, which is what the test suite needs.
 let deadline: number | null = null;
 
 // `null` clears it, which is the state a process starts in.
-export function beginScanBudget(totalMs: number | null = SCAN_BUDGET_MS): void {
+export function beginScanBudget(totalMs: number | null = activeScanBudgetMs): void {
   deadline = totalMs === null ? null : Date.now() + totalMs;
 }
 
 // Share one deadline across all strings in a synchronous hook, restoring any
 // outer deadline even on failure. Nested sanitizers cannot replenish a budget.
-export function withScanBudget<T>(work: () => T, totalMs = SCAN_BUDGET_MS): T {
+export function withScanBudget<T>(work: () => T, totalMs = activeScanBudgetMs): T {
   const previous = deadline;
   deadline = Math.min(previous ?? Infinity, Date.now() + totalMs);
   try {
@@ -1119,16 +1172,15 @@ export function withScanBudget<T>(work: () => T, totalMs = SCAN_BUDGET_MS): T {
 
 // What is left of the budget, or the whole of it when none was begun.
 export function assertScanBudget(): void {
-  if (remainingBudget() <= 0) throw new ScanBudgetExceeded("document/render", SCAN_BUDGET_MS);
+  if (remainingBudget() <= 0) throw new ScanBudgetExceeded("document/render", activeScanBudgetMs);
 }
 
 function remainingBudget(): number {
-  return deadline === null ? SCAN_BUDGET_MS : deadline - Date.now();
+  return deadline === null ? activeScanBudgetMs : deadline - Date.now();
 }
 
 // The between-rule check below cannot interrupt a single `matchAll`, and one
-// rule from a user config is enough to hang the hook — which is then killed by
-// the timeout, and a killed hook does not block. A V8-side timeout does
+// rule from a user config is enough to hang the hook. A V8-side timeout does
 // interrupt a running match. Measured at 0.06ms per call, against a scan that
 // costs hundreds of times that.
 const SCAN_SLOT = "__sensitiveCanaryScan";
@@ -1160,7 +1212,7 @@ export function scan(
 ): LocatedFinding[] {
   const remaining = remainingBudget();
   if (remaining <= 0)
-    throw new ScanBudgetExceeded("this call's total", SCAN_BUDGET_MS);
+    throw new ScanBudgetExceeded("this call's total", activeScanBudgetMs);
   return runInterruptibly(
     () => scanUninterrupted(text, categories, remaining),
     remaining + HARD_LIMIT_SLACK_MS,
@@ -1329,6 +1381,227 @@ const MAX_CONSECUTIVE_TRIPS = 5;
 // is worse than slow poison handling (poison is rare, minified JS is not).
 const MIN_RULE_BUDGET_MS = 500;
 
+// ── Window cache ────────────────────────────────────────────
+// A window's findings are pure over (slice text, category filter, rule set).
+// The envelope is not part of that key: a slice that completed before the
+// envelope died is replayed on the next request instead of re-scanned. Without
+// this, a payload too large to finish in one envelope re-pays the same prefix
+// every request and trips at the same offset forever.
+//
+// Keys are SHA-256 of the slice text plus the category filter: a slice is up
+// to SCAN_WINDOW_CHARS, and a digest lets exportWindowCache persist results
+// without holding a second copy of the text (or any value at all).
+interface CachedWindow {
+  size: number;
+  findings: LocatedFinding[];
+}
+
+const WINDOW_CACHE = new Map<string, CachedWindow>();
+const WINDOW_CACHE_MAX_BYTES = 16_000_000;
+let windowCacheBytes = 0;
+let windowCacheSerial = 0;
+
+// Ranges, never values: exportWindowCache must not write a secret to disk.
+// Values are sliced out of the text again on lookup.
+interface WindowRangeRecord {
+  ruleId: string;
+  category: Category;
+  start: number;
+  end: number;
+  score: number;
+}
+
+const IMPORTED_WINDOWS = new Map<string, { size: number; findings: WindowRangeRecord[] }>();
+const IMPORTED_WINDOWS_MAX = 20_000;
+
+// Bump when detection semantics change without changing rule identity,
+// pattern, flags, or gating (a validator fix, for instance). Stale findings
+// must never hide a new detection.
+export const WINDOW_CACHE_VERSION = 1;
+let rulesFingerprint: string | null = null;
+
+function categoryKey(categories: ReadonlySet<Category>): string {
+  return [...categories].sort().join(",");
+}
+
+function windowDigest(text: string, categories: ReadonlySet<Category>): string {
+  return createHash("sha256")
+    .update(categoryKey(categories))
+    .update("\u0000")
+    .update(text)
+    .digest("hex");
+}
+
+// Everything a window result depends on besides its text. Runtime inventory
+// rules are part of activeRules(), so a hostname or username change moves it.
+export function activeRulesFingerprint(): string {
+  if (rulesFingerprint !== null) return rulesFingerprint;
+  const parts = [`v${WINDOW_CACHE_VERSION}`];
+  for (const rule of activeRules()) {
+    parts.push([
+      rule.id,
+      rule.category,
+      rule.regex.source,
+      rule.regex.flags,
+      String(rule.secretGroup ?? ""),
+      String(rule.entropyThreshold ?? ""),
+      rule.requireContext ? "1" : "0",
+      (rule.contextWords ?? []).join("\u0001"),
+      (rule.excludeContext ?? []).join("\u0001"),
+      rule.validate ? "1" : "0",
+    ].join("\u0002"));
+  }
+  rulesFingerprint = createHash("sha256").update(parts.join("\u0003")).digest("hex");
+  return rulesFingerprint;
+}
+
+function invalidateWindowCache(): void {
+  WINDOW_CACHE.clear();
+  IMPORTED_WINDOWS.clear();
+  windowCacheBytes = 0;
+  rulesFingerprint = null;
+  windowCacheSerial++;
+}
+
+export function clearWindowCache(): void {
+  invalidateWindowCache();
+}
+
+// Monotonic counter for "did anything new complete since the last save".
+export function windowCacheRevision(): number {
+  return windowCacheSerial;
+}
+
+function windowCacheCost(entry: CachedWindow): number {
+  let cost = entry.size * 2;
+  for (const finding of entry.findings) cost += finding.secretValue.length * 2;
+  return cost;
+}
+
+function windowCacheStore(digest: string, size: number, findings: LocatedFinding[]): void {
+  const previous = WINDOW_CACHE.get(digest);
+  if (previous) {
+    WINDOW_CACHE.delete(digest);
+    windowCacheBytes -= windowCacheCost(previous);
+  }
+  const entry: CachedWindow = { size, findings };
+  const cost = windowCacheCost(entry);
+  if (cost > WINDOW_CACHE_MAX_BYTES) return;
+  while (windowCacheBytes + cost > WINDOW_CACHE_MAX_BYTES) {
+    const oldest = WINDOW_CACHE.keys().next().value;
+    if (oldest === undefined) break;
+    const evicted = WINDOW_CACHE.get(oldest);
+    WINDOW_CACHE.delete(oldest);
+    if (evicted) windowCacheBytes -= windowCacheCost(evicted);
+  }
+  WINDOW_CACHE.set(digest, entry);
+  windowCacheBytes += cost;
+  windowCacheSerial++;
+}
+
+function reconstructFinding(record: WindowRangeRecord, text: string): LocatedFinding {
+  const secretValue = text.slice(record.start, record.end);
+  const rule = activeRules().find((candidate) => candidate.id === record.ruleId);
+  return {
+    ruleId: record.ruleId,
+    description: rule?.description ?? record.ruleId,
+    category: record.category,
+    matchRedacted: redact(secretValue),
+    secretValue,
+    score: record.score,
+    start: record.start,
+    end: record.end,
+  };
+}
+
+// Completed slice findings, or null when this exact slice was never finished.
+function windowCacheGet(text: string, categories: ReadonlySet<Category>): LocatedFinding[] | null {
+  const digest = windowDigest(text, categories);
+  const hit = WINDOW_CACHE.get(digest);
+  if (hit) return hit.findings;
+  const imported = IMPORTED_WINDOWS.get(digest);
+  if (!imported || imported.size !== text.length) return null;
+  const findings = imported.findings.map((record) => reconstructFinding(record, text));
+  // Promote: later requests skip reconstruction, and the next export includes
+  // these windows.
+  windowCacheStore(digest, text.length, findings);
+  return findings;
+}
+
+export interface WindowCacheSnapshot {
+  version: number;
+  fingerprint: string;
+  entries: Array<{ digest: string; size: number; findings: WindowRangeRecord[] }>;
+}
+
+// Value-free view for persistence: rule ids, categories, offsets, scores.
+// Never secretValue or matchRedacted.
+export function exportWindowCache(): WindowCacheSnapshot {
+  const entries: WindowCacheSnapshot["entries"] = [];
+  const seen = new Set<string>();
+  for (const [digest, entry] of WINDOW_CACHE) {
+    seen.add(digest);
+    entries.push({
+      digest,
+      size: entry.size,
+      findings: entry.findings.map((finding) => ({
+        ruleId: finding.ruleId,
+        category: finding.category,
+        start: finding.start,
+        end: finding.end,
+        score: finding.score ?? 0.4,
+      })),
+    });
+  }
+  for (const [digest, entry] of IMPORTED_WINDOWS) {
+    if (seen.has(digest)) continue;
+    entries.push({ digest, size: entry.size, findings: entry.findings });
+  }
+  return { version: WINDOW_CACHE_VERSION, fingerprint: activeRulesFingerprint(), entries };
+}
+
+function isWindowRangeRecord(value: unknown): value is WindowRangeRecord {
+  if (typeof value !== "object" || value === null) return false;
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.ruleId === "string" &&
+    (record.category === "secret" || record.category === "pii") &&
+    Number.isInteger(record.start) &&
+    (record.start as number) >= 0 &&
+    Number.isInteger(record.end) &&
+    (record.end as number) >= (record.start as number) &&
+    typeof record.score === "number" &&
+    Number.isFinite(record.score)
+  );
+}
+
+// Loads a snapshot written by a previous process. Returns the number of
+// windows accepted. A snapshot whose version or fingerprint differs is
+// ignored: stale findings must not hide a new detection.
+export function importWindowCache(snapshot: unknown): number {
+  if (typeof snapshot !== "object" || snapshot === null) return 0;
+  const { version, fingerprint, entries } = snapshot as Partial<WindowCacheSnapshot>;
+  if (version !== WINDOW_CACHE_VERSION) return 0;
+  if (fingerprint !== activeRulesFingerprint()) return 0;
+  if (!Array.isArray(entries)) return 0;
+  let accepted = 0;
+  for (const entry of entries) {
+    if (accepted >= IMPORTED_WINDOWS_MAX) break;
+    if (typeof entry !== "object" || entry === null) continue;
+    const { digest, size, findings } = entry as Record<string, unknown>;
+    if (typeof digest !== "string" || digest.length !== 64) continue;
+    if (!Number.isInteger(size) || (size as number) < 0) continue;
+    if (!Array.isArray(findings)) continue;
+    if (!findings.every((f) => isWindowRangeRecord(f) && f.end <= (size as number))) continue;
+    IMPORTED_WINDOWS.set(digest, {
+      size: size as number,
+      findings: findings as WindowRangeRecord[],
+    });
+    accepted++;
+  }
+  return accepted;
+}
+
 export function scanWindows(
   text: string,
   categories: ReadonlySet<Category> = ALL_CATEGORIES,
@@ -1349,13 +1622,21 @@ export function scanWindows(
   // the envelope for many-slice inputs).
   const startedAt = Date.now();
   const totalBudget = remainingBudget();
-  if (totalBudget <= 0) {
-    trips.push({ start: 0, end: text.length });
-    return { findings, trips };
-  }
   let consecutiveTrips = 0;
   for (let i = 0; i < slices.length; i++) {
     const slice = slices[i];
+    const sliceText = text.slice(slice.start, slice.end);
+    // Cache first: a window that completed before is free, and an envelope
+    // another string already spent must not turn a known-clean slice into an
+    // omission.
+    const cached = windowCacheGet(sliceText, categories);
+    if (cached !== null) {
+      for (const finding of cached) {
+        findings.push({ ...finding, start: finding.start + slice.start, end: finding.end + slice.start });
+      }
+      consecutiveTrips = 0;
+      continue;
+    }
     const remaining = totalBudget - (Date.now() - startedAt);
     // Fail closed once the envelope is spent or poison repeats: everything
     // from here on becomes one omitted span instead of passing through.
@@ -1367,15 +1648,21 @@ export function scanWindows(
     // Per-rule isolation: a poisoned rule trips alone and the slice keeps
     // every other rule's findings (a tripped slice previously discarded
     // findings its completed rules had already earned).
-    const sliceText = text.slice(slice.start, slice.end);
     const rules = activeRules();
     const ruleShare = sliceBudget / Math.max(rules.length, 1);
     const ruleCap = Math.max(MIN_RULE_BUDGET_MS, ruleShare * 2);
     let sliceTripped = false;
+    const sliceFindings: LocatedFinding[] = [];
+    const flushSlice = () => {
+      for (const finding of sliceFindings) {
+        findings.push({ ...finding, start: finding.start + slice.start, end: finding.end + slice.start });
+      }
+    };
     for (const rule of rules) {
       if (!categories.has(rule.category)) continue;
       const ruleRemaining = totalBudget - (Date.now() - startedAt);
       if (ruleRemaining <= 0) {
+        flushSlice();
         trips.push({ start: slice.start, end: text.length });
         return { findings, trips: mergeRanges(trips) };
       }
@@ -1383,13 +1670,14 @@ export function scanWindows(
         // The comfort floor never overrides the remaining envelope. V8 can
         // overshoot, so also check between rules, not only between windows.
         const located = runInterruptibly(() => scanRule(rule, sliceText), Math.min(ruleCap, ruleRemaining));
-        for (const f of located) findings.push({ ...f, start: f.start + slice.start, end: f.end + slice.start });
+        for (const f of located) sliceFindings.push(f);
       } catch (error) {
         if (error instanceof ScanBudgetExceeded) {
           // A timeout allocated the entire remaining envelope. Millisecond
           // rounding can leave a fraction on the wall clock. Do not start
           // another rule with that apparent remainder.
           if (ruleRemaining <= ruleCap) {
+            flushSlice();
             trips.push({ start: slice.start, end: text.length });
             return { findings, trips: mergeRanges(trips) };
           }
@@ -1402,14 +1690,20 @@ export function scanWindows(
     // Include the final rule: a single-window scan has no next iteration in
     // which to notice an overshoot. Unfinished coverage must stay explicit.
     if (totalBudget - (Date.now() - startedAt) <= 0) {
+      flushSlice();
       trips.push({ start: slice.start, end: text.length });
       return { findings, trips: mergeRanges(trips) };
     }
+    flushSlice();
     if (sliceTripped) {
+      // Not cached: a rule that timed out under this envelope may complete
+      // under a fuller one, and re-paying one bounded V8 timeout is cheaper
+      // than freezing an omission forever.
       trips.push({ ...slice });
       consecutiveTrips++;
     } else {
       consecutiveTrips = 0;
+      windowCacheStore(windowDigest(sliceText, categories), sliceText.length, sliceFindings);
     }
   }
   // Overlapping windows report the same occurrence twice. Collapse by

@@ -1,5 +1,5 @@
 {
-  "_readme": "Personal PII inventory. COPY to ~/.config/sensitive-canary/config.json (or point $SENSITIVE_CANARY_CONFIG at your copy), replace every EXAMPLE value with the real one, chmod 600 the copy. NEVER commit real values: this template stays inert (its values match nothing you will type). See PERSONAL-INVENTORY.md. All rules are category pii, so findings become obvious __CANARY_*__ tokens and [allow-pii] bypasses them.",
+  "_readme": "Personal PII inventory. COPY to ~/.config/sensitive-canary/config.json (or point $SENSITIVE_CANARY_CONFIG at your copy), replace every EXAMPLE value with the real one, chmod 600 the copy. NEVER commit real values: this template stays inert (its values match nothing you will type). See PERSONAL-INVENTORY.md. All rules are category pii, so findings become obvious __CANARY_*__ tokens and [allow-pii] bypasses them. Optional scanBudgetMs (or $SENSITIVE_CANARY_SCAN_BUDGET_MS) raises the per-hook scan envelope for very large sessions.",
   "rules": [
     {
       "id": "pii-personal-name",
