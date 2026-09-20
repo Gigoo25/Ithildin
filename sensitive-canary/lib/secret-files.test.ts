@@ -39,6 +39,14 @@ describe("isSecretFile", () => {
     expect(isSecretFile(".config/gh/hosts.yaml")).toBe(true);
     expect(isSecretFile(".config/gcloud/application_default_credentials.json")).toBe(true);
     expect(isSecretFile(".docker/config.json")).toBe(true);
+    // Root-level relative spellings carry no leading separator; they must
+    // still match the same credential paths as "./" and nested spellings.
+    expect(isSecretFile("application_default_credentials.json")).toBe(true);
+    expect(isSecretFile("kube/config")).toBe(true);
+    expect(isSecretFile("gh/hosts.yml")).toBe(true);
+    expect(isSecretFile("gh/hosts.yaml")).toBe(true);
+    expect(isSecretFile("docker/config.json")).toBe(true);
+    expect(isSecretFile("hosts.yml")).toBe(false);
     expect(isSecretFile("src/config.json")).toBe(false);
     expect(isDotenvFile(".env.local")).toBe(true);
     expect(isDotenvFile("prod.env")).toBe(true);

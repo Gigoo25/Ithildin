@@ -84,7 +84,9 @@ export function isSecretFile(filePath: string): boolean {
     if (SECRET_BASENAMES.has(lower)) return true;
     if (SSH_PRIVATE_KEY.test(base)) return true;
     if (SECRET_SUFFIX.test(base)) return true;
-    const pathLower = normalized.toLowerCase();
+    // Prefix a separator so root-level relative spellings match the suffix
+    // rules below ("kube/config", not just "x/kube/config" or "/kube/config").
+    const pathLower = `/${normalized}`.toLowerCase();
     if (pathLower.endsWith("/application_default_credentials.json")) return true;
     if (pathLower.endsWith("/gh/hosts.yml") || pathLower.endsWith("/gh/hosts.yaml")) return true;
     if (/(?:^|\/)\.kube\/config$/.test(pathLower) || pathLower.endsWith("/kube/config")) return true;

@@ -18,12 +18,13 @@ function harness() {
 
 it("blocks listed secret-path files and leaves public keys", async () => {
 	const { handlers, ctx } = harness();
-	for (const target of ["id_rsa", "secrets/id_rsa", ".netrc", ".kube/config", "prod.env"]) {
+	for (const target of ["id_rsa", "secrets/id_rsa", ".netrc", ".kube/config", "prod.env", "application_default_credentials.json", "kube/config", "gh/hosts.yml", "docker/config.json"]) {
 		const out = await handlers.tool_call({ toolName: "read", input: { path: target } }, ctx);
 		expect(out?.block).toBe(true);
 		expect(out?.reason).toContain("secret access");
 	}
 	expect((await handlers.tool_call({ toolName: "bash", input: { command: "cat .ssh/id_ed25519" } }, ctx))?.block).toBe(true);
+	expect((await handlers.tool_call({ toolName: "bash", input: { command: "cat application_default_credentials.json" } }, ctx))?.block).toBe(true);
 	expect(await handlers.tool_call({ toolName: "read", input: { path: "id_rsa.pub" } }, ctx)).toBeUndefined();
 	expect(await handlers.tool_call({ toolName: "bash", input: { command: 'f=id_rsa; cat "$f"' } }, ctx)).toBeUndefined();
 });
@@ -45,6 +46,20 @@ it("synthesizes non-assignment secret-file bodies", async () => {
 	}, ctx);
 	expect(out.content[0].text).not.toBe(marker);
 	expect(out.content[0].text).not.toContain("openssh-private-key-fixture-body");
+	// Bare root-level credential spellings take the same whole-synthesis path.
+	for (const input of [
+		{ path: "application_default_credentials.json" },
+		{ path: "kube/config" },
+	] as const) {
+		const viaRead = handlers.tool_result({ toolName: "read", input, content: [{ type: "text", text: marker }] }, ctx);
+		expect(viaRead.content[0].text).not.toBe(marker);
+	}
+	const viaBash = handlers.tool_result({
+		toolName: "bash",
+		input: { command: "cat application_default_credentials.json" },
+		content: [{ type: "text", text: marker }],
+	}, ctx);
+	expect(viaBash.content[0].text).not.toBe(marker);
 });
 
 it("blocks secret-shaped values in tool arguments", async () => {
