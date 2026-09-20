@@ -719,7 +719,9 @@ const LOCAL_RULES: Rule[] = [
   {
     id: "pii-tailscale-ip",
     description: "CGNAT/Tailscale IPv4 Address (100.64/10)",
-    regex: /\b(100\.(?:6\d|7\d|8\d|9\d|1[0-2]\d)\.\d{1,3}\.\d{1,3})\b/g,
+    // A trailing "/N" makes the value a documented range (100.64.0.0/10),
+    // not a host address, so the prefix length stays readable.
+    regex: /\b(100\.(?:6\d|7\d|8\d|9\d|1[0-2]\d)\.\d{1,3}\.\d{1,3})\b(?!\/\d)/g,
     category: "pii",
   },
   {
@@ -837,6 +839,10 @@ const LOCAL_RULES: Rule[] = [
     regex: /(?:\bname|\bfull name|\bpatient|\bcustomer|\bcontact|\battn|\bauthor|\bsender|\brecipient|\bregistrant|\bsigner|\bfrom|\bto|\bcc)\s*[:=]\s*([A-Z][a-z]+(?:[ -][A-Z][a-z.]+){1,2})/gi,
     secretGroup: 1,
     category: "pii",
+    // The "i" flag makes the value pattern case-insensitive too, so a YAML
+    // slug (name: design-discipline) matches on its second word. Require real
+    // capitalization instead, which is what the pattern intends.
+    validate: (value: string) => value.split(/[ -]/).every((word) => /^[A-Z]/.test(word)),
   },
   // Titles are nearly unambiguous person markers: no prose shape looks
   // like "Dr Smith". Case-sensitive on purpose (lowercase "dr jones" is
@@ -933,7 +939,7 @@ const LOCAL_RULES: Rule[] = [
     // is public knowledge, not PII, and the trailing guard stops the match
     // from firing on its first label. Internal FQDNs are already covered
     // by pii-internal-host regardless of label.
-    regex: /(?:\bhost(?:name)?|\bserver|\bmachine)\s*[:=]\s*["']?([A-Za-z0-9][A-Za-z0-9-]{0,61}[A-Za-z0-9])(?![\w.-])/gi,
+    regex: /(?:\bhost(?:name)?|\bserver|\bmachine)\s*[:=]\s*["']?([A-Za-z0-9][A-Za-z0-9-]{0,61}[A-Za-z0-9])(?![\w.\-(])/gi,
     secretGroup: 1,
     // Two-character minimum drops Nix lambda params (`host: u:`). The stem
     // list drops English contractions (`host: don't`) and bare references.

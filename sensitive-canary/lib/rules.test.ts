@@ -167,6 +167,16 @@ describe("local rule additions", () => {
     ).toBe(false);
   });
 
+  it("leaves documented CIDR ranges alone", () => {
+    const range = `${[100, 64, 0, 0].join(".")}/10`;
+    expect(
+      scan(`// CGN ${range} is carrier-grade NAT`).some((f) => f.ruleId === "pii-tailscale-ip"),
+    ).toBe(false);
+    expect(
+      scan(`peer ${[100, 101, 2, 3].join(".")} up`).some((f) => f.ruleId === "pii-tailscale-ip"),
+    ).toBe(true);
+  });
+
   it("synthesizes single-label hostnames in labeled assignments", () => {
     for (const [text, secretValue] of [
       ['hostname = "backupbox"', "backupbox"],
@@ -190,6 +200,8 @@ describe("local rule additions", () => {
       'hostname = "server"',
       "8GB host: don't let one flake fetch pin the cache",
       "niriConfigs = lib.mapAttrsToList (host: u: {",
+      "const host = normalizeHostname(identity.hostname);",
+      "machine = readMachineName()",
     ]) {
       expect(
         scan(text).some((f) => f.ruleId === "pii-labeled-host"),
@@ -416,9 +428,20 @@ it("rejects prose lookalikes for inventory rules", () => {
       ["username = ordinary_handle", "pii-labeled-name"],
       ["took 2 Road trips", "pii-street-address"],
       ["version 8159 track", "pii-bank-account-prefix"],
+      // YAML frontmatter slugs. The rule's "i" flag also makes the value
+      // pattern case-insensitive, so these matched on their second word.
+      ["name: design-discipline", "pii-labeled-name"],
+      ["name: ste-writing", "pii-labeled-name"],
+      ["name: resolving-merge-conflicts", "pii-labeled-name"],
     ] as const) {
       expect(scan(text).some((f) => f.ruleId === id)).toBe(false);
     }
+  });
+
+  it("still catches capitalized names behind identity labels", () => {
+    expect(
+      scan("name: Tessa Marsh").some((f) => f.ruleId === "pii-labeled-name"),
+    ).toBe(true);
   });
 
   it("detects Tailscale keys and age secret keys", () => {
