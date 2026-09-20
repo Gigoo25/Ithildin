@@ -19,11 +19,12 @@
 // paths or identifiers; only the value type leaks.
 //
 // Five interception points:
-//   tool_call               -- block direct `.env` access and cookie transfer.
+//   tool_call               -- block secret-file access, cookie transfer, and
+//                              secret-shaped tool arguments.
 //   context                 -- synthesize user-authored sensitive values.
 //   before_provider_request -- scan the final wire payload, including system
 //                              prompts and provider-specific fields.
-//   tool_result             -- synthesize tool output and all `.env` values.
+//   tool_result             -- synthesize tool output and secret-file values.
 //   message_end             -- persist the redacted view, never the original,
 //                              so compaction (which bypasses the event bus and
 //                              reads stored entries) can only re-send what the
@@ -43,7 +44,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { randomBytes } from "node:crypto";
 import { realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { type Finding, type LocatedFinding, mergeRanges, scanWindows, SCAN_WINDOW_OVERLAP, withScanBudget, assertScanBudget } from "./lib/rules.ts";
+import { type Finding, type LocatedFinding, mergeRanges, scanWindows, SCAN_WINDOW_OVERLAP, withScanBudget, assertScanBudget, ScanBudgetExceeded, setRuntimeInventory } from "./lib/rules.ts";
 import { planRedaction } from "./lib/redaction-spans.ts";
 import { reportRedaction } from "./lib/redaction-audit.ts";
 import { assignmentEdits, inspectDocument } from "./lib/structured-text.ts";
@@ -62,6 +63,8 @@ import {
   redactCookieValue,
 } from "./lib/cookies.ts";
 import { isImagePayload } from "./lib/image-payload.ts";
+import { isDotenvFile, isSecretFile } from "./lib/secret-files.ts";
+import { collectRuntimeIdentity, identityFromGit, identityFromOs } from "./lib/runtime-inventory.ts";
 
 // Larger strings skip regex scanning and are synthesized in full.
 const MAX_SCAN_BYTES = 2_000_000;
@@ -501,15 +504,8 @@ function redactValue(
   return { value, hits: 0 };
 }
 
-// `.env` and `.env.* may contain low-entropy passwords that pattern matching
+// Secret-path files may contain low-entropy passwords that pattern matching
 // cannot detect. Their values are always synthesized while keys remain useful.
-function isEnvFile(filePath: string): boolean {
-  if (!filePath) return false;
-  return filePath.split(/[?:]/).some((candidate) => {
-    const base = path.basename(candidate);
-    return base === ".env" || (base.startsWith(".env.") && base !== ".env.example");
-  });
-}
 
 function extractFilePathsFromCommand(command: string): string[] {
   const paths: string[] = [];
@@ -536,11 +532,11 @@ function extractFilePathsFromCommand(command: string): string[] {
   return [...new Set(paths)];
 }
 
-function commandReadsEnv(command: string): boolean {
+function commandReadsSecretFile(command: string): boolean {
   return command
     .split(/[\s|;&<>]+/)
     .some((token) =>
-      isEnvFile(token.replace(/^["'`()$]+|["'`()]+$/g, "")),
+      isSecretFile(token.replace(/^["'`()$@]+|["'`()]+$/g, "")),
     );
 }
 
@@ -631,6 +627,19 @@ function synthesizeEnvChunks(content: readonly unknown[]): {
   return { content: out, hits };
 }
 
+function synthesizeWholeChunks(content: readonly unknown[]): {
+  content: unknown[];
+  hits: number;
+} {
+  let hits = 0;
+  const out = content.map((chunk) => {
+    if (!isTextChunk(chunk)) return chunk;
+    hits++;
+    return { ...chunk, text: syntheticValue(chunk.text) };
+  });
+  return { content: out, hits };
+}
+
 const SYNTHESIS_NOTICE =
   "[sensitive-canary] Synthesized placeholders above are not real data — use only as labels. Never pass to tools, use as paths/commands/identifiers, or reverse.";
 
@@ -674,6 +683,48 @@ function latestAllowTags(messages: Message[]): Set<string> {
   return resolveTagPriority(latestUser ? userTypedText(latestUser) : "").effectiveAllow;
 }
 
+function allowGrantLabel(tags: Set<string>): string {
+  if (tags.has("all")) return "all sensitive-canary checks (PII and secrets)";
+  const parts: string[] = [];
+  if (tags.has("secret")) parts.push("secrets");
+  if (tags.has("pii")) parts.push("PII");
+  return parts.join(" and ") || "sensitive values";
+}
+
+type AllowGrantCtx = {
+  hasUI?: boolean;
+  mode?: string;
+  signal?: AbortSignal;
+  ui?: {
+    select?: (prompt: string, choices: string[], opts?: { signal?: AbortSignal }) => Promise<string>;
+  };
+};
+
+async function resolveAllowGrant(
+  tags: Set<string>,
+  ctx: AllowGrantCtx | undefined,
+  prior: boolean | undefined,
+): Promise<{ tags: Set<string>; grant: boolean | undefined }> {
+  if (tags.size === 0) return { tags, grant: prior };
+  if (prior === true) return { tags, grant: true };
+  if (prior === false) return { tags: new Set(), grant: false };
+  const interactive = Boolean(
+    ctx?.hasUI && ctx.ui?.select && ctx.mode && ["tui", "rpc"].includes(ctx.mode),
+  );
+  if (!interactive) return { tags, grant: true };
+  try {
+    const choice = await ctx!.ui!.select!(
+      `sensitive-canary: this prompt asks to allow ${allowGrantLabel(tags)} this turn. Permit?`,
+      ["Yes", "No"],
+      { signal: ctx?.signal },
+    );
+    const grant = choice === "Yes";
+    return { tags: grant ? tags : new Set(), grant };
+  } catch {
+    return { tags: new Set(), grant: false };
+  }
+}
+
 // Placeholders are fake by design, so executing them always fails confusingly
 // (no such path, user, or host). Fail fast with recovery guidance instead.
 // The tag maps back to the allow-tag category, exactly like tokenTagFor.
@@ -694,11 +745,31 @@ function placeholderViolations(input: unknown, allowTags: Set<string>): string |
   return;
 }
 
-function blocksSecretAccess(toolName: string, command: string, targets: string[], allowTags: Set<string>): boolean {  if (allowTags.has("secret")) return false;
+function blocksSecretAccess(toolName: string, command: string, targets: string[], allowTags: Set<string>): boolean {
+  if (allowTags.has("secret")) return false;
   return (
-    (toolName === "bash" && (commandReadsEnv(command) || commandSendsCookies(command))) ||
-    targets.some(isEnvFile)
+    (toolName === "bash" && (commandReadsSecretFile(command) || commandSendsCookies(command))) ||
+    targets.some(isSecretFile)
   );
+}
+
+// Secrets only: host/user/email in commands are normal (ssh, git, $HOME).
+// Block, do not redact-and-run. Scan-budget trips fail closed.
+function toolInputHasSecret(input: unknown, allowTags: Set<string>): boolean {
+  if (allowTags.has("secret") || allowTags.has("all")) return false;
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(input ?? {});
+  } catch {
+    return true;
+  }
+  try {
+    const { findings, trips } = cachedScan(serialized);
+    return trips.length > 0 || findings.some((finding) => finding.category === "secret");
+  } catch (error) {
+    if (error instanceof ScanBudgetExceeded) return true;
+    throw error;
+  }
 }
 
 // Inventory reads are PII-gated rather than secret-gated: the file holds
@@ -713,17 +784,20 @@ function blocksInventoryAccess(toolName: string, command: string, targets: strin
 
 function sanitizeToolContent(
   content: readonly unknown[],
-  envOutput: boolean,
+  fileKind: "none" | "dotenv" | "secret-file",
   allowTags: Set<string>,
 ): { content: unknown[]; hits: number } {
   if (allowTags.has("all")) return { content: [...content], hits: 0 };
-  if (envOutput && !allowTags.has("secret")) return synthesizeEnvChunks(content);
+  if (allowTags.has("secret")) return redactChunks(content, allowTags);
+  if (fileKind === "dotenv") return synthesizeEnvChunks(content);
+  if (fileKind === "secret-file") return synthesizeWholeChunks(content);
   return redactChunks(content, allowTags);
 }
 
 export default function sensitiveCanary(pi: ExtensionAPI): void {
   let pendingWarningCount = 0;
   let allowTags = new Set<string>();
+  let allowGrant: boolean | undefined;
   let canaryEnabled = true;
 
   function applyCanary(next: boolean, ctx?: { ui?: { notify?: (message: string, level?: string) => void } }): void {
@@ -785,6 +859,7 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
   pi.on("agent_start", () => {
     pendingWarningCount = 0;
     allowTags = new Set<string>();
+    allowGrant = undefined;
     LEDGER.clear();
   });
 
@@ -801,6 +876,8 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
     canaryEnabled = next;
     pi.appendEntry(STATE_ENTRY, { enabled: next });
     pi.events.emit("sensitive-canary:mode", { enabled: next });
+    setRuntimeInventory(collectRuntimeIdentity({ ...identityFromOs(), ...identityFromGit() }));
+    clearCaches();
   });
 
   pi.on("agent_end", (_event, ctx) => {
@@ -843,6 +920,12 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
         reason: `sensitive-canary: ${placeholder} is a synthetic placeholder, not a real path or identifier — the call cannot succeed with it. Resolve the real value at runtime ($HOME, $(id -un), positional selection) instead of reusing redacted text. Add [allow-pii] or [allow-all] to the current user prompt to bypass this check.`,
       };
     }
+    if (withScanBudget(() => toolInputHasSecret(event.input, allowTags))) {
+      return {
+        block: true,
+        reason: "sensitive-canary: refusing to send a secret in a tool call. Add [allow-secrets] or [allow-all] to the current user prompt to bypass this check.",
+      };
+    }
     if (hasNonRelativePath(event.toolName, targets)) {
       return {
         block: true,
@@ -852,11 +935,20 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
   });
 
   // ── ingress: user-authored text, before it reaches the provider ───────────
-  pi.on("context", (event, ctx) => withScanBudget(() => {
+  // Stay synchronous unless a TUI confirm is required: bench and most unit
+  // tests call context without await.
+  pi.on("context", (event, ctx) => {
     if (!canaryEnabled) return;
     const all = event.messages as readonly unknown[] as Message[];
-    allowTags = latestAllowTags(all);
-    if (allowTags.has("all")) return;
+    const requested = latestAllowTags(all);
+    const interactive = Boolean(
+      requested.size > 0 &&
+      allowGrant === undefined &&
+      ctx?.hasUI && ctx.ui?.select && ctx.mode && ["tui", "rpc"].includes(ctx.mode),
+    );
+    const redact = () => {
+      if (allowTags.has("all")) return;
+      return withScanBudget(() => {
     let total = 0;
     const messages = all.map((message) => {
       if (message.role !== "user") return message;
@@ -896,7 +988,21 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
     if (total === 0) return;
     recordWarning(total);
     return { messages };
-  }));
+      });
+    };
+    if (interactive) {
+      return (async () => {
+        const resolved = await resolveAllowGrant(requested, ctx, allowGrant);
+        allowGrant = resolved.grant;
+        allowTags = resolved.tags;
+        return redact();
+      })();
+    }
+    if (allowGrant === false) allowTags = new Set();
+    else allowTags = requested;
+    if (requested.size > 0 && allowGrant === undefined) allowGrant = true;
+    return redact();
+  });
 
   // ── final egress: scan the exact provider payload ─────────────────────────
   pi.on("before_provider_request", (event, ctx) => withScanBudget(() => {
@@ -918,7 +1024,12 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
       event.toolName === "bash"
         ? extractFilePathsFromCommand(command)
         : candidatePaths(input);
-    const result = sanitizeToolContent(event.content, targets.some(isEnvFile), allowTags);
+    const fileKind = targets.some(isDotenvFile)
+      ? "dotenv"
+      : targets.some(isSecretFile)
+        ? "secret-file"
+        : "none";
+    const result = sanitizeToolContent(event.content, fileKind, allowTags);
     const { content, hits } = result;
     const finalContent = hits === 0 ? event.content : content;
     pi.events.emit("sensitive-canary:tool-result-sanitized", {
@@ -983,6 +1094,8 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
   }));
   pi.on("session_shutdown", () => {
     allowTags.clear();
+    allowGrant = undefined;
+    setRuntimeInventory([]);
     clearCaches();
   });
 }

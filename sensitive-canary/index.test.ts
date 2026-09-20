@@ -1,9 +1,9 @@
 // Behavioral checks for the port glue (not upstream rules — see rules.test.ts).
 // index.ts's @earendil-works/pi-coding-agent import is type-only, so Bun erases it
 // and a stub ExtensionAPI drives the real handlers.
-import { beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { join, relative } from "node:path";
-import { beginScanBudget } from "./lib/rules.ts";
+import { beginScanBudget, setRuntimeInventory } from "./lib/rules.ts";
 import sensitiveCanary from "./index.ts";
 
 type Handler = (event: any, ctx?: any) => Promise<any>;
@@ -40,6 +40,10 @@ const ANTHROPIC_KEY = `sk-ant-${"a".repeat(95)}`;
 describe("sensitive-canary port", () => {
   beforeEach(() => {
     handlers.agent_start({}, ctx);
+    setRuntimeInventory([]);
+  });
+  afterEach(() => {
+    setRuntimeInventory([]);
   });
 
   it("certifies and sanitizes persisted text", () => {
@@ -539,6 +543,9 @@ describe("sensitive-canary port", () => {
     ).toBeUndefined();
     expect(
       await handlers.tool_call({ toolName: "bash", input: { command: "cat prod.env" } }),
+    ).toMatchObject({ block: true });
+    expect(
+      await handlers.tool_call({ toolName: "read", input: { path: "id_rsa.pub" } }),
     ).toBeUndefined();
   });
 

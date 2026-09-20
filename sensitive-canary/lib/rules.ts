@@ -992,6 +992,40 @@ export const RULES: Rule[] = applyUserOverrides(
   __userRuleConfigs,
 ).concat(__inventoryRules);
 
+// Session-start identity rules. Kept off RULES so budget tests can splice the
+// built-in list without inheriting the host's username, and so shutdown can
+// drop them without rewriting user config.
+let runtimeInventoryRules: Rule[] = [];
+
+export function setRuntimeInventory(entries: InventoryEntry[]): void {
+  if (entries.length === 0) {
+    runtimeInventoryRules = [];
+    return;
+  }
+  const existing = new Set(RULES.map((r) => `${r.regex.source}\0${r.regex.flags}`));
+  const existingIds = new Set(RULES.map((r) => r.id));
+  const compiled: Rule[] = [];
+  for (const entry of entries) {
+    try {
+      const rule = compileInventoryEntry(entry);
+      const key = `${rule.regex.source}\0${rule.regex.flags}`;
+      if (existingIds.has(rule.id) || existing.has(key)) continue;
+      existing.add(key);
+      existingIds.add(rule.id);
+      compiled.push(rule);
+    } catch {
+      process.stderr.write(
+        "sensitive-canary: invalid runtime inventory entry rejected (details withheld)\n",
+      );
+    }
+  }
+  runtimeInventoryRules = compiled;
+}
+
+function activeRules(): Rule[] {
+  return runtimeInventoryRules.length === 0 ? RULES : RULES.concat(runtimeInventoryRules);
+}
+
 // User rules collected during buildRules so LOCAL_RULES share the same
 // override pass. Stored aside because module init order defines LOCAL_RULES
 // after buildRules runs.
@@ -1223,7 +1257,7 @@ function scanUninterrupted(
   const findings: LocatedFinding[] = [];
   const startedAt = Date.now();
 
-  for (const rule of RULES) {
+  for (const rule of activeRules()) {
     if (!categories.has(rule.category)) continue;
     const elapsed = Date.now() - startedAt;
     // Thrown rather than returned: a partial result is indistinguishable from a
@@ -1312,10 +1346,11 @@ export function scanWindows(
     // every other rule's findings (a tripped slice previously discarded
     // findings its completed rules had already earned).
     const sliceText = text.slice(slice.start, slice.end);
-    const ruleShare = sliceBudget / RULES.length;
+    const rules = activeRules();
+    const ruleShare = sliceBudget / Math.max(rules.length, 1);
     const ruleCap = Math.max(MIN_RULE_BUDGET_MS, ruleShare * 2);
     let sliceTripped = false;
-    for (const rule of RULES) {
+    for (const rule of rules) {
       if (!categories.has(rule.category)) continue;
       const ruleRemaining = totalBudget - (Date.now() - startedAt);
       if (ruleRemaining <= 0) {

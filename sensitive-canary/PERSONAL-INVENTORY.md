@@ -41,6 +41,13 @@ Notes:
   Inventory entries only append — they never override built-ins. The existing
   500-entry ceiling remains; entries beyond it are not loaded and produce a
   warning. This is a capacity limit, not a fail-closed policy boundary.
+- At session start the engine also compiles in-memory inventory rules from the
+  process username, hostname (and its first label), home directory, and
+  `git config user.name` / `user.email` when git is available. These
+  never hit disk or the ledger. Generic names (`localhost`, `root`, distro
+  defaults), example-template tokens, ephemeral `/tmp` homes, and values under
+  three characters are skipped. File inventory still wins for employer names,
+  family names, and SSIDs.
 - Invalid regexes and unknown validators reject that definition without printing
   the supplied identifier, regex body, validator name or config contents. The
   last valid custom rule definition is retained. Import-time loading is covered
