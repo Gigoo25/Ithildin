@@ -36,6 +36,17 @@ describe("redaction spans", () => {
     });
     expect(out.text.split("XYZ").length - 1).toBe(2);
   });
+  it("does not propagate single-character fragments", () => {
+    const text = `q x q`;
+    const start = text.indexOf("x");
+    const out = planRedaction({
+      text,
+      findings: [loc({ secretValue: "x", start, end: start + 1 })],
+      trips: [],
+      replacementFor: () => "X",
+    });
+    expect(out.text).toBe("q X q");
+  });
   it("hides every repeated secret even when embedded", () => {
     const text = `tok AAA embedded AAABBB`;
     const out = planRedaction({

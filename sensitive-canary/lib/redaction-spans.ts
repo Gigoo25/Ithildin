@@ -59,6 +59,11 @@ export function planRedaction(input: PlanInput): { text: string; edits: SpanEdit
       }
     }
     for (const [value, f] of values) {
+      // A captured fragment can be much shorter than the full sensitive value (for
+      // example, a one-character local part of user@host). Propagating such a
+      // fragment replaces unrelated text. The exact finding is already covered by
+      // the direct range above, so only propagate specific values.
+      if (value.length < 2) continue;
       let at = 0;
       while (at < text.length) {
         check();
