@@ -492,6 +492,17 @@ describe("freeform name recall", () => {
     }
   });
 
+  it("leaves UI key names and chords alone", () => {
+    for (const text of [
+      "Press Tab to accept",
+      "Press Ctrl+Tab to switch modes",
+      "Press Enter to continue",
+      "Press Escape for the palette",
+    ]) {
+      expect(scan(text).filter((f) => f.ruleId === "pii-gazetteer-name")).toEqual([]);
+    }
+  });
+
   it("catches names behind titles without keeping the title", () => {
     const titled = scan("Please contact Dr. Elena Vasquez before noon");
     const hit = titled.find((f) => f.ruleId === "pii-titled-name");

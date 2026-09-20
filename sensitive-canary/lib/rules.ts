@@ -94,6 +94,14 @@ export interface InventoryEntry {
 export const INVENTORY_ID_PREFIX = "pii-inventory-";
 export const MAX_INVENTORY_ENTRIES = 500;
 
+// Key names that pair with "Press" or "Click" in prose and never with a real
+// surname. The gazetteer rule compares its second word against this set.
+const KEY_WORDS = new Set([
+  "alt", "backspace", "cmd", "command", "control", "ctrl", "delete", "down",
+  "end", "enter", "esc", "escape", "home", "insert", "left", "option",
+  "pagedown", "pageup", "return", "right", "shift", "space", "tab", "up",
+]);
+
 export function escapeRegExp(literal: string): string {
   return literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -851,9 +859,17 @@ const LOCAL_RULES: Rule[] = [
   {
     id: "pii-gazetteer-name",
     description: "Personal name starting with a gazetteer first name",
-    regex: /\b([A-Z][A-Za-z]{1,24}(?:[ -][A-Z][A-Za-z'.-]{1,29}){0,1}(?:[ -][A-Z][A-Za-z'.-]{0,28}[A-Za-z]))/g,
+    regex: /\b([A-Z][A-Za-z]{1,24}(?:[ -][A-Z][A-Za-z'.-]{1,29}){0,1}(?:[ -][A-Z][A-Za-z'.-]{0,28}[A-Za-z]))(?![A-Za-z'.-]*\+)/g,
     category: "pii",
-    validate: (value: string) => FIRST_NAMES.has(value.split(/[ -]/)[0]!.toLowerCase()),
+    validate: (value: string) => {
+      if (!FIRST_NAMES.has(value.split(/[ -]/)[0]!.toLowerCase())) return false;
+      // "press" is a gazetteer name, so the pair shape alone also matches UI
+      // key names and chords. Key chords carry a "+" (rejected by the
+      // pattern); the rest are caught by the second word here. Split on
+      // non-letters so "Ctrl+Tab" still yields "ctrl".
+      const words = value.split(/[^A-Za-z]+/).filter(Boolean);
+      return !KEY_WORDS.has((words[1] ?? "").toLowerCase());
+    },
   },
   // Street addresses carry their own suffix vocabulary, so the shape is
   // precise without context words: the match must terminate on a suffix,
