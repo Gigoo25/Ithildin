@@ -593,12 +593,16 @@ describe("sensitive-canary port", () => {
     expect(res.input[2].text).not.toBe(`api_key=${payloadSecret}`);
   });
 
-  it("preserves Responses control enums even when the scan budget is exhausted", async () => {
+  it("preserves provider control enums even when the scan budget is exhausted", async () => {
     const payload = {
       include: ["reasoning.encrypted_content"],
       reasoning: { effort: "medium", summary: "auto" },
       service_tier: "auto",
       input: [{ type: "message", role: "user", text: `api_key=${AWS_KEY}` }],
+      // Chat Completions compat fields are written after the (huge) message
+      // body, which is the region the budget trip omits first.
+      reasoning_effort: "low",
+      reasoningEffort: "max",
     };
     beginScanBudget(0);
     try {
@@ -608,6 +612,8 @@ describe("sensitive-canary port", () => {
       expect(res.service_tier).toBe("auto");
       expect(res.input[0].type).toBe("message");
       expect(res.input[0].role).toBe("user");
+      expect(res.reasoning_effort).toBe("low");
+      expect(res.reasoningEffort).toBe("max");
       expect(JSON.stringify(res)).not.toContain(AWS_KEY);
     } finally {
       beginScanBudget(null);

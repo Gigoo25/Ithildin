@@ -214,6 +214,8 @@ const OPAQUE_PROVIDER_FIELDS: Record<string, true> = {
 // (400 include[0]: unknown variant). Pass these control keys through so a
 // starved budget cannot corrupt the call. Content fields (input text,
 // instructions, tool arguments, data/url, etc.) remain scanned.
+// Chat Completions compat adapters send the same class of enum as
+// reasoning_effort (422 unknown variant).
 const PROTOCOL_PASSTHROUGH_FIELDS: Record<string, true> = {
   include: true,
   reasoning: true,
@@ -221,6 +223,8 @@ const PROTOCOL_PASSTHROUGH_FIELDS: Record<string, true> = {
   summary: true,
   service_tier: true,
   serviceTier: true,
+  reasoning_effort: true,
+  reasoningEffort: true,
   tool_choice: true,
   toolChoice: true,
   type: true,
