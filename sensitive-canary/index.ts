@@ -105,6 +105,11 @@ function cachedScan(text: string): { findings: LocatedFinding[]; trips: Array<{ 
   const hit = SCAN_CACHE.get(text);
   if (hit) return hit;
   const found = scanWindows(text);
+  // A trip belongs to the hook envelope, not the text: caching it would make
+  // one exhausted payload scan poison every later scan of the same string. A
+  // tool call's arguments JSON is replayed inside the next provider payload,
+  // so a tripped replay would later block the benign repeat call as a secret.
+  if (found.trips.length > 0) return found;
   const cost = text.length * 2; // UTF-16 code units × 2 bytes
   if (cost <= SCAN_CACHE_MAX_BYTES) {
     while (scanCacheBytes + cost > SCAN_CACHE_MAX_BYTES) {

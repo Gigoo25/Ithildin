@@ -113,6 +113,31 @@ it("blocks tool calls when the scan budget is exhausted", async () => {
 	}
 });
 
+it("does not let a tripped payload scan poison later tool calls", async () => {
+	// Provider payloads replay tool-call arguments JSON. When that replay trips
+	// on a spent envelope, the trip must not be cached as a property of the
+	// text: a later benign repeat call would block as if it carried a secret.
+	const { handlers, ctx } = harness();
+	const args = { path: "zztmp-benign-poison-fixture.txt" };
+	beginScanBudget(0);
+	try {
+		await handlers.before_provider_request({
+			payload: {
+				messages: [{
+					role: "assistant",
+					tool_calls: [{
+						type: "function",
+						function: { name: "read", arguments: JSON.stringify(args) },
+					}],
+				}],
+			},
+		}, ctx);
+	} finally {
+		beginScanBudget(null);
+	}
+	expect(await handlers.tool_call({ toolName: "read", input: args }, ctx)).toBeUndefined();
+});
+
 it("tokenizes runtime identity in user text", async () => {
 	const { handlers, ctx } = harness();
 	setRuntimeInventory(collectRuntimeIdentity({
