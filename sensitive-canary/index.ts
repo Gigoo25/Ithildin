@@ -429,13 +429,26 @@ const CHAIN_REFERENCE_PARENT_TYPES: Record<string, true> = {
 };
 
 function isChainReference(key: string | undefined, parent: Record<string, unknown> | undefined, location: readonly (string | number)[], providerPayload: boolean): boolean {
-  if (!parent || !key) return false;
   const at = (...parts: Array<string | null>): boolean => location.length === parts.length &&
     parts.every((part, i) => part === null ? typeof location[i] === "number" : location[i] === part);
+  // JSON-Schema `required` entries are string array elements, so they arrive
+  // without a key. They must name real properties or the provider 400s;
+  // protect them only inside tool-definition / structured-output schemas.
+  if (providerPayload && location.length >= 2 && location[location.length - 2] === "required" &&
+      (location[0] === "tools" || location[0] === "response_format" || location[0] === "text")) {
+    return true;
+  }
+  if (!parent || !key) return false;
   // Persisted root details can be a provider object without a type tag.
   // Never extend this exception to arbitrary nested records.
   if (!providerPayload) return at("id") && ("encrypted_content" in parent || "encryptedContent" in parent);
   if (key === "previous_response_id") return at(key);
+  // Tool-definition / structured-output names and the top-level model are
+  // wire identifiers with provider-side constraints; a starved budget must
+  // not rewrite them (400 invalid name / missing model).
+  if (key === "model" && at(key)) return true;
+  if (key === "name" && (at("tools", null, key) || at("tools", null, "function", key) ||
+      at("response_format", "json_schema", key) || at("text", "format", key))) return true;
   if (at("input", null, key)) {
     if (key === "id") return typeof parent.type === "string" && CHAIN_REFERENCE_PARENT_TYPES[parent.type] === true;
     if (key === "call_id") return parent.type === "function_call" || parent.type === "function_call_output";

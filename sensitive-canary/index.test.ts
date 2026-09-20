@@ -817,6 +817,65 @@ describe("sensitive-canary port", () => {
     expect(JSON.stringify(plain)).not.toContain("1107046800026");
   });
 
+  it("preserves tool definitions and schema identifiers when the scan budget is exhausted", async () => {
+    // Completions bodies put messages before tools, so a starved budget hits
+    // tool names and JSON-Schema `required` entries after the content.
+    const payload = {
+      model: "fixture-model",
+      messages: [{ role: "user", content: `api_key=${AWS_KEY}` }],
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "search_files",
+            description: "search the project",
+            parameters: {
+              type: "object",
+              properties: { pattern: { type: "string" } },
+              required: ["pattern"],
+            },
+          },
+        },
+      ],
+      response_format: { type: "json_schema", json_schema: { name: "plan_schema", schema: { type: "object", required: ["step"] } } },
+      reasoning_effort: "low",
+    };
+    beginScanBudget(0);
+    try {
+      const res = await handlers.before_provider_request({ payload }, ctx);
+      expect(res.tools[0].function.name).toBe("search_files");
+      expect(res.tools[0].function.parameters.required).toEqual(["pattern"]);
+      expect(res.response_format.json_schema.name).toBe("plan_schema");
+      expect(res.response_format.json_schema.schema.required).toEqual(["step"]);
+      expect(res.reasoning_effort).toBe("low");
+      expect(res.model).toBe("fixture-model");
+      expect(JSON.stringify(res.messages)).not.toContain(AWS_KEY);
+    } finally {
+      beginScanBudget(null);
+    }
+  });
+
+  it("preserves Responses tool and format identifiers when the scan budget is exhausted", async () => {
+    const payload = {
+      model: "fixture-model",
+      input: [{ type: "message", role: "user", content: `api_key=${AWS_KEY}` }],
+      tools: [{ type: "function", name: "search_files", parameters: { type: "object", required: ["pattern"] } }],
+      text: { format: { type: "json_schema", name: "plan_schema", schema: { type: "object", required: ["step"] } } },
+    };
+    beginScanBudget(0);
+    try {
+      const res = await handlers.before_provider_request({ payload }, ctx);
+      expect(res.tools[0].name).toBe("search_files");
+      expect(res.tools[0].parameters.required).toEqual(["pattern"]);
+      expect(res.text.format.name).toBe("plan_schema");
+      expect(res.text.format.schema.required).toEqual(["step"]);
+      expect(res.model).toBe("fixture-model");
+      expect(JSON.stringify(res.input)).not.toContain(AWS_KEY);
+    } finally {
+      beginScanBudget(null);
+    }
+  });
+
   it("never redacts canary boilerplate even when a user rule matches it", () => {
     // Isolated fresh process: a user rule colliding with notice wording must
     // not rewrite canary's own strings, anywhere they travel.
