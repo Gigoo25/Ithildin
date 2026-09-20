@@ -43,7 +43,7 @@ export function assess(fixture:BenchFixture,rendered:string,audits:RedactionAudi
   const harmless=occurrences(fixture.input,fixture.mustPreserve);
   const violations=harmless.filter(r=>Array.from(replaced.slice(r.start,r.end)).some(Boolean) || Array.from(omitted.slice(r.start,r.end)).some(Boolean));
   // Hook-added notices are not part of the document. Provider-payload fixtures
-  // avoid notices; context fixtures append one at the explicit separator.
+  // avoid notices. Context fixtures append one at the explicit separator.
   let syntaxFailures=0;
   if(fixture.representation==="document") {
     try {JSON.parse(fixture.input);} catch {return finish();}

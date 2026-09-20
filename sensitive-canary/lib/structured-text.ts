@@ -1,12 +1,12 @@
-// Structured DOCUMENT text only; never traverses provider numeric fields.
+// Structured DOCUMENT text only. It never traverses provider numeric fields.
 import { assertScanBudget, type LocatedFinding } from "./rules.ts";
 import type { ScalarEnvelope } from "./redaction-spans.ts";
 const SECRET_LABELS = new Set(["password", "clientsecret", "apikey", "accesstoken", "refreshtoken", "privatekey"]);
 const PII_LABELS = new Set(["accountnumber", "bankaccountnumber", "passportnumber"]);
 const normLabel = (key: string) => key.toLowerCase();
 const normalize = (key: string) => normLabel(key).replace(/_/g, "");
-// Retain the existing document ceiling; exceeding it is now explicit omission,
-// not an unreported structured-detection miss. No threshold was increased.
+// Retain the existing document ceiling. Exceeding it is now explicit omission,
+// not an unreported structured-detection miss. The change increases no threshold.
 export const STRUCTURED_MAX_CHARS = 65536;
 export interface DocumentScan {
   status: "text" | "json" | "malformed" | "incomplete";
@@ -79,7 +79,7 @@ export function inspectDocument(text: string, check = assertScanBudget): Documen
 export function structuredEdits(text: string): LocatedFinding[] { return inspectDocument(text).findings; }
 
 // Single-line assignments only. Quoted values may contain spaces and escaped
-// quotes; multiline YAML/TOML and interpolation semantics remain unsupported.
+// quotes. Multiline YAML/TOML and interpolation semantics remain unsupported.
 export function assignmentEdits(text: string, check = assertScanBudget): LocatedFinding[] {
   const findings: LocatedFinding[] = [];
   const re = /^\s*([A-Za-z][A-Za-z0-9_]*)\s*[:=]\s*(?:"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'|([^\s"'`#;]+))\s*(?:[#;].*)?$/d;

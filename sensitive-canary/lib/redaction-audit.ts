@@ -1,5 +1,5 @@
 // Opt-in, synchronous, value-free instrumentation for local synthetic checks.
-// No observer is installed in normal operation; nothing is persisted or sent.
+// No observer is installed in normal operation. Nothing is persisted or sent.
 export interface Range { start: number; end: number }
 export interface RedactionAudit {
   sourceLength: number;

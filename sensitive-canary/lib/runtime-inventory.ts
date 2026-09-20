@@ -73,7 +73,7 @@ export function identityFromOs(): RuntimeIdentity {
   try {
     out.username = os.userInfo().username;
   } catch {
-    // Missing passwd entry is not fatal; skip that field.
+    // Missing passwd entry is not fatal. Skip that field.
   }
   try {
     out.hostname = os.hostname();

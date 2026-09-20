@@ -35,7 +35,7 @@ export interface Message {
 //
 // A list of names is a list, and the runtime is free to add to it. The
 // transcript reader asks `origin.kind` instead, which answers the question
-// directly; this is what covers the same lines when the field is not there.
+// directly. This is what covers the same lines when the field is not there.
 export const SYNTHETIC_ELEMENT_NAMES =
   "local-command-stdout|local-command-stderr|command-name|command-message|command-args|bash-input|bash-output|bash-stdout|bash-stderr|system-reminder|task-notification";
 
@@ -111,14 +111,14 @@ export function forOutput(text: string): string {
 // The last tag in the text is the one that applies. Earlier ones are discarded
 // whole, not merged with it.
 //
-//   "[allow-all] … [allow-secrets]"  → secrets only; PII is blocked again
+//   "[allow-all] … [allow-secrets]"  → secrets only. PII is blocked again
 //   "[allow-secrets] … [allow-all]"  → both
 //   "[mask-secret] … [allow-secrets]" → allow
 //
 // Merging per category would keep the wider grant of the two, so a writer who
 // started with `[allow-all]` and narrowed to `[allow-secrets]` would still be
 // allowing PII — the opposite of what narrowing means. Writing two tags to
-// combine categories does not work either; `[allow-all]` is how both are asked
+// combine categories does not work either. `[allow-all]` is how both are asked
 // for.
 export function resolveTagPriority(prompt: string): {
   effectiveAllow: Set<string>;

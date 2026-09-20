@@ -44,7 +44,7 @@ test("marks a final-rule overshoot even in a single window", () => withRules(() 
 test("V8 interrupts a running rule within the remaining budget, below the comfort floor", () => withRules(() => {
   let laterRuleRan = false;
   RULES.push(rule(() => {
-    // Finite even if timeout enforcement regresses; the runner has a timeout too.
+    // Finite even if timeout enforcement regresses. The runner has a timeout too.
     const end = performance.now() + 2_000;
     while (performance.now() < end) { /* synchronous expensive validation */ }
     return true;

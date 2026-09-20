@@ -16,7 +16,7 @@
 // the transcript or leave the process. Secret replacements are stable, random,
 // format-preserving strings. PII replacements are obviously-fake numbered
 // tokens (`__CANARY_HOST_1__`) so the model never mistakes them for real
-// paths or identifiers; only the value type leaks.
+// paths or identifiers. Only the value type leaks.
 //
 // Five interception points:
 //   tool_call               -- block secret-file access, cookie transfer, and
@@ -35,7 +35,7 @@
 // This scanner remains a defense in depth, not a confidentiality boundary.
 //
 // Redaction is on by default and can be toggled for local models: bare /canary
-// flips it (or /canary on|off|status explicitly; command only, no shortcut)
+// flips it, or /canary on|off|status flips it explicitly (command only, no shortcut).
 // or the --no-canary CLI flag at startup. The toggle persists per session via an appendEntry record and is
 // announced on the `sensitive-canary:mode` event so the footer can show
 // CANARY ON/OFF. While off, every interception point passes through raw.
@@ -318,7 +318,7 @@ function redactText(text: string, allowTags: Set<string> = new Set()): { text: s
   }
   const { findings: raw, trips } = cachedScan(text);
   const allowed = allowTags.has("all") ? [] : raw.filter((f) => !isSyntheticValue(f.secretValue));
-  // Structured document edits join the same renderer; filter them by the
+  // Structured document edits join the same renderer. Filter them by the
   // same allow-tags before planning so an allowed category cannot exempt an
   // overlapping forbidden secret.
   const omitted = () => {
@@ -437,8 +437,8 @@ function isChainReference(key: string | undefined, parent: Record<string, unknow
   const at = (...parts: Array<string | null>): boolean => location.length === parts.length &&
     parts.every((part, i) => part === null ? typeof location[i] === "number" : location[i] === part);
   // JSON-Schema `required` entries are string array elements, so they arrive
-  // without a key. They must name real properties or the provider 400s;
-  // protect them only inside tool-definition / structured-output schemas.
+  // without a key. They must name real properties or the provider 400s.
+  // Protect them only inside tool-definition / structured-output schemas.
   if (providerPayload && location.length >= 2 && location[location.length - 2] === "required" &&
       (location[0] === "tools" || location[0] === "response_format" || location[0] === "text")) {
     return true;
@@ -449,7 +449,7 @@ function isChainReference(key: string | undefined, parent: Record<string, unknow
   if (!providerPayload) return at("id") && ("encrypted_content" in parent || "encryptedContent" in parent);
   if (key === "previous_response_id") return at(key);
   // Tool-definition / structured-output names and the top-level model are
-  // wire identifiers with provider-side constraints; a starved budget must
+  // wire identifiers with provider-side constraints. A starved budget must
   // not rewrite them (400 invalid name / missing model).
   if (key === "model" && at(key)) return true;
   if (key === "name" && (at("tools", null, key) || at("tools", null, "function", key) ||
@@ -481,7 +481,7 @@ function redactValue(
   // inside the provider payload itself. Persisted details share no wire
   // contract with the provider, so a user-controlled `type`/`role`/`include`
   // key there must scan like any other field. (Within the payload these keys
-  // are core-set enums; narrowing them further by location would risk 400s
+  // are core-set enums. Narrowing them further by location would risk 400s
   // on future protocol shapes for no measurable gain.)
   if (key !== undefined && OPAQUE_PROVIDER_FIELDS[key] === true) {
     return { value, hits: 0 };
@@ -671,7 +671,7 @@ const SYNTHESIS_NOTICE_SUFFIX =
 // Failure-time guidance lives in the system reminder (once per session)
 // and the tool_call block errors. Ablation (8 fresh muse-spark sessions,
 // 0 misuse events either way) showed the proactive notice adds nothing
-// measurable here; it cost ~65 tokens per redacted message.
+// measurable here. It cost ~65 tokens per redacted message.
 const SYNTHESIS_SYSTEM_REMINDER =
   "SENSITIVE-CANARY: Sensitive values can be synthetic placeholders. These placeholders are not real credentials, identities, contact details, or production data. Preserve only their structure and relationships. Never pass a placeholder to a tool or attempt to reverse it. Never cd into, read, or execute a path containing a placeholder: resolve the dynamic segment at runtime ($HOME, $(id -un), positional selection) instead of reusing redacted text. If one blocks the task, stop and ask the user to re-run with [allow-pii].";
 
@@ -890,7 +890,7 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
       .getBranch()
       .filter((entry) => entry.type === "custom" && entry.customType === STATE_ENTRY)
       .at(-1) as { data?: CanaryState } | undefined;
-    // --no-canary forces off at startup; otherwise restore the persisted
+    // --no-canary forces off at startup. Otherwise restore the persisted
     // toggle, defaulting to on. No toast on load: the footer tag shows it.
     const next = pi.getFlag("no-canary") === true
       ? false
@@ -1064,7 +1064,7 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
     return { content: finalContent };
   }));
   // ── persistence: store the redacted view, never the original ────────────
-  // The context/tool_result handlers patch provider-bound copies; session
+  // The context/tool_result handlers patch provider-bound copies. Session
   // entries keep the originals, and compaction re-sends those originals
   // without touching the extension bus. Redacting here (same role back, so
   // the runner syncs state and storage) closes that leak: whatever the

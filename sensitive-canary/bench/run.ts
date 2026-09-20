@@ -1,4 +1,4 @@
-// Explicit Node runner; never discovered as a Bun test. No network calls.
+// Explicit Node runner. Never discovered as a Bun test. No network calls.
 import { FIXTURES } from "./corpus.ts";
 import { REVIEW_FIXTURES, EXPECTED_RANGES } from "./review-corpus.ts";
 import { runFixture, summarize } from "./harness.ts";

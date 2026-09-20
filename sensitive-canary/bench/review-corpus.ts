@@ -13,7 +13,7 @@ const ip=[100,99,7,61].join(".");
 const host=["inventednode","internal"].join(".");
 const home=["","home","inventedoperator","project"].join("/");
 const ibanBody="123456789012345678";
-// Generate an invented GB-shaped, mod-97-valid identifier; never authenticate.
+// Generate an invented GB-shaped, mod-97-valid identifier. Never authenticate.
 const ibanAccount="QWER"+ibanBody.slice(0,14);
 let remainder=0;
 for(const c of ibanAccount+"GB00") for(const digit of /[A-Z]/.test(c) ? String(c.charCodeAt(0)-55) : c) remainder=(remainder*10+Number(digit))%97;

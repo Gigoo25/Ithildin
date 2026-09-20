@@ -31,7 +31,7 @@ export interface LocatedFinding extends Finding {
 }
 
 // Normalize a rule regex once so match indices are always available.
-// Preserves every other flag and matching semantics; only adds g/d.
+// Preserves every other flag and matching semantics. It only adds g/d.
 function ensureIndices(re: RegExp): RegExp {
   let flags = re.flags;
   if (!flags.includes("g")) flags += "g";
@@ -136,7 +136,7 @@ export function parseCategories(value: string | undefined): Set<Category> {
 }
 
 // Rule categories enabled for this process, from SENSITIVE_CANARY_CATEGORIES
-// ("secret", "pii", "secret,pii", or "all"; default: all).
+// ("secret", "pii", "secret,pii", or "all", with "all" as default).
 export function enabledCategoriesFromEnv(): Set<Category> {
   const { SENSITIVE_CANARY_CATEGORIES } = process.env;
   return parseCategories(SENSITIVE_CANARY_CATEGORIES);
@@ -309,7 +309,7 @@ function validateRuleConfig(rc: unknown): asserts rc is RuleConfig {
 export function compileRule(rc: RuleConfig): Rule {
   validateRuleConfig(rc);
   const { regex: source, flags, validate: validateName, ...rest } = rc;
-  // matchAll requires the global flag; ensure it is always present.
+  // matchAll requires the global flag. Make sure it is always present.
   const flagStr = flags ?? "g";
   const withG = flagStr.includes("g") ? flagStr : `${flagStr}g`;
   const rule: Rule = {
@@ -339,8 +339,8 @@ function loadUserConfig(): CanaryConfig | null {
   try {
     // A FIFO or a device here would block the read until something wrote to
     // it, and a hook that never returns is killed by the timeout, which does
-    // not block. The transcript reader and the file scanner both pay this stat
-    // already; this path was the one that did not.
+    // not block. The transcript reader and the file scanner already pay this stat.
+    // This path was the one that did not pay it.
     if (!statSync(USER_CONFIG_PATH).isFile()) {
       process.stderr.write(
         "sensitive-canary: user config is not a regular file, ignoring\n",
@@ -360,7 +360,7 @@ function loadUserConfig(): CanaryConfig | null {
 
 // Raw user rule configs seen at startup. Applied once against defaults PLUS
 // local rules (see applyUserOverrides) so a custom override of a local rule
-// actually replaces it; buildRules only loads defaults and records these.
+// actually replaces it. buildRules only loads defaults and records these.
 const pendingUserRuleConfigs: RuleConfig[] = [];
 const pendingInventoryEntries: unknown[] = [];
 
@@ -369,8 +369,8 @@ export function pendingUserConfigsForTest(): { rules: RuleConfig[]; inventory: u
 }
 
 // Build the default rule list and record user configs for the later override
-// pass. Invalid built-ins are skipped with a warning; user entries are
-// validated later by applyUserOverrides/compileInventoryEntry.
+// pass. buildRules skips invalid built-ins with a warning. applyUserOverrides
+// and compileInventoryEntry validate user entries later.
 function buildRules(): Rule[] {
   const defaultConfig = loadDefaultConfig();
   effectiveContextWindow = defaultConfig.contextWindow ?? 3;
@@ -614,8 +614,8 @@ const LOCAL_RULES: Rule[] = [
   {
     // Bare secrets with no label (`printenv KEY`, `echo $TOKEN`, base64
     // blobs): every other entropy rule is label-anchored and misses these.
-    // Entire line must be one token so code and prose never match; digests,
-    // UUIDs, SSH public keys, and nix store hashes are excluded by shape.
+    // Entire line must be one token so code and prose never match. Shape excludes
+    // digests, UUIDs, SSH public keys, and nix store hashes.
     id: "lone-token-line",
     description: "Bare high-entropy token on its own line",
     regex: /^([A-Za-z0-9+/=_.-]{24,})\r?$/gim,
@@ -716,7 +716,7 @@ const LOCAL_RULES: Rule[] = [
   },
   {
     // Bare public IPs with no label (`curl ifconfig.me` output). Version
-    // numbers die on the octet check; private ranges stay with pii-ipv4.
+    // numbers die on the octet check. Private ranges stay with pii-ipv4.
     id: "pii-ipv4-lone",
     description: "Bare public IPv4 on its own line",
     regex: /^(\d{1,3}(?:\.\d{1,3}){3})\r?$/gim,
@@ -746,7 +746,7 @@ const LOCAL_RULES: Rule[] = [
     category: "pii",
   },
   // US financial/travel identifiers have no checksum or fixed prefix, so
-  // both require a nearby label; bare digit runs stay untouched.
+  // both require a nearby label. Bare digit runs stay untouched.
   {
     id: "pii-us-bank-account",
     description: "US bank account number (context-gated)",
@@ -832,7 +832,7 @@ const LOCAL_RULES: Rule[] = [
   },
   // Titles are nearly unambiguous person markers: no prose shape looks
   // like "Dr Smith". Case-sensitive on purpose (lowercase "dr jones" is
-  // informal enough to miss). Residual: "Dr Pepper" fires; no clean
+  // informal enough to miss). Residual: "Dr Pepper" fires. No clean
   // exclusion exists, and fail-closed beats clever here.
   {
     id: "pii-titled-name",
@@ -842,7 +842,7 @@ const LOCAL_RULES: Rule[] = [
     category: "pii",
   },
   // Freeform names with no label at all ("Marie Dubois called yesterday").
-  // Shape is a generic 2-3 capitalized-word run; FIRST_NAMES membership on
+  // Shape is a generic 2-3 capitalized-word run. FIRST_NAMES membership on
   // the first word is the gate, so "Lake House" and "White House" stay
   // untouched while real given names fire. Dual-use words that are also
   // common names (Mark, Bill, Grace, Art) fire on prose uses too
@@ -860,7 +860,7 @@ const LOCAL_RULES: Rule[] = [
   // which bare "2 Road" prose never does.
   // Coordinates are only meaningful as pairs. Bare integer pairs ("5, 6")
   // are lists far more often than locations, so decimals are required
-  // unless direction letters or degree marks say otherwise; ranges kill
+  // unless direction letters or degree marks say otherwise. Ranges kill
   // versions and dates that survive the shape.
   {
     id: "pii-geo-decimal",
@@ -919,7 +919,7 @@ const LOCAL_RULES: Rule[] = [
     // by pii-internal-host regardless of label.
     regex: /(?:\bhost(?:name)?|\bserver|\bmachine)\s*[:=]\s*["']?([A-Za-z0-9][A-Za-z0-9-]{0,61}[A-Za-z0-9])(?![\w.-])/gi,
     secretGroup: 1,
-    // Two-character minimum drops Nix lambda params (`host: u:`); the stem
+    // Two-character minimum drops Nix lambda params (`host: u:`). The stem
     // list drops English contractions (`host: don't`) and bare references.
     validate: (value: string) =>
       !/^(?:localhost|host|hosts|hostname|hostnames|server|servers|machine|machines|database|db|example|test|testing|local|default|none|null|unknown|url|uri|don|can|won|isn|aren|wasn|weren|doesn|didn|hasn|haven|couldn|wouldn|shouldn|mustn|needn|shan|mayn|oughtn|daren|true|false|yes|no|on|off)$/i.test(value),
@@ -1054,7 +1054,7 @@ export function redact(str: string): string {
 // Longer than any honest scan and far shorter than the hook timeout. A rule
 // that backtracks badly takes minutes on a megabyte, and a hook killed by the
 // timeout does not block, so the damage is silent. The patterns that did that
-// are bounded; this catches the next one of that shape rather than letting it
+// are bounded. This catches the next one of that shape rather than letting it
 // repeat. The check sits between rules because a single `matchAll` cannot be
 // interrupted.
 export const SCAN_BUDGET_MS = 10_000;
@@ -1147,7 +1147,7 @@ export function scan(
 
 // One rule's matches over the text: pure over (rule, text) with no budget
 // state, so the whole-text and windowed drivers share it. A poisoned rule
-// trips only itself here; each driver decides what a trip means.
+// trips only itself here. Each driver decides what a trip means.
 function scanRule(rule: Rule, text: string): LocatedFinding[] {
   const findings: LocatedFinding[] = [];
   for (const match of text.matchAll(rule.regex)) {
@@ -1218,7 +1218,7 @@ function scanRule(rule: Rule, text: string): LocatedFinding[] {
       continue;
     }
 
-    // Exact source location via the d-flag indices; never indexOf the value.
+    // Use the d-flag indices for the exact source location. Never use indexOf on the value.
     const indices = (match as unknown as { indices?: Array<[number, number] | undefined> }).indices;
     let start = matchStart;
     let end = matchEnd;
@@ -1276,7 +1276,7 @@ export interface WindowTrip {
 
 // Bounded scanning: one budget for the whole text lets adversarial input
 // (e.g. 100KB of dot-chains) exhaust it and fail the entire message open.
-// Windows partition the budget so a poisoned region trips alone; the caller
+// Windows partition the budget so a poisoned region trips alone. The caller
 // substitutes an explicit marker for tripped ranges (fail-closed, bounded).
 export const SCAN_WINDOW_CHARS = 65_536;
 export const SCAN_WINDOW_OVERLAP = 8_192;
@@ -1297,12 +1297,12 @@ export function mergeRanges(ranges: WindowTrip[]): WindowTrip[] {
 
 // Poison that repeats stops being probed: after this many consecutive
 // trips the rest is omitted unseen. Bounds total attempts when V8 timeouts
-// fire late; legitimate slow runs rarely trip twice in a row, let alone five
+// fire late. Legitimate slow runs rarely trip twice in a row, let alone five
 // times, and single-slice texts never reach the cutoff.
 const MAX_CONSECUTIVE_TRIPS = 5;
 // Per-rule V8 caps stay small on purpose: timeouts overshoot several-fold,
 // so a small cap bounds the damage. The floor keeps legitimate slow rules
-// (email-scale, ~200ms on hostile shapes) passing with margin; without it,
+// (email-scale, ~200ms on hostile shapes) passing with margin. Without it,
 // small shares would false-trip on realistic inputs like minified JS, which
 // is worse than slow poison handling (poison is rare, minified JS is not).
 const MIN_RULE_BUDGET_MS = 500;
@@ -1365,7 +1365,7 @@ export function scanWindows(
       } catch (error) {
         if (error instanceof ScanBudgetExceeded) {
           // A timeout allocated the entire remaining envelope. Millisecond
-          // rounding can leave a fraction on the wall clock; do not start
+          // rounding can leave a fraction on the wall clock. Do not start
           // another rule with that apparent remainder.
           if (ruleRemaining <= ruleCap) {
             trips.push({ start: slice.start, end: text.length });
@@ -1390,7 +1390,7 @@ export function scanWindows(
       consecutiveTrips = 0;
     }
   }
-  // Overlapping windows report the same occurrence twice; collapse by
+  // Overlapping windows report the same occurrence twice. Collapse by
   // exact location so the renderer sees each occurrence once.
   const seen = new Set<string>();
   const deduped = findings.filter((f) => {

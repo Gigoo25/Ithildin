@@ -1,6 +1,6 @@
 // Common US first names, SSA-derived (public domain upstream data).
 // Source: hadley/data-baby-names/baby-names.csv (US Social Security
-// Administration baby-name shares by year); generated 2026-09-18.
+// Administration baby-name shares by year). Generated 2026-09-18.
 // Kept: alpha names with length>=3 present in >=3 years (5565 of 6782
 // distinct). Dropped: one-year blips (typos) and 8 two-letter entries
 // (Ab, Al, Bo, Ed, Jo, Lu, Ty, Wm) whose prose FP cost ("Al Jazeera")
