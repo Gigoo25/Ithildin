@@ -351,8 +351,7 @@ function loadUserConfig(): CanaryConfig | null {
   try {
     // A FIFO or a device here would block the read until something wrote to
     // it, and a hook that never returns stalls the turn. The transcript reader
-    // and the file scanner already pay this stat. This path was the one that
-    // did not pay it.
+    // and the file scanner already check this. This path did not.
     if (!statSync(USER_CONFIG_PATH).isFile()) {
       process.stderr.write(
         "sensitive-canary: user config is not a regular file, ignoring\n",
@@ -901,9 +900,9 @@ const LOCAL_RULES: Rule[] = [
     validate: (value: string) => {
       if (!FIRST_NAMES.has(value.split(/[ -]/)[0]!.toLowerCase())) return false;
       // "press" is a gazetteer name, so the pair shape alone also matches UI
-      // key names and chords. Key chords carry a "+" (rejected by the
-      // pattern); the rest are caught by the second word here. Split on
-      // non-letters so "Ctrl+Tab" still yields "ctrl".
+      // key names and chords. The pattern rejects key chords that carry a "+".
+      // The second word catches the rest. Split on non-letters so "Ctrl+Tab"
+      // still yields "ctrl".
       const words = value.split(/[^A-Za-z]+/).filter(Boolean);
       return !KEY_WORDS.has((words[1] ?? "").toLowerCase());
     },
@@ -1109,19 +1108,20 @@ export function redact(str: string): string {
 // Default envelope for one hook invocation, in milliseconds. A rule that
 // backtracks badly takes minutes on a megabyte, and the check sits between
 // rules because a single `matchAll` cannot be interrupted. The patterns that
-// did that are bounded; this catches the next one of that shape rather than
-// letting it repeat.
+// did that are bounded. This catches the next one of that shape before it
+// repeats.
 //
 // Pi runs extension handlers inline and has no watchdog (dist/core/extensions/
-// runner.js awaits handlers directly), so the bound is user-perceived latency,
+// runner.js awaits handlers directly). The bound is user-perceived latency,
 // not a kill. Too small a value fails closed and omits text a multi-megabyte
-// payload cannot finish; too large a value stalls the turn. 30s covers a cold
+// payload cannot finish. Too large a value stalls the turn. 30s covers a cold
 // multi-megabyte session, and the window cache below makes the next request
 // cheap. Override with SENSITIVE_CANARY_SCAN_BUDGET_MS or the user config's
 // `scanBudgetMs` (env wins).
 export const DEFAULT_SCAN_BUDGET_MS = 30_000;
 
-// Set by buildRules from env/config before the first hook, or by tests.
+// buildRules sets this from the env or the config before the first hook.
+// Tests can also set it.
 let activeScanBudgetMs = configuredScanBudgetMs ?? DEFAULT_SCAN_BUDGET_MS;
 
 // `null` restores the default.
@@ -1388,9 +1388,9 @@ const MIN_RULE_BUDGET_MS = 500;
 // this, a payload too large to finish in one envelope re-pays the same prefix
 // every request and trips at the same offset forever.
 //
-// Keys are SHA-256 of the slice text plus the category filter: a slice is up
-// to SCAN_WINDOW_CHARS, and a digest lets exportWindowCache persist results
-// without holding a second copy of the text (or any value at all).
+// Keys are SHA-256 digests of the slice text plus the category filter. A slice
+// is up to SCAN_WINDOW_CHARS. The digest lets exportWindowCache persist
+// results without a second copy of the text, and without any value at all.
 interface CachedWindow {
   size: number;
   findings: LocatedFinding[];
@@ -1696,9 +1696,9 @@ export function scanWindows(
     }
     flushSlice();
     if (sliceTripped) {
-      // Not cached: a rule that timed out under this envelope may complete
-      // under a fuller one, and re-paying one bounded V8 timeout is cheaper
-      // than freezing an omission forever.
+      // Not cached. A rule that timed out under this envelope may complete
+      // under a fuller one. A second bounded V8 timeout is cheaper than a
+      // frozen omission.
       trips.push({ ...slice });
       consecutiveTrips++;
     } else {

@@ -95,7 +95,7 @@ test("provider hooks use one scan envelope across payload fields, renewed on the
     events: { on() {}, emit() {} },
   } as any);
   handlers.session_shutdown(); // Clear memoized fixtures from other tests.
-  // Pin the old envelope so the fixture costs below keep their meaning.
+  // Keep the old envelope so the fixture costs below keep their meaning.
   setScanBudgetMs(10_000);
   try {
     const result = handlers.before_provider_request({ payload: { a: "probe one", b: "probe two", c: "probe three" } });
