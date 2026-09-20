@@ -18,17 +18,21 @@
 // tokens (`__CANARY_HOST_1__`) so the model never mistakes them for real
 // paths or identifiers. Only the value type leaks.
 //
-// Five interception points:
+// Interception points:
 //   tool_call               -- block secret-file access, cookie transfer, and
 //                              secret-shaped tool arguments.
 //   context                 -- synthesize user-authored sensitive values.
 //   before_provider_request -- scan the final wire payload, including system
 //                              prompts and provider-specific fields.
 //   tool_result             -- synthesize tool output and secret-file values.
-//   message_end             -- persist the redacted view, never the original,
-//                              so compaction (which bypasses the event bus and
-//                              reads stored entries) can only re-send what the
-//                              provider already saw.
+//   message_end             -- persist the redacted view, never the original.
+//   session_before_compact  -- redact the summarization copy.
+//   session_before_tree     -- redact the branch-summary copy. Compaction and
+//                              branch summaries call the provider without
+//                              before_provider_request and serialize stored
+//                              thinking, tool-call arguments, user bash
+//                              output, and extension messages. These events
+//                              stop that path from re-sending a raw value.
 //
 // The latest user prompt can bypass one category or all checks with an
 // explicit allow tag. Older, quoted, and runtime-generated tags do not apply.
@@ -92,6 +96,17 @@ function isTextChunk(value: unknown): value is TextChunk {
   if (typeof value !== "object" || value === null) return false;
   if (!("type" in value) || value.type !== "text") return false;
   return "text" in value && typeof value.text === "string";
+}
+
+interface ThinkingChunk {
+  type: "thinking";
+  thinking: string;
+}
+
+function isThinkingChunk(value: unknown): value is ThinkingChunk {
+  if (typeof value !== "object" || value === null) return false;
+  if (!("type" in value) || value.type !== "thinking") return false;
+  return "thinking" in value && typeof value.thinking === "string";
 }
 
 // Bounded memo so the context handler does not re-scan the whole transcript on
@@ -302,7 +317,7 @@ function flushScanCache(sessionFile: string | undefined): void {
     writeFileSync(`${sessionFile}.canary-scan-cache.json`, `${JSON.stringify(snapshot)}\n`, { mode: 0o600 });
     lastScanCacheRevision = revision;
   } catch {
-    // Cache loss is not worth breaking the agent over.
+    // A cache loss must not break the agent.
   }
 }
 
@@ -407,25 +422,185 @@ function structuredReplacement(finding: LocatedFinding): string {
   return synthetic;
 }
 
-// Applies redactText to every text chunk. Shared by the ingress (context)
-// and egress (tool_result) handlers.
-function redactChunks(content: readonly unknown[], allowTags: Set<string> = new Set()): {
+// Applies redactText to every text and thinking chunk. The ingress (context),
+// egress (tool_result), and persistence/summarization handlers share it. The
+// function leaves tool-call chunks alone unless redactToolArgs is set. Tools
+// execute their arguments after message_end, so the caller decides when a
+// rewrite cannot break a pending call.
+function redactChunks(
+  content: readonly unknown[],
+  allowTags: Set<string> = new Set(),
+  redactToolArgs = false,
+): {
   content: unknown[];
   hits: number;
 } {
   let hits = 0;
   const out = content.map((chunk) => {
-    if (!isTextChunk(chunk)) return chunk;
-    if (chunk.text.length > MAX_SCAN_BYTES) {
-      hits++;
-      return { ...chunk, text: syntheticValue(chunk.text) };
+    if (isTextChunk(chunk)) {
+      if (chunk.text.length > MAX_SCAN_BYTES) {
+        hits++;
+        return { ...chunk, text: syntheticValue(chunk.text) };
+      }
+      const { text, hits: n } = redactText(chunk.text, allowTags);
+      if (n === 0) return chunk;
+      hits += n;
+      return { ...chunk, text };
     }
-    const { text, hits: n } = redactText(chunk.text, allowTags);
-    if (n === 0) return chunk;
-    hits += n;
-    return { ...chunk, text };
+    if (isThinkingChunk(chunk)) {
+      if (chunk.thinking.length > MAX_SCAN_BYTES) {
+        hits++;
+        return { ...chunk, thinking: syntheticValue(chunk.thinking) };
+      }
+      const { text, hits: n } = redactText(chunk.thinking, allowTags);
+      if (n === 0) return chunk;
+      hits += n;
+      return { ...chunk, thinking: text };
+    }
+    if (redactToolArgs && typeof chunk === "object" && chunk !== null &&
+        (chunk as { type?: unknown }).type === "toolCall") {
+      const args = (chunk as { arguments?: unknown }).arguments;
+      if (args === undefined) return chunk;
+      const redacted = redactValue(args, allowTags);
+      if (redacted.hits === 0) return chunk;
+      hits += redacted.hits;
+      return { ...(chunk as Record<string, unknown>), arguments: redacted.value };
+    }
+    return chunk;
   });
   return { content: out, hits };
+}
+
+// Returns a redacted copy of a message. The message_end handler and the
+// summarization hooks use it, and the caller chooses whether tool-call
+// arguments are in scope. Nothing here mutates the input.
+function redactStoredMessage(
+  message: Record<string, unknown>,
+  allowTags: Set<string>,
+  redactToolArgs: boolean,
+): { message: Record<string, unknown>; hits: number } {
+  let hits = 0;
+  let out = message;
+  const replaceField = (field: string, value: unknown): void => {
+    if (typeof value !== "string" || value.length === 0) return;
+    if (value.length > MAX_SCAN_BYTES) {
+      out = { ...out, [field]: syntheticValue(value) };
+      hits++;
+      return;
+    }
+    if (field === "content" && value.includes(SYNTHESIS_NOTICE)) return;
+    const redacted = redactText(value, allowTags);
+    if (redacted.hits === 0) return;
+    out = { ...out, [field]: redacted.text };
+    hits += redacted.hits;
+  };
+  if (message.role === "user" || message.role === "assistant" || message.role === "custom") {
+    if (typeof message.content === "string") {
+      replaceField("content", message.content);
+    } else if (Array.isArray(message.content)) {
+      const redacted = redactChunks(message.content, allowTags, redactToolArgs);
+      if (redacted.hits > 0) {
+        out = { ...out, content: redacted.content };
+        hits += redacted.hits;
+      }
+    }
+  } else if (message.role === "toolResult") {
+    if (Array.isArray(message.content)) {
+      const redacted = redactChunks(message.content, allowTags, false);
+      if (redacted.hits > 0) {
+        out = { ...out, content: redacted.content };
+        hits += redacted.hits;
+      }
+    }
+  } else if (message.role === "bashExecution") {
+    replaceField("command", message.command);
+    replaceField("output", message.output);
+  } else if (message.role === "branchSummary" || message.role === "compactionSummary") {
+    replaceField("summary", message.summary);
+  }
+  if (message.details !== undefined) {
+    const redacted = redactValue(message.details, allowTags);
+    if (redacted.hits > 0) {
+      out = { ...out, details: redacted.value };
+      hits += redacted.hits;
+    }
+  }
+  return { message: out, hits };
+}
+
+// Redacts the preparation arrays in place. The core reads
+// preparation.messagesToSummarize / turnPrefixMessages after the event.
+// Replacing them here changes only the summarization copy. It never changes
+// the transcript or the messages that tools already executed against.
+function redactCompactionPreparation(preparation: Record<string, unknown>, allowTags: Set<string>): number {
+  let hits = 0;
+  for (const key of ["messagesToSummarize", "turnPrefixMessages"] as const) {
+    const list = preparation[key];
+    if (!Array.isArray(list)) continue;
+    preparation[key] = list.map((message) => {
+      if (!message || typeof message !== "object") return message;
+      const redacted = redactStoredMessage(message as Record<string, unknown>, allowTags, true);
+      hits += redacted.hits;
+      return redacted.message;
+    });
+  }
+  if (typeof preparation.previousSummary === "string") {
+    const redacted = redactText(preparation.previousSummary, allowTags);
+    if (redacted.hits > 0) {
+      preparation.previousSummary = redacted.text;
+      hits += redacted.hits;
+    }
+  }
+  // The core extracts the file lists before this event and appends them to the
+  // summary. Without this step, a path that was just redacted inside a tool
+  // call would travel to the provider through the file list.
+  const fileOps = preparation.fileOps as
+    | { read?: unknown; written?: unknown; edited?: unknown }
+    | undefined;
+  if (fileOps && typeof fileOps === "object") {
+    for (const key of ["read", "written", "edited"] as const) {
+      const paths = fileOps[key];
+      if (!(paths instanceof Set)) continue;
+      const redactedPaths = new Set<string>();
+      for (const path of paths) {
+        const redacted = redactText(String(path), allowTags);
+        hits += redacted.hits;
+        redactedPaths.add(redacted.text);
+      }
+      fileOps[key] = redactedPaths;
+    }
+  }
+  return hits;
+}
+
+// Branch summaries read session entries, not messages. The core keeps the
+// array reference it collected, so the handler replaces entries in place.
+// Each original entry must stay untouched for the transcript and the TUI.
+function redactStoredEntry(entry: Record<string, unknown>, allowTags: Set<string>): { entry: Record<string, unknown>; hits: number } {
+  if (entry.type === "message" && entry.message && typeof entry.message === "object") {
+    const redacted = redactStoredMessage(entry.message as Record<string, unknown>, allowTags, true);
+    if (redacted.hits === 0) return { entry, hits: 0 };
+    return { entry: { ...entry, message: redacted.message }, hits: redacted.hits };
+  }
+  if (entry.type === "custom_message") {
+    const redacted = redactStoredMessage(
+      { role: "custom", content: entry.content, details: entry.details },
+      allowTags,
+      true,
+    );
+    if (redacted.hits === 0) return { entry, hits: 0 };
+    return {
+      entry: { ...entry, content: redacted.message.content, details: redacted.message.details },
+      hits: redacted.hits,
+    };
+  }
+  if (entry.type === "branch_summary" || entry.type === "compaction") {
+    if (typeof entry.summary !== "string") return { entry, hits: 0 };
+    const redacted = redactText(entry.summary, allowTags);
+    if (redacted.hits === 0) return { entry, hits: 0 };
+    return { entry: { ...entry, summary: redacted.text }, hits: redacted.hits };
+  }
+  return { entry, hits: 0 };
 }
 
 function redactCookieField(
@@ -1098,53 +1273,59 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
   // ── persistence: store the redacted view, never the original ────────────
   // The context/tool_result handlers patch provider-bound copies. Session
   // entries keep the originals, and compaction re-sends those originals
-  // without touching the extension bus. Redacting here (same role back, so
-  // the runner syncs state and storage) closes that leak: whatever the
-  // provider saw is all compaction can re-send. Allow-tags behave exactly
-  // as on the wire, so approved values keep working across turns.
-  // Tool-call argument chunks are left alone: execution already ran on them.
+  // without touching the extension bus. This handler redacts the message in
+  // place, and the runner syncs state and storage, so the stored view is the
+  // view the provider saw. Allow-tags behave exactly as on the wire, so
+  // approved values keep working across turns. Tool-call arguments are only
+  // rewritten when the message cannot execute them. The summarization hooks
+  // cover the rest.
   pi.on("message_end", (event) => withScanBudget(() => {
     if (!canaryEnabled) return;
-    const message = event.message as { role?: string; content?: unknown; details?: unknown };
+    const message = event.message as Record<string, unknown> | undefined;
     if (!message || typeof message !== "object") return;
     const tags =
       message.role === "user"
         ? latestAllowTags([{ role: "user", content: message.content } as Message])
         : allowTags;
     if (tags.has("all")) return;
-    let content = message.content;
-    let details = message.details;
+    // Tool calls execute after message_end. Rewriting their arguments here
+    // would feed placeholders to the tool runner. An error, an abort, or a
+    // token-cap stop cannot execute them, so those are safe to rewrite.
+    const stopReason = message.stopReason;
+    const mayExecuteTools =
+      message.role === "assistant" &&
+      stopReason !== "error" && stopReason !== "aborted" && stopReason !== "length";
+    const redacted = redactStoredMessage(message, tags, !mayExecuteTools);
+    if (redacted.hits === 0) return;
+    recordWarning(redacted.hits);
+    return { message: redacted.message };
+  }));
+  // ── summarization: compaction and branch summaries bypass the wire hook ──
+  // completeSummarization calls the agent stream function directly, so
+  // before_provider_request never runs for it. The preparation holds stored
+  // messages (thinking, tool-call arguments, bash output, extension content)
+  // that compaction serializes verbatim. Redact the copy it will use.
+  pi.on("session_before_compact", (event) => withScanBudget(() => {
+    if (!canaryEnabled || allowTags.has("all")) return;
+    const preparation = (event as { preparation?: Record<string, unknown> }).preparation;
+    if (!preparation || typeof preparation !== "object") return;
+    const hits = redactCompactionPreparation(preparation, allowTags);
+    if (hits > 0) recordWarning(hits);
+  }));
+  pi.on("session_before_tree", (event) => withScanBudget(() => {
+    if (!canaryEnabled || allowTags.has("all")) return;
+    const entries = (event as { preparation?: { entriesToSummarize?: unknown[] } }).preparation
+      ?.entriesToSummarize;
+    if (!Array.isArray(entries)) return;
     let hits = 0;
-    if (message.role === "user" || message.role === "assistant") {
-      if (typeof content === "string") {
-        if (content.length > MAX_SCAN_BYTES) {
-          content = syntheticValue(content);
-          hits++;
-        } else if (!content.includes(SYNTHESIS_NOTICE)) {
-          const redacted = redactText(content, tags);
-          if (redacted.hits > 0) {
-            content = redacted.text;
-            hits += redacted.hits;
-          }
-        }
-      } else if (Array.isArray(content)) {
-        const redacted = redactChunks(content, tags);
-        if (redacted.hits > 0) {
-          content = redacted.content;
-          hits += redacted.hits;
-        }
-      }
+    for (let index = 0; index < entries.length; index++) {
+      const entry = entries[index];
+      if (!entry || typeof entry !== "object") continue;
+      const redacted = redactStoredEntry(entry as Record<string, unknown>, allowTags);
+      hits += redacted.hits;
+      if (redacted.entry !== entry) entries[index] = redacted.entry;
     }
-    if (details !== undefined) {
-      const redacted = redactValue(details, tags);
-      if (redacted.hits > 0) {
-        details = redacted.value;
-        hits += redacted.hits;
-      }
-    }
-    if (hits === 0) return;
-    recordWarning(hits);
-    return { message: { ...message, content, details } };
+    if (hits > 0) recordWarning(hits);
   }));
   pi.on("session_shutdown", () => {
     allowTags.clear();

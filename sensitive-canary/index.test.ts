@@ -305,6 +305,142 @@ describe("sensitive-canary port", () => {
     ).toBeUndefined();
   });
 
+  it("persists redacted thinking blocks", async () => {
+    const res = await handlers.message_end(
+      {
+        message: {
+          role: "assistant",
+          stopReason: "stop",
+          content: [
+            { type: "text", text: "done" },
+            { type: "thinking", thinking: `checked ${AWS_KEY}` },
+          ],
+        },
+      },
+      ctx,
+    );
+    expect(res.message.content[0].text).toBe("done");
+    expect(res.message.content[1].thinking).not.toContain(AWS_KEY);
+  });
+
+  it("keeps tool-call arguments the runner will execute", async () => {
+    expect(
+      await handlers.message_end(
+        {
+          message: {
+            role: "assistant",
+            stopReason: "toolUse",
+            content: [{ type: "toolCall", id: "call_1", name: "bash", arguments: { command: `cat ${AWS_KEY}` } }],
+          },
+        },
+        ctx,
+      ),
+    ).toBeUndefined();
+  });
+
+  it("persists redacted tool-call arguments when the call cannot execute", async () => {
+    const res = await handlers.message_end(
+      {
+        message: {
+          role: "assistant",
+          stopReason: "aborted",
+          content: [{ type: "toolCall", id: "call_1", name: "bash", arguments: { command: `cat ${AWS_KEY}` } }],
+        },
+      },
+      ctx,
+    );
+    expect(JSON.stringify(res.message.content)).not.toContain(AWS_KEY);
+  });
+
+  it("persists redacted extension messages", async () => {
+    const res = await handlers.message_end(
+      { message: { role: "custom", customType: "note", content: `key ${AWS_KEY}` } },
+      ctx,
+    );
+    expect(res.message.content).not.toContain(AWS_KEY);
+    expect(res.message.customType).toBe("note");
+  });
+
+  it("redacts the compaction copy without touching the transcript", async () => {
+    const bash = { role: "bashExecution", command: "cat .env", output: `API_KEY=${AWS_KEY}` };
+    const assistant = {
+      role: "assistant",
+      stopReason: "toolUse",
+      content: [
+        { type: "text", text: "ok" },
+        { type: "thinking", thinking: `checked ${AWS_KEY}` },
+        { type: "toolCall", id: "call_1", name: "bash", arguments: { command: `echo ${AWS_KEY}` } },
+      ],
+    };
+    const event = {
+      preparation: {
+        messagesToSummarize: [bash, assistant],
+        turnPrefixMessages: [],
+        previousSummary: `earlier ${AWS_KEY}`,
+        fileOps: {
+          read: new Set([`deploy/${AWS_KEY}.env`, "src/index.ts"]),
+          written: new Set<string>(),
+          edited: new Set<string>(),
+        },
+      },
+    };
+    await handlers.session_before_compact(event, ctx);
+    expect(JSON.stringify(event.preparation)).not.toContain(AWS_KEY);
+    expect(bash.output).toContain(AWS_KEY);
+    expect(assistant.content[1].thinking).toContain(AWS_KEY);
+    expect(assistant.content[2].arguments.command).toContain(AWS_KEY);
+    expect(event.preparation.previousSummary).not.toContain(AWS_KEY);
+    expect([...event.preparation.fileOps.read].some((path) => path.includes("src/index.ts"))).toBeTrue();
+    expect([...event.preparation.fileOps.read].some((path) => path.includes(AWS_KEY))).toBeFalse();
+  });
+
+  it("leaves the compaction copy alone when the prompt allows values", async () => {
+    await handlers.context({ messages: [{ role: "user", content: "[allow-all]" }] }, ctx);
+    const event = {
+      preparation: {
+        messagesToSummarize: [{ role: "bashExecution", command: "x", output: AWS_KEY }],
+        turnPrefixMessages: [],
+      },
+    };
+    await handlers.session_before_compact(event, ctx);
+    expect(event.preparation.messagesToSummarize[0].output).toContain(AWS_KEY);
+  });
+
+  it("redacts branch-summary entries in place and leaves originals alone", async () => {
+    const assistantEntry = {
+      type: "message",
+      id: "e1",
+      message: {
+        role: "assistant",
+        stopReason: "toolUse",
+        content: [
+          { type: "thinking", thinking: `checked ${AWS_KEY}` },
+          { type: "toolCall", id: "call_1", name: "bash", arguments: { command: `echo ${AWS_KEY}` } },
+        ],
+      },
+    };
+    const summaryEntry = { type: "compaction", id: "e2", summary: `prior ${AWS_KEY}` };
+    const entries = [assistantEntry, summaryEntry];
+    await handlers.session_before_tree({ preparation: { entriesToSummarize: entries } }, ctx);
+    expect(JSON.stringify(entries)).not.toContain(AWS_KEY);
+    expect(JSON.stringify(assistantEntry)).toContain(AWS_KEY);
+    expect(JSON.stringify(summaryEntry)).toContain(AWS_KEY);
+  });
+
+  it("redacts custom_message entries in branch summaries", async () => {
+    const entry = {
+      type: "custom_message",
+      id: "e3",
+      customType: "note",
+      content: `key ${AWS_KEY}`,
+      details: { note: AWS_KEY },
+    };
+    const entries = [entry];
+    await handlers.session_before_tree({ preparation: { entriesToSummarize: entries } }, ctx);
+    expect(JSON.stringify(entries[0])).not.toContain(AWS_KEY);
+    expect(JSON.stringify(entry)).toContain(AWS_KEY);
+  });
+
   it("marks unscannable spans instead of passing them through", async () => {
     beginScanBudget(0);
     try {
