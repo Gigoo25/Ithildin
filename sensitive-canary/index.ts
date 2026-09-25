@@ -1228,6 +1228,42 @@ function blocksInventoryAccess(toolName: string, command: string, targets: strin
   );
 }
 
+// Pi session transcripts (and the recall skill's index of them) hold the
+// user's earlier work: other projects, values typed with [allow-pii], raw
+// pre-redaction history. A model digging through them (seen on an eval
+// looking for past solutions) sends that history to the provider. The
+// recall skill's own search stays available: its script is invoked by name
+// and its bounded output is scanned like any tool result.
+function agentDir(): string {
+  return process.env.PI_CODING_AGENT_DIR || path.join(process.env.HOME ?? "", ".pi", "agent");
+}
+
+function sessionArchiveRoots(cwd: string): string[] {
+  const data = process.env.XDG_DATA_HOME || path.join(process.env.HOME ?? "", ".local", "share");
+  return [path.join(agentDir(), "sessions"), path.join(process.env.HOME ?? "", ".pi", "agent", "sessions"), path.join(data, "pi-session-search")]
+    .map((root) => canonicalPath(root, cwd));
+}
+
+function isSessionArchive(filePath: string, cwd: string): boolean {
+  if (!filePath) return false;
+  const resolved = canonicalPath(filePath.split(/[?:]/)[0] ?? filePath, cwd);
+  return sessionArchiveRoots(cwd).some((root) => resolved === root || resolved.startsWith(`${root}/`));
+}
+
+function commandReadsSessionArchive(command: string, cwd: string): boolean {
+  // Interpreters build these paths from pieces: Path.home()/'.pi'/'agent'/
+  // 'sessions', os.path.join('.pi', 'agent', 'sessions'). Squash quotes,
+  // spaces, and join punctuation, then look for the path shape.
+  const squashed = command.replace(/["'`\s]/g, "").replace(/[,+]/g, "/").replace(/\/+/g, "/");
+  if (/\.pi\/agent\/sessions|pi-session-search\/sessions\.db/.test(squashed)) return true;
+  return commandPathCandidates(command, cwd).some((candidate) => isSessionArchive(candidate, cwd));
+}
+
+function blocksSessionArchiveAccess(toolName: string, command: string, targets: string[], allowTags: Set<string>, cwd: string): boolean {
+  if (allowTags.has("pii") || allowTags.has("all")) return false;
+  return (toolName === "bash" && commandReadsSessionArchive(command, cwd)) || targets.some((target) => isSessionArchive(target, cwd));
+}
+
 function sanitizeToolContent(
   content: readonly unknown[],
   fileKind: "none" | "dotenv" | "secret-file",
@@ -1378,6 +1414,12 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
       return {
         block: true,
         reason: "sensitive-canary: refusing to read the local PII inventory — its values would dodge the rules built from them. Add [allow-pii] or [allow-all] to the current user prompt to bypass this check.",
+      };
+    }
+    if (blocksSessionArchiveAccess(event.toolName, command, targets, allowTags, ctx?.cwd ?? process.cwd())) {
+      return {
+        block: true,
+        reason: "sensitive-canary: refusing direct reads of Pi session transcripts — they hold earlier work from other sessions and projects. Use the recall skill (pi-session-search.py) to search them, or add [allow-pii] to the current user prompt to bypass this check.",
       };
     }
     const placeholder = placeholderViolations(event.input, allowTags);

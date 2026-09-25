@@ -358,3 +358,29 @@ it("gives each session its own stand-ins and refuses reads of the session key", 
 		rmSync(dir, { recursive: true, force: true });
 	}
 });
+
+it("refuses direct reads of Pi session transcripts but allows the recall script", async () => {
+	const { handlers, ctx } = harness();
+	const home = process.env.HOME;
+	for (const command of [
+		"cat ~/.pi/agent/sessions/x/2026.jsonl",
+		"rg formatSearch ~/.pi/agent/sessions",
+		"python3 - <<'PY'\nfrom pathlib import Path\nfor p in (Path.home()/'.pi'/'agent'/'sessions').rglob('*.jsonl'): print(p.read_text())\nPY",
+		"python3 -c \"import os; print(os.listdir(os.path.join(os.path.expanduser('~'), '.pi', 'agent', 'sessions')))\"",
+		`sqlite3 ${home}/.local/share/pi-session-search/sessions.db .dump`,
+		"d=~/.pi/agent/sessions; ls $d",
+	]) {
+		const out = await handlers.tool_call({ toolName: "bash", input: { command } }, ctx);
+		expect(out?.block).toBe(true);
+		expect(out?.reason).toContain("session transcripts");
+	}
+	for (const command of [
+		'script="$HOME/.config/scripts/pi-session-search.py"; python3 "$script" search --json -k 8 "repo context"',
+		"ls ~/.pi/agent/skills",
+		"git log --oneline -3",
+	]) {
+		expect(await handlers.tool_call({ toolName: "bash", input: { command } }, ctx)).toBeUndefined();
+	}
+	await handlers.context({ messages: [{ role: "user", content: "[allow-pii] check my history" }] }, ctx);
+	expect(await handlers.tool_call({ toolName: "bash", input: { command: "rg x ~/.pi/agent/sessions" } }, ctx)).toBeUndefined();
+});

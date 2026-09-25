@@ -65,3 +65,7 @@ When the model calls a tool with a stand-in, the engine replaces it with the rea
 - `"scope": "prompts"` generalizes only what you type. Use it for words that also appear in code and config (vendor and product names), so those files stay readable and editable.
 - Keep out words that are also ordinary dev vocabulary (`stroke`, `debt`, `fired`, `pip`, Dockerfile `ADD`). Put acronyms in their own `"caseSensitive": true` group.
 - The engine refuses file-tool and Bash reads of `generalize.json`: the list says which topics you consider sensitive.
+
+## Session transcripts
+
+The engine refuses direct model reads of Pi session transcripts (`$PI_CODING_AGENT_DIR/sessions`, `~/.pi/agent/sessions`) and of the recall skill's index (`${XDG_DATA_HOME:-~/.local/share}/pi-session-search`). That covers file tools and Bash, including paths an interpreter builds from pieces (`Path.home()/'.pi'/'agent'/'sessions'`). Transcripts hold earlier work from other sessions and projects. An eval model was seen digging through them for past solutions, which sends that history to the provider. The recall skill still works: its script is invoked by name, and its bounded output is scanned like any tool result. `[allow-pii]` bypasses this check.
