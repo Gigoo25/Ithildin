@@ -14,9 +14,11 @@
 // The port is deliberately not one-to-one. Pi exposes tool_result and the
 // final provider payload, so detected values can be replaced before they enter
 // the transcript or leave the process. Secret replacements are stable, random,
-// format-preserving strings. PII replacements are obviously-fake numbered
-// tokens (`__CANARY_HOST_1__`) so the model never mistakes them for real
-// paths or identifiers. Only the value type leaks.
+// format-preserving strings. PII replacements are stable stand-ins from
+// reserved namespaces (host-3c9d0e, prod-db.n4a5b6c.internal.example,
+// 241.18.5.7; see lib/aliases.ts) that keep roles and relationships. Tool
+// calls that reuse a stand-in are blocked, so none is mistaken for a real
+// path or identifier. `aliases: "tokens"` restores `__CANARY_HOST_1__`.
 //
 // Interception points:
 //   tool_call               -- block secret-file access, cookie transfer, and
@@ -46,9 +48,11 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { randomBytes } from "node:crypto";
-import { readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { type Finding, type LocatedFinding, mergeRanges, scanWindows, SCAN_WINDOW_OVERLAP, withScanBudget, assertScanBudget, ScanBudgetExceeded, setRuntimeInventory, clearWindowCache, exportWindowCache, importWindowCache, windowCacheRevision } from "./lib/rules.ts";
+import { type Finding, type LocatedFinding, mergeRanges, scanWindows, SCAN_WINDOW_OVERLAP, withScanBudget, assertScanBudget, ScanBudgetExceeded, setRuntimeInventory, clearWindowCache, exportWindowCache, importWindowCache, windowCacheRevision, aliasStyle, aliasKeyScope, ruleAliasLabel, aliasLabels, inventoryLiterals, ruleGeneralization, isPromptOnlyRule, GENERALIZE_PATH } from "./lib/rules.ts";
+import { assignInPlace, planSwapBack } from "./lib/swap-back.ts";
+import { AliasBook, aliasKeyPath, aliasSpans, isAliasValue, loadAliasKey, registerAliasLabels, SESSION_KEY_SUFFIX, sessionAliasKey } from "./lib/aliases.ts";
 import { planRedaction } from "./lib/redaction-spans.ts";
 import { reportRedaction } from "./lib/redaction-audit.ts";
 import { assignmentEdits, inspectDocument } from "./lib/structured-text.ts";
@@ -68,7 +72,7 @@ import {
 } from "./lib/cookies.ts";
 import { isImagePayload } from "./lib/image-payload.ts";
 import { isDotenvFile, isSecretFile } from "./lib/secret-files.ts";
-import { collectRuntimeIdentity, identityFromGit, identityFromOs } from "./lib/runtime-inventory.ts";
+import { collectRuntimeIdentity, identityFromGit, identityFromGitRemotes, identityFromOs, identityFromSsh } from "./lib/runtime-inventory.ts";
 
 // Larger strings skip regex scanning and are synthesized in full.
 const MAX_SCAN_BYTES = 2_000_000;
@@ -218,8 +222,28 @@ function syntheticValue(value: string): string {
   return synthetic;
 }
 
+// One book per process. The key loads lazily so importing the module (bench,
+// tests) never touches the key file until a PII value needs a stand-in.
+let aliasBook: AliasBook | undefined;
+function aliases(): AliasBook {
+  // Before any session starts (bench, tests): shared key if configured,
+  // otherwise one that lives only in this process.
+  aliasBook ??= new AliasBook(aliasKeyScope() === "shared" ? loadAliasKey() : randomBytes(32));
+  return aliasBook;
+}
+
+// PII replacement. Stand-ins keep role, shape, and relationships and stay
+// stable across sessions; `aliases: "tokens"` restores the numbered
+// __CANARY_*__ placeholders.
+function piiReplacement(ruleId: string, value: string): string {
+  const general = ruleGeneralization(ruleId);
+  if (general !== undefined) return `⟦${general}⟧`;
+  if (aliasStyle() === "tokens") return syntheticToken(ruleId, value);
+  return aliases().standIn(ruleId, value, ruleAliasLabel(ruleId));
+}
+
 function isSyntheticValue(value: string): boolean {
-  return SYNTHETIC_OUTPUTS.has(value);
+  return SYNTHETIC_OUTPUTS.has(value) || aliasBook?.isStandIn(value) === true || isAliasValue(value);
 }
 // Provider payload fields carrying authenticated ciphertext must remain byte-for-byte
 // unchanged. Redacting one character invalidates Codex reasoning and compaction
@@ -260,6 +284,8 @@ function clearCaches(): void {
   TOKEN_COUNTERS.clear();
   clearWindowCache();
   lastScanCacheRevision = -1;
+  aliasBook?.clear();
+  SWAPPED.clear();
 }
 
 // Value-free audit ledger: rule IDs and counts only, never values. Every
@@ -339,6 +365,21 @@ function applyTripMarkers(text: string, trips: Array<{ start: number; end: numbe
   return out;
 }
 
+// Set while user-typed text is scanned (context ingress, persisting a user
+// message). Prompt-scoped generalize rules apply only then. The scans are
+// synchronous, so a plain flag cannot leak into another scan.
+let scanningUserText = false;
+
+function asUserText<T>(scan: () => T): T {
+  const outer = scanningUserText;
+  scanningUserText = true;
+  try {
+    return scan();
+  } finally {
+    scanningUserText = outer;
+  }
+}
+
 function redactText(text: string, allowTags: Set<string> = new Set()): { text: string; hits: number } {
   const sourceLength = text.length;
   const cookieEdits: Array<{start:number;end:number;replacementLength:number}> = [];
@@ -362,7 +403,7 @@ function redactText(text: string, allowTags: Set<string> = new Set()): { text: s
     cookieHits = cookieResult.hits;
   }
   const { findings: raw, trips } = cachedScan(text);
-  const allowed = allowTags.has("all") ? [] : raw.filter((f) => !isSyntheticValue(f.secretValue));
+  const allowed = allowTags.has("all") ? [] : [...raw, ...swappedFindings(text)].filter((f) => !isSyntheticValue(f.secretValue));
   // Structured document edits join the same renderer. Filter them by the
   // same allow-tags before planning so an allowed category cannot exempt an
   // overlapping forbidden secret.
@@ -381,7 +422,8 @@ function redactText(text: string, allowTags: Set<string> = new Set()): { text: s
   const insideBoilerplate = (finding: { start: number; end: number }): boolean =>
     boilerplate.some((span) => finding.start >= span.start && finding.end <= span.end);
   const findings = (applyAllowTags([...allowed, ...extra], allowTags) as LocatedFinding[])
-    .filter((finding) => !insideBoilerplate(finding));
+    .filter((finding) => !insideBoilerplate(finding))
+    .filter((finding) => scanningUserText || !isPromptOnlyRule(finding.ruleId));
   const uniqueFindings = dedupeFindings(findings);
   recordLedger(uniqueFindings);
   const expandedTrips = mergeRanges(
@@ -400,7 +442,7 @@ function redactText(text: string, allowTags: Set<string> = new Set()): { text: s
       (finding as LocatedFinding & { jsonKind?: string }).jsonKind || finding.ruleId.startsWith("structured-")
         ? structuredReplacement(finding)
         : finding.category === "pii"
-          ? syntheticToken(finding.ruleId, finding.secretValue)
+          ? piiReplacement(finding.ruleId, finding.secretValue)
           : syntheticValue(finding.secretValue),
   });
   if (document.status === "json") {
@@ -415,7 +457,7 @@ function structuredReplacement(finding: LocatedFinding): string {
   const value = kind === "json-string" ? JSON.parse(finding.secretValue) as string : finding.secretValue;
   const synthetic =
     finding.category === "pii"
-      ? syntheticToken(finding.ruleId, value)
+      ? piiReplacement(finding.ruleId, value)
       : syntheticValue(value);
   if (kind === "json-string") return JSON.stringify(synthetic);
   if (kind === "json-number") return JSON.stringify(synthetic);
@@ -759,12 +801,125 @@ function extractFilePathsFromCommand(command: string): string[] {
   return [...new Set(paths)];
 }
 
-function commandReadsSecretFile(command: string): boolean {
-  return command
-    .split(/[\s|;&<>]+/)
-    .some((token) =>
-      isSecretFile(token.replace(/^["'`()$@]+|["'`()]+$/g, "")),
-    );
+// Shell tokens, keeping quoted spans (and the spaces inside them) whole.
+function shellWords(command: string): string[] {
+  return command.match(/(?:"[^"\n]*"|'[^'\n]*'|[^\s|;&<>"'])+/g) ?? [];
+}
+
+// NAME=value assignments anywhere in the command (f=.env; cat $f). Names the
+// command does not set fall back to the process environment, so $KUBECONFIG
+// and friends resolve to the file they point at.
+function shellAssignments(words: string[]): Map<string, string> {
+  const vars = new Map<string, string>();
+  for (const word of words) {
+    const match = /^([A-Za-z_]\w*)=(.*)$/s.exec(word);
+    if (match) vars.set(match[1] ?? "", (match[2] ?? "").replace(/^(["'])(.*)\1$/s, "$2"));
+  }
+  return vars;
+}
+
+function substituteVariables(word: string, vars: Map<string, string>): string {
+  return word.replace(/\$\{?([A-Za-z_]\w*)\}?/g, (whole, name: string) => vars.get(name) ?? process.env[name] ?? whole);
+}
+
+// ANSI-C quoting ($'\x2eenv') spells characters as escapes.
+function decodeAnsiC(word: string): string {
+  return word.replace(/\$'((?:\\.|[^'\\])*)'/g, (_whole, body: string) =>
+    body.replace(/\\(x[0-9a-fA-F]{1,2}|u[0-9a-fA-F]{1,4}|[0-7]{1,3}|.)/g, (_escape, code: string) => {
+      if (/^x/i.test(code) || /^u/.test(code)) return String.fromCharCode(Number.parseInt(code.slice(1), 16));
+      if (/^[0-7]/.test(code)) return String.fromCharCode(Number.parseInt(code, 8));
+      return ({ n: "\n", t: "\t", r: "\r" } as Record<string, string>)[code] ?? code;
+    }),
+  );
+}
+
+// Brace lists (.e{n,}v, {a,.env}) expand before the command sees a name.
+// Bounded: a pathological token stops growing rather than stalling the hook.
+const MAX_BRACE_WORDS = 64;
+function expandBraces(word: string): string[] {
+  const open = word.search(/\{[^{}]*,[^{}]*\}/);
+  if (open < 0) return [word];
+  const close = word.indexOf("}", open);
+  const results: string[] = [];
+  for (const option of word.slice(open + 1, close).split(",")) {
+    for (const expanded of expandBraces(`${word.slice(0, open)}${option}${word.slice(close + 1)}`)) {
+      if (results.length >= MAX_BRACE_WORDS) return results;
+      results.push(expanded);
+    }
+  }
+  return results;
+}
+
+// Spellings of one shell word that could name a file. Quoting can split a
+// name without changing it (.e""nv, .e\nv), and interpreter one-liners name
+// files inside string literals (python3 -c "open('.env')").
+function wordPathSpellings(word: string): string[] {
+  const spellings = [
+    word.replace(/^["'`()$@]+|["'`()]+$/g, ""),
+    word.replace(/["'\\]/g, "").replace(/^[`()$@]+|[`()]+$/g, ""),
+  ];
+  for (const literal of word.matchAll(/(["'])([^"'\s]+)\1/g)) spellings.push(literal[2] ?? "");
+  return spellings;
+}
+
+function globRegExp(pattern: string): RegExp {
+  let source = "";
+  for (let i = 0; i < pattern.length; i++) {
+    const char = pattern[i] ?? "";
+    if (char === "*") source += "[^/]*";
+    else if (char === "?") source += "[^/]";
+    else if (char === "[") {
+      const close = pattern.indexOf("]", i + 1);
+      if (close < 0) { source += "\\["; continue; }
+      source += `[${pattern.slice(i + 1, close).replace(/^!/, "^").replace(/\\/g, "\\\\")}]`;
+      i = close;
+    } else source += char.replace(/[.+^${}()|\\]/g, "\\$&");
+  }
+  return new RegExp(`^${source}$`);
+}
+
+// An unquoted glob (cat .en?, cat *.key) names no file until bash expands it,
+// so expand it the way bash would: against the directory, skipping dotfiles
+// unless the pattern itself starts with a dot. Globbed directories are out of
+// scope (a literal basename behind them is still checked as written).
+function globMatches(word: string, cwd: string): string[] {
+  if (/["'\\]/.test(word) || !/[*?[]/.test(word)) return [];
+  const slash = word.lastIndexOf("/");
+  const dir = slash < 0 ? "" : word.slice(0, slash + 1);
+  const base = word.slice(slash + 1);
+  if (!base || /[*?[]/.test(dir)) return [];
+  let names: string[];
+  let matcher: RegExp;
+  try {
+    names = readdirSync(path.resolve(cwd, expandHomePrefix(dir || ".")));
+    matcher = globRegExp(base);
+  } catch {
+    return []; // Missing directory, or a bracket range bash would reject ([z-a]).
+  }
+  return names
+    .filter((name) => (!name.startsWith(".") || base.startsWith(".")) && matcher.test(name))
+    .map((name) => `${dir}${name}`);
+}
+
+// Every path a bash command could name after the shell expands it: variables,
+// ANSI-C quoting, brace lists, quote removal, string literals, and globs.
+// Arbitrary computation (base64, $(...) output, eval of built strings) stays
+// out of scope: this is a lexical guard, not a sandbox.
+function commandPathCandidates(command: string, cwd: string): string[] {
+  const words = shellWords(command);
+  const vars = shellAssignments(words);
+  const candidates: string[] = [];
+  for (const word of words) {
+    const value = /^[A-Za-z_]\w*=/.test(word) ? word.slice(word.indexOf("=") + 1) : word;
+    for (const expanded of expandBraces(decodeAnsiC(substituteVariables(value, vars)))) {
+      candidates.push(...wordPathSpellings(expanded), ...globMatches(expanded, cwd));
+    }
+  }
+  return candidates;
+}
+
+function commandReadsSecretFile(command: string, cwd: string): boolean {
+  return commandPathCandidates(command, cwd).some(isSecretFile);
 }
 
 // The local canary inventory holds real PII used as match patterns. The model
@@ -794,14 +949,15 @@ function isCanaryInventory(filePath: string, cwd: string): boolean {
   const expanded = canonicalPath(filePath.split(/[?:]/)[0] ?? filePath, cwd);
   const defaultPath = path.join(process.env.HOME ?? "", ".config", "sensitive-canary", "config.json");
   if (expanded.endsWith("/.config/sensitive-canary/config.json") || expanded === canonicalPath(defaultPath, cwd)) return true;
+  // The generalize list: which topics you consider sensitive.
+  if (expanded.endsWith("/sensitive-canary/generalize.json") || expanded === canonicalPath(GENERALIZE_PATH, cwd)) return true;
+  // The stand-in key: with it, stand-ins could be matched back to guesses.
+  if (expanded.endsWith("/sensitive-canary/alias-key") || expanded.endsWith(SESSION_KEY_SUFFIX) || expanded === canonicalPath(aliasKeyPath(), cwd)) return true;
   return !!override && expanded === canonicalPath(override, cwd);
 }
 
 function commandReadsCanaryInventory(command: string, cwd: string): boolean {
-  // Retain quoted spaces and variable sigils. This recognizes direct path
-  // spellings, not arbitrary shell expansion or dynamically computed paths.
-  const tokens = command.match(/(?:"[^"\n]*"|'[^'\n]*'|[^\s|;&<>"'])+/g) ?? [];
-  return tokens.some((token) => isCanaryInventory(token.replace(/["'`]/g, "").replace(/^[()]+|[()]+$/g, ""), cwd));
+  return commandPathCandidates(command, cwd).some((candidate) => isCanaryInventory(candidate, cwd));
 }
 
 // Candidate path inputs across Pi's file-touching tools.
@@ -818,12 +974,29 @@ function candidatePaths(input: Record<string, unknown>): string[] {
 
 const FILE_PATH_TOOLS = new Set(["read", "write", "edit", "grep", "find", "ls", "search_files"]);
 
-function hasNonRelativePath(toolName: string, targets: string[]): boolean {
+// Home-directory paths carry the username, which the canary redacts, so the
+// model would be typing a path it can only half see. Absolute paths elsewhere
+// (/etc, /nix/store) are fine unless they themselves contain a sensitive
+// value. Windows drive and UNC paths stay blocked. Scan-budget trips block.
+function blocksPrivatePath(toolName: string, targets: string[], cwd: string): boolean {
   if (!FILE_PATH_TOOLS.has(toolName)) return false;
+  const home = process.env.HOME ? canonicalPath(process.env.HOME, cwd) : "";
   return targets.some((target) => {
     const value = target.replace(/^@/, "");
-    return path.isAbsolute(value) || path.win32.isAbsolute(value) ||
-      /^~|^\$(?:HOME|\{HOME\})(?:[\\/]|$)/.test(value);
+    if (/^~|^\$(?:HOME|\{HOME\})(?:[\\/]|$)/.test(value)) return true;
+    if (path.win32.isAbsolute(value) && !path.isAbsolute(value)) return true;
+    if (value.startsWith("\\\\")) return true;
+    if (!path.isAbsolute(value)) return false;
+    const resolved = canonicalPath(value, cwd);
+    if (home && home !== "/" && (resolved === home || resolved.startsWith(`${home}/`))) return true;
+    if (home && home !== "/" && (value === process.env.HOME || value.startsWith(`${process.env.HOME}/`))) return true;
+    try {
+      const { findings, trips } = cachedScan(value);
+      return trips.length > 0 || findings.length > 0;
+    } catch (error) {
+      if (error instanceof ScanBudgetExceeded) return true;
+      throw error;
+    }
   });
 }
 
@@ -878,7 +1051,7 @@ const SYNTHESIS_NOTICE_SUFFIX =
 // 0 misuse events either way) showed the proactive notice adds nothing
 // measurable here. It cost ~65 tokens per redacted message.
 const SYNTHESIS_SYSTEM_REMINDER =
-  "SENSITIVE-CANARY: Sensitive values can be synthetic placeholders. These placeholders are not real credentials, identities, contact details, or production data. Preserve only their structure and relationships. Never pass a placeholder to a tool or attempt to reverse it. Never cd into, read, or execute a path containing a placeholder: resolve the dynamic segment at runtime ($HOME, $(id -un), positional selection) instead of reusing redacted text. If one blocks the task, stop and ask the user to re-run with [allow-pii].";
+  "SENSITIVE-CANARY: Sensitive values can be synthetic placeholders. These placeholders are not real credentials, identities, contact details, or production data. Personal and infrastructure values become stable stand-ins: names under the .example TLD, label-hex words (user-3c9d0e, person-…, host-…), n-hex name parts, 240.0.0.0/5 and 2001:db8:: addresses, 02: MACs. Stand-ins keep roles and relationships (same domain, same subnet, same person) within this session; a new session uses new stand-ins. Preserve only their structure and relationships. Never pass a placeholder to a tool or attempt to reverse it. Never cd into, read, or execute a path containing a placeholder: resolve the dynamic segment at runtime ($HOME, $(id -un), positional selection) instead of reusing redacted text. If one blocks the task, stop and ask the user to re-run with [allow-pii].";
 
 // Canary's own boilerplate must never be redacted: a user inventory word
 // colliding with it (e.g. a case-insensitive acronym matching ordinary
@@ -889,8 +1062,13 @@ const SYNTHESIS_SYSTEM_REMINDER =
 // fire there: fail-closed omission stays honest even inside boilerplate.
 const BOILERPLATE_MARKERS = [SYNTHESIS_NOTICE, SYNTHESIS_NOTICE_SUFFIX, SYNTHESIS_SYSTEM_REMINDER];
 
+// Generalized wording is final: a term inside ⟦…⟧ is never generalized
+// again, or every rescan would nest another pair of brackets.
+const GENERALIZED = /⟦[^⟦⟧\n]{1,80}⟧/g;
+
 function boilerplateSpans(text: string): Array<{ start: number; end: number }> {
   const spans: Array<{ start: number; end: number }> = [];
+  for (const match of text.matchAll(GENERALIZED)) spans.push({ start: match.index, end: match.index + match[0].length });
   for (const marker of BOILERPLATE_MARKERS) {
     let from = 0;
     while (true) {
@@ -969,13 +1147,54 @@ function placeholderViolations(input: unknown, allowTags: Set<string>): string |
     const category = match[1] === "SECRET" ? "secret" : "pii";
     if (!allowTags.has(category)) return match[0];
   }
-  return;
+  // Generalized wording stands for several possible originals, so it can
+  // never be swapped back: written into a file or command it would replace
+  // the real text.
+  if (!allowTags.has("pii")) {
+    const general = serialized.match(GENERALIZED)?.[0];
+    if (general !== undefined) return general;
+  }
+  // Stand-ins are swapped back to real values instead (see tool_call). With
+  // the older numbered tokens nothing is swapped, so a stand-in left over
+  // from a stand-ins session would reach the wrong host: block it.
+  if (allowTags.has("pii") || aliasStyle() === "stand-ins") return;
+  return aliasSpans(serialized)[0];
 }
 
-function blocksSecretAccess(toolName: string, command: string, targets: string[], allowTags: Set<string>): boolean {
+// Real values swapped into tool calls this session, by the rule id that
+// re-detects them. Output that echoes one is aliased again even when no
+// scanning rule would have caught it (a host composed from known parts).
+const SWAPPED = new Map<string, string>();
+const SWAPPED_MAX = 2_000;
+
+function rememberSwapped(value: string, ruleId: string): void {
+  if (value.length < 3 || SWAPPED.has(value)) return;
+  if (SWAPPED.size >= SWAPPED_MAX) SWAPPED.delete(SWAPPED.keys().next().value!);
+  SWAPPED.set(value, ruleId);
+}
+
+function swappedFindings(text: string): LocatedFinding[] {
+  if (SWAPPED.size === 0) return [];
+  const lower = text.toLowerCase();
+  const out: LocatedFinding[] = [];
+  for (const [value, ruleId] of SWAPPED) {
+    const needle = value.toLowerCase();
+    for (let at = lower.indexOf(needle); at >= 0; at = lower.indexOf(needle, at + needle.length)) {
+      // Whole tokens only: a swapped "acme" must not rewrite "acmeville".
+      const before = text[at - 1] ?? "";
+      const after = text[at + needle.length] ?? "";
+      if (/[\p{L}\p{N}_]/u.test(before) || /[\p{L}\p{N}_]/u.test(after)) continue;
+      const secretValue = text.slice(at, at + needle.length);
+      out.push({ ruleId, description: "Value swapped into a tool call", category: "pii", matchRedacted: "[swapped]", secretValue, start: at, end: at + needle.length });
+    }
+  }
+  return out;
+}
+
+function blocksSecretAccess(toolName: string, command: string, targets: string[], allowTags: Set<string>, cwd: string): boolean {
   if (allowTags.has("secret")) return false;
   return (
-    (toolName === "bash" && (commandReadsSecretFile(command) || commandSendsCookies(command))) ||
+    (toolName === "bash" && (commandReadsSecretFile(command, cwd) || commandSendsCookies(command))) ||
     targets.some(isSecretFile)
   );
 }
@@ -1090,7 +1309,7 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
     LEDGER.clear();
   });
 
-  pi.on("session_start", async (_event, ctx) => {
+  pi.on("session_start", async (event, ctx) => {
     const state = ctx.sessionManager
       .getBranch()
       .filter((entry) => entry.type === "custom" && entry.customType === STATE_ENTRY)
@@ -1103,7 +1322,26 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
     canaryEnabled = next;
     pi.appendEntry(STATE_ENTRY, { enabled: next });
     pi.events.emit("sensitive-canary:mode", { enabled: next });
-    setRuntimeInventory(collectRuntimeIdentity({ ...identityFromOs(), ...identityFromGit() }));
+    setRuntimeInventory(collectRuntimeIdentity({
+      ...identityFromOs(),
+      ...identityFromGit(),
+      // SSH config and git remotes name infrastructure; opt out with
+      // SENSITIVE_CANARY_INFRA_INVENTORY=off.
+      ...(process.env.SENSITIVE_CANARY_INFRA_INVENTORY === "off"
+        ? {}
+        : { ...identityFromSsh(), ...identityFromGitRemotes(ctx?.cwd ?? process.cwd()) }),
+    }));
+    registerAliasLabels(aliasLabels());
+    // One key per session unless aliasKey is "shared" (see lib/aliases.ts).
+    const started = event as { reason?: string; previousSessionFile?: string } | undefined;
+    aliasBook = new AliasBook(aliasKeyScope() === "shared"
+      ? loadAliasKey()
+      : sessionAliasKey(ctx.sessionManager.getSessionFile?.(), started?.reason === "fork" ? started.previousSessionFile : undefined));
+    // Mint inventory stand-ins up front, so stand-ins from earlier sessions
+    // swap back before their value has appeared in this one.
+    if (aliasStyle() === "stand-ins") {
+      for (const entry of inventoryLiterals()) aliases().standIn(entry.ruleId, entry.literal, entry.label);
+    }
     clearCaches();
     loadScanCache(ctx.sessionManager.getSessionFile());
   });
@@ -1130,7 +1368,7 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
     const input = (event.input ?? {}) as Record<string, unknown>;
     const command = String(input.command ?? "");
     const targets = candidatePaths(input);
-    if (blocksSecretAccess(event.toolName, command, targets, allowTags)) {
+    if (blocksSecretAccess(event.toolName, command, targets, allowTags, ctx?.cwd ?? process.cwd())) {
       return {
         block: true,
         reason: "sensitive-canary: refusing direct secret access or transmission. Add [allow-secrets] or [allow-all] to the current user prompt to bypass this check.",
@@ -1146,7 +1384,9 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
     if (placeholder !== undefined) {
       return {
         block: true,
-        reason: `sensitive-canary: ${placeholder} is a synthetic placeholder, not a real path or identifier — the call cannot succeed with it. Resolve the real value at runtime ($HOME, $(id -un), positional selection) instead of reusing redacted text. Add [allow-pii] or [allow-all] to the current user prompt to bypass this check.`,
+        reason: placeholder.startsWith("⟦")
+          ? `sensitive-canary: ${placeholder} is generalized wording, not the original text, and cannot be written back or used in a command. Leave that text out of the call, or add [allow-pii] to the current user prompt to bypass this check.`
+          : `sensitive-canary: ${placeholder} is a synthetic placeholder, not a real path or identifier — the call cannot succeed with it. Resolve the real value at runtime ($HOME, $(id -un), positional selection) instead of reusing redacted text. Add [allow-pii] or [allow-all] to the current user prompt to bypass this check.`,
       };
     }
     if (withScanBudget(() => toolInputHasSecret(event.input, allowTags))) {
@@ -1155,12 +1395,44 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
         reason: "sensitive-canary: refusing to send a secret in a tool call. Add [allow-secrets] or [allow-all] to the current user prompt to bypass this check.",
       };
     }
-    if (hasNonRelativePath(event.toolName, targets)) {
+    if (withScanBudget(() => blocksPrivatePath(event.toolName, targets, ctx?.cwd ?? process.cwd()))) {
       return {
         block: true,
-        reason: "sensitive-canary: file-tool paths must be relative while canary is on. Retry with a path relative to the current working directory. For external paths, resolve them at runtime in Bash, or explicitly use /canary off.",
+        reason: "sensitive-canary: file-tool paths inside the home directory, or containing an identifying name, must be relative while canary is on. Retry with a path relative to the current working directory. For home paths, resolve them at runtime in Bash ($HOME), or explicitly use /canary off.",
       };
     }
+    // Swap-back runs last, on arguments every check above has passed. Pi
+    // executes the tool with this same object, so mutating it in place is
+    // how the real values reach the tool (documented extension behavior).
+    // The transcript keeps the model's original, stand-in arguments.
+    if (aliasStyle() !== "stand-ins") return;
+    const swap = planSwapBack(event.toolName, event.input, aliases(), allowTags.has("pii") || allowTags.has("all"));
+    if (swap.unresolved.length > 0) {
+      return {
+        block: true,
+        reason: `sensitive-canary: ${swap.unresolved[0]} is a stand-in this session cannot map back to a real value (it may come from another machine or a re-rolled key). Resolve the real value at runtime ($HOME, $(id -un), positional selection), or ask the user.`,
+      };
+    }
+    if (swap.egress.length > 0) {
+      return {
+        block: true,
+        reason: `sensitive-canary: ${swap.egress[0]} stands in for a real value, and this call would send it off the machine (a web tool, or a network command whose destination is not one of your own hosts). Use the stand-in only as the host you connect to, or add [allow-pii] to the current user prompt to bypass this check.`,
+      };
+    }
+    if (swap.resolved.length === 0) return;
+    // Real paths can land on a guarded file (a stand-in home directory).
+    const swappedInput = swap.input as Record<string, unknown>;
+    const swappedCommand = String(swappedInput.command ?? "");
+    const swappedTargets = candidatePaths(swappedInput);
+    if (blocksSecretAccess(event.toolName, swappedCommand, swappedTargets, allowTags, ctx?.cwd ?? process.cwd()) ||
+        blocksInventoryAccess(event.toolName, swappedCommand, swappedTargets, allowTags, ctx?.cwd ?? process.cwd())) {
+      return {
+        block: true,
+        reason: "sensitive-canary: refusing direct secret or inventory access. Add [allow-secrets], [allow-pii], or [allow-all] to the current user prompt to bypass this check.",
+      };
+    }
+    for (const resolved of swap.resolved) rememberSwapped(resolved.value, resolved.ruleId);
+    assignInPlace(event.input, swap.input);
   });
 
   // ── ingress: user-authored text, before it reaches the provider ───────────
@@ -1179,7 +1451,7 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
       if (allowTags.has("all")) return;
       return withScanBudget(() => {
     let total = 0;
-    const messages = all.map((message) => {
+    const messages = all.map((message) => asUserText(() => {
       if (message.role !== "user") return message;
       if (
         (typeof message.content === "string" &&
@@ -1212,7 +1484,7 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
       if (hits === 0) return message;
       total += hits;
       return { ...message, content };
-    });
+    }));
 
     if (total === 0) return;
     recordWarning(total);
@@ -1295,7 +1567,8 @@ export default function sensitiveCanary(pi: ExtensionAPI): void {
     const mayExecuteTools =
       message.role === "assistant" &&
       stopReason !== "error" && stopReason !== "aborted" && stopReason !== "length";
-    const redacted = redactStoredMessage(message, tags, !mayExecuteTools);
+    const redact = () => redactStoredMessage(message, tags, !mayExecuteTools);
+    const redacted = message.role === "user" ? asUserText(redact) : redact();
     if (redacted.hits === 0) return;
     recordWarning(redacted.hits);
     return { message: redacted.message };

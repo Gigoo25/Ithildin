@@ -1,6 +1,7 @@
 // Closed list of files whose contents are treated as secrets even when the
-// values have no detectable shape. Token-spelling only: `cat $f` after
-// `f=id_rsa` is out of scope (sandbox work), same as the inventory guard.
+// values have no detectable shape. Callers expand shell spellings first
+// (variables, braces, globs; see commandPathCandidates in index.ts). Computed
+// names (base64, $(...) output) stay out of scope, same as the inventory guard.
 
 const SECRET_BASENAMES = new Set([
   ".env",

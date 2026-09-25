@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { collectRuntimeIdentity, identityFromGit } from "./runtime-inventory.ts";
+import { collectRuntimeIdentity, gitRemoteHost, identityFromGit, identityFromGitRemotes, identityFromSsh } from "./runtime-inventory.ts";
 import { RULES, scan, setRuntimeInventory } from "./rules.ts";
 
 const UNIQUE_USER = "zzzxquniqueuser";
@@ -79,5 +79,60 @@ describe("identityFromGit", () => {
     expect(got.gitName).toBe("Zzzxq Gitname");
     expect(got.gitEmail).toBe("zzzxqgit@zzzxq.test");
     expect(identityFromGit(() => undefined)).toEqual({ gitName: undefined, gitEmail: undefined });
+  });
+});
+
+describe("infrastructure sources", () => {
+  const files: Record<string, string> = {
+    "/h/.ssh/config": [
+      "# personal",
+      "Host zqxbox zqxbox-alias *.wild !neg",
+      "  HostName zqxbox.zqxcorp.internal",
+      "  User zqxadmin",
+      "Host gh",
+      "  HostName github.com",
+      "  User git",
+      "Host jump",
+      "  HostName=203.0.113.44",
+      "  User %u",
+      "Include config.d/*",
+      "Include ~/.ssh/config", // cycle
+    ].join("\n"),
+    "/h/.ssh/config.d/work": "Host zqxwork\n  HostName fd00:zq::5\n",
+  };
+  const read = (file: string) => files[file];
+  const list = (dir: string) => (dir === "/h/.ssh/config.d" ? ["work"] : []);
+
+  it("reads concrete hosts, hostnames, users, and includes from SSH config", () => {
+    const ssh = identityFromSsh("/h", read, list);
+    expect(ssh.sshHosts).toEqual(["zqxbox", "zqxbox-alias", "gh", "jump", "zqxwork"]);
+    expect(ssh.sshHostNames).toEqual(["zqxbox.zqxcorp.internal", "github.com", "203.0.113.44", "fd00:zq::5"]);
+    expect(ssh.sshUsers).toEqual(["zqxadmin", "git"]);
+  });
+
+  it("extracts git remote hosts from every URL form", () => {
+    expect(gitRemoteHost("git@zqxgit.zqxcorp.internal:team/repo.git")).toBe("zqxgit.zqxcorp.internal");
+    expect(gitRemoteHost("ssh://git@zqxgit:2222/team/repo")).toBe("zqxgit");
+    expect(gitRemoteHost("https://user@zqxgit.example.org/team/repo")).toBe("zqxgit.example.org");
+    expect(gitRemoteHost("file:///srv/repo")).toBeUndefined();
+    expect(gitRemoteHost("/srv/repo")).toBeUndefined();
+    expect(gitRemoteHost("C:/repo")).toBeUndefined();
+    expect(identityFromGitRemotes("/x", () => ["git@github.com:o/r.git", "https://zqxgit.internal/r"]).gitHosts).toEqual(["github.com", "zqxgit.internal"]);
+  });
+
+  it("turns infrastructure names into caseless rules, skipping public forges and service users", () => {
+    const entries = collectRuntimeIdentity({ ...identityFromSsh("/h", read, list), gitHosts: ["github.com", "zqxgit.zqxcorp.internal"] });
+    const literals = entries.map((entry) => entry.literal);
+    expect(literals).toContain("zqxbox");
+    expect(literals).toContain("zqxbox.zqxcorp.internal");
+    expect(literals).toContain("203.0.113.44");
+    expect(literals).toContain("zqxadmin");
+    expect(literals).toContain("zqxgit.zqxcorp.internal");
+    expect(literals).not.toContain("github.com");
+    expect(literals).not.toContain("git");
+    expect(entries.find((entry) => entry.literal === "zqxbox")?.caseSensitive).toBe(false);
+    expect(entries.find((entry) => entry.literal === "203.0.113.44")?.id).toMatch(/-ip-\d+$/);
+    setRuntimeInventory(entries);
+    expect(scan("ssh ZQXBOX then 203.0.113.44").map((finding) => finding.secretValue).sort()).toEqual(["203.0.113.44", "ZQXBOX"]);
   });
 });

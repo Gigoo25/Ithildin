@@ -99,7 +99,7 @@ describe("sensitive-canary port", () => {
     expect(await handlers.before_agent_start({ prompt: "retry", systemPrompt: first.systemPrompt })).toBeUndefined();
   });
 
-  it("replaces PII with obvious numbered tokens, not realistic fakes", async () => {
+  it("replaces PII with meaningful stand-ins from reserved namespaces", async () => {
     const res = await handlers.tool_result(
       {
         toolName: "bash",
@@ -111,9 +111,26 @@ describe("sensitive-canary port", () => {
     expect(text).not.toContain("FatMan");
     expect(text).not.toContain("10.1.2.3");
     expect(text).not.toContain("rstocchi");
-    expect(text).toMatch(/__CANARY_HOST_\d+__/);
-    expect(text).toMatch(/__CANARY_IP_\d+__/);
-    expect(text).toMatch(/__CANARY_USER_\d+__/);
+    expect(text).toMatch(/\bhost-[0-9a-f]{6}\b/);
+    // Same host octet, stand-in /24 inside never-assigned 240.0.0.0/5.
+    expect(text).toMatch(/\b24[0-7]\.\d{1,3}\.\d{1,3}\.3\b/);
+    expect(text).toMatch(/\buser-[0-9a-f]{6}\b/);
+  });
+
+  it("keeps the numbered tokens when aliases are set to tokens", async () => {
+    process.env.SENSITIVE_CANARY_ALIASES = "tokens";
+    try {
+      const res = await handlers.tool_result(
+        { toolName: "bash", content: [{ type: "text", text: "deploy to FatMan via 10.1.2.3 as rstocchi" }] },
+        ctx,
+      );
+      const text = res.content[0].text;
+      expect(text).toMatch(/__CANARY_HOST_\d+__/);
+      expect(text).toMatch(/__CANARY_IP_\d+__/);
+      expect(text).toMatch(/__CANARY_USER_\d+__/);
+    } finally {
+      delete process.env.SENSITIVE_CANARY_ALIASES;
+    }
   });
 
   it("keeps token identity stable for repeated PII", async () => {
@@ -124,7 +141,7 @@ describe("sensitive-canary port", () => {
       );
     const first = (await run()).content[0].text;
     const second = (await run()).content[0].text;
-    expect(first).toMatch(/__CANARY_IP_\d+__/);
+    expect(first).toMatch(/\b24[0-7]\.\d{1,3}\.\d{1,3}\.43\b/);
     expect(second).toBe(first);
   });
 
@@ -255,7 +272,7 @@ describe("sensitive-canary port", () => {
       ctx,
     );
     expect(res.message.role).toBe("user");
-    expect(res.message.content).toMatch(/__CANARY_HOST_\d+__/);
+    expect(res.message.content).toMatch(/\bhost-[0-9a-f]{6}\b/);
     expect(res.message.content).not.toContain("Mini");
   });
 
@@ -577,14 +594,14 @@ describe("sensitive-canary port", () => {
     expect(res?.messages?.[2]?.content?.[0]?.text).toMatch(/[A-Z0-9]{20}/);
   });
 
-  it("replaces email addresses with obvious tokens", async () => {
+  it("replaces email addresses with stand-in addresses", async () => {
     const original = ["begjm.qnqbh", "tqxu.znatyfu"].join("@");
     const res = await handlers.context(
       { messages: [{ role: "user", content: `contact ${original}` }] },
       ctx,
     );
     const text = res?.messages?.[0]?.content;
-    expect(text).toMatch(/__CANARY_EMAIL_\d+__/);
+    expect(text).toMatch(/\buser-[0-9a-f]{6}@[a-z0-9.-]+\.example\b/);
     expect(text).not.toContain(original);
     expect(text).not.toContain("[sensitive-canary]");
   });
@@ -1070,7 +1087,7 @@ describe("sensitive-canary port", () => {
       "const reminder = (await handlers.before_agent_start({ prompt: \"p\", systemPrompt: \"base\" })).systemPrompt;",
       "const via = await handlers.before_provider_request({ payload: { systemPrompt: reminder } }, ctx);",
       "const live = await handlers.before_provider_request({ payload: { note: \"user placeholders here\" } }, ctx);",
-      "console.log(JSON.stringify({ markers: markers.length, reminderKept: via === undefined, liveFires: live !== undefined && JSON.stringify(live).includes(\"__CANARY_\") }));",
+      "console.log(JSON.stringify({ markers: markers.length, reminderKept: via === undefined, liveFires: live !== undefined && !JSON.stringify(live).includes(\"user placeholders\") }));",
     ].join("\n");
     const child = Bun.spawnSync({ cmd: [process.execPath, "-e", script], env: { ...process.env, HOME: home, XDG_CACHE_HOME: join(home, "cache"), SENSITIVE_CANARY_CONFIG: file }, timeout: 30000 });
     expect(child.exitCode).toBe(0);

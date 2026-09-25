@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import sensitiveCanary from "./index.ts";
-import { beginScanBudget } from "./lib/rules.ts";
+import { beginScanBudget, setRuntimeInventory } from "./lib/rules.ts";
+import { collectRuntimeIdentity } from "./lib/runtime-inventory.ts";
 
 function harness() {
 	const handlers: Record<string, any> = {};
@@ -132,7 +133,14 @@ it("normalizes inventory aliases and documented variable spellings without readi
 			expect(out?.block).toBe(true);
 			expect(out?.reason).toContain("PII inventory");
 		}
-		for (const command of ['cat "$SENSITIVE_CANARY_CONFIG"', 'cat "${SENSITIVE_CANARY_CONFIG}"', `cat "${inventory}"`]) {
+		for (const command of [
+			'cat "$SENSITIVE_CANARY_CONFIG"',
+			'cat "${SENSITIVE_CANARY_CONFIG}"',
+			`cat "${inventory}"`,
+			`cat ${dir}/private*`,
+			`cat ${dir}/{alias,other}.json`,
+			`p=${dir}/alias.json; cat $p`,
+		]) {
 			expect((await handlers.tool_call({ toolName: "bash", input: { command } }, ctx))?.reason).toContain("PII inventory");
 		}
 		await handlers.context({ messages: [{ role: "user", content: "[allow-pii]" }] }, ctx);
@@ -145,29 +153,43 @@ it("normalizes inventory aliases and documented variable spellings without readi
 	}
 });
 
-it("blocks non-relative file-tool paths only while canary is on", async () => {
+it("blocks home and identifying file-tool paths only while canary is on", async () => {
 	const { handlers, commands, ctx } = harness();
+	const homeFixture = join(process.env.HOME ?? "/home/nobody", "fixture.txt");
 	for (const toolName of ["read", "write", "edit", "grep", "find", "ls", "search_files"]) {
-		for (const target of [join(tmpdir(), "fixture.txt"), "~/fixture.txt", "$HOME/fixture.txt", "${HOME}/fixture.txt", "C:\\fixture.txt", "\\\\server\\share\\fixture.txt"]) {
+		for (const target of [homeFixture, "~/fixture.txt", "$HOME/fixture.txt", "${HOME}/fixture.txt", "C:\\fixture.txt", "\\\\server\\share\\fixture.txt"]) {
 			const out = await handlers.tool_call({ toolName, input: { path: target } }, ctx);
 			expect(out?.block).toBe(true);
 			expect(out?.reason).toContain("relative");
 		}
-		for (const target of ["fixture.txt", "./src/fixture.txt", "../fixture.txt"]) {
+		for (const target of ["fixture.txt", "./src/fixture.txt", "../fixture.txt", "/etc/fixture.txt", "/nix/store/abc-pkg/share/doc.txt"]) {
 			expect(await handlers.tool_call({ toolName, input: { path: target } }, ctx)).toBeUndefined();
 		}
 	}
 	for (const field of ["file", "file_path", "filePath"]) {
-		expect((await handlers.tool_call({ toolName: "edit", input: { [field]: join(tmpdir(), "fixture.txt") } }, ctx))?.block).toBe(true);
+		expect((await handlers.tool_call({ toolName: "edit", input: { [field]: homeFixture } }, ctx))?.block).toBe(true);
 	}
 	// Pi strips @ from file paths before resolving them; do not allow it to hide an absolute path.
-	expect((await handlers.tool_call({ toolName: "read", input: { path: "@" + join(tmpdir(), "fixture.txt") } }, ctx))?.block).toBe(true);
+	expect((await handlers.tool_call({ toolName: "read", input: { path: "@" + homeFixture } }, ctx))?.block).toBe(true);
 	expect(await handlers.tool_call({ toolName: "bash", input: { command: 'ls "$HOME"' } }, ctx)).toBeUndefined();
 	expect(await handlers.tool_call({ toolName: "web_fetch", input: { url: "https://example.org" } }, ctx)).toBeUndefined();
 	await handlers.context({ messages: [{ role: "user", content: "[allow-all]" }] }, ctx);
-	expect((await handlers.tool_call({ toolName: "read", input: { path: join(tmpdir(), "fixture.txt") } }, ctx))?.block).toBe(true);
+	expect((await handlers.tool_call({ toolName: "read", input: { path: homeFixture } }, ctx))?.block).toBe(true);
 	await commands.canary("off", ctx);
-	expect(await handlers.tool_call({ toolName: "read", input: { path: join(tmpdir(), "fixture.txt") } }, ctx)).toBeUndefined();
+	expect(await handlers.tool_call({ toolName: "read", input: { path: homeFixture } }, ctx)).toBeUndefined();
 	await commands.canary("on", ctx);
-	expect((await handlers.tool_call({ toolName: "read", input: { path: join(tmpdir(), "fixture.txt") } }, ctx))?.block).toBe(true);
+	expect((await handlers.tool_call({ toolName: "read", input: { path: homeFixture } }, ctx))?.block).toBe(true);
+});
+
+it("blocks an absolute path outside home when it contains an identifying name", async () => {
+	const { handlers, ctx } = harness();
+	setRuntimeInventory(collectRuntimeIdentity({ username: "zzzxquniqueuser" }));
+	try {
+		const out = await handlers.tool_call({ toolName: "read", input: { path: "/srv/zzzxquniqueuser/notes.txt" } }, ctx);
+		expect(out?.block).toBe(true);
+		expect(out?.reason).toContain("identifying name");
+		expect(await handlers.tool_call({ toolName: "read", input: { path: "/srv/shared/notes.txt" } }, ctx)).toBeUndefined();
+	} finally {
+		setRuntimeInventory([]);
+	}
 });

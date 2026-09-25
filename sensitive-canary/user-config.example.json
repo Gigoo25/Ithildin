@@ -1,5 +1,6 @@
 {
-  "_readme": "Personal PII inventory. COPY to ~/.config/sensitive-canary/config.json (or point $SENSITIVE_CANARY_CONFIG at your copy), replace every EXAMPLE value with the real one, chmod 600 the copy. NEVER commit real values: this template stays inert (its values match nothing you will type). See PERSONAL-INVENTORY.md. All rules are category pii, so findings become obvious __CANARY_*__ tokens and [allow-pii] bypasses them. Optional scanBudgetMs (or $SENSITIVE_CANARY_SCAN_BUDGET_MS) raises the per-hook scan envelope for very large sessions.",
+  "_readme": "Personal PII inventory. COPY to ~/.config/sensitive-canary/config.json (or point $SENSITIVE_CANARY_CONFIG at your copy), replace every EXAMPLE value with the real one, chmod 600 the copy. NEVER commit real values: this template stays inert (its values match nothing you will type). See PERSONAL-INVENTORY.md. All rules are category pii, so findings become stable stand-ins (label-hex words such as employer-3c9d0e; set label per entry, or aliases to tokens for the old __CANARY_*__ tokens) and [allow-pii] bypasses them. Optional scanBudgetMs (or $SENSITIVE_CANARY_SCAN_BUDGET_MS) raises the per-hook scan envelope for very large sessions.",
+  "aliases": "stand-ins",
   "rules": [
     {
       "id": "pii-personal-name",
@@ -45,9 +46,12 @@
       "category": "pii"
     }
   ],
+  "generalize": [
+    { "id": "example-topic", "terms": ["EXAMPLEtermone", "EXAMPLEtermtwo"], "replace": "an example topic" }
+  ],
   "inventory": [
-    { "id": "fullname", "literal": "Jane Exampleperson", "match": "phrase" },
-    { "id": "handle", "literal": "example_handle", "match": "token" },
-    { "id": "org", "literal": "ExampleCorp", "match": "token", "caseSensitive": false }
+    { "id": "fullname", "literal": "Jane Exampleperson", "match": "phrase", "label": "person" },
+    { "id": "handle", "literal": "example_handle", "match": "token", "label": "handle" },
+    { "id": "org", "literal": "ExampleCorp", "match": "token", "caseSensitive": false, "label": "employer" }
   ]
 }

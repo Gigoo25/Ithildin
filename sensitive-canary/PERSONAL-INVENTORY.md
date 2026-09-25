@@ -5,7 +5,7 @@ Names, handles, employers, home SSIDs, and ticket prefixes have no safe generic 
 1. Copy `user-config.example.json` to `~/.config/sensitive-canary/config.json`. You can use any other path and export `SENSITIVE_CANARY_CONFIG` to point at it.
 2. Replace every `EXAMPLE…` value with the real one. Keep each entry narrow. Use full names, exact handles, exact org and network names, and a pinned ticket prefix (`ACME-\d+`, never a bare `[A-Z]+-\d+`, which fires on CVEs).
 3. Run `chmod 600` on the copy. The engine ignores a non-file (FIFO, device, directory) with a stderr warning. It skips malformed rules the same way.
-4. Restart Pi (or start a new session). Type a value and expect an obvious `__CANARY_*__` token plus the canary notice. `[allow-pii]` bypasses these rules like any other PII rule.
+4. Restart Pi (or start a new session). Type a value and expect a stand-in (for example `employer-3c9d0e`) plus the canary notice. `[allow-pii]` bypasses these rules like any other PII rule.
 
 Notes:
 
@@ -20,3 +20,48 @@ Notes:
 - Invalid regexes and unknown validators reject that definition without printing the supplied identifier, regex body, validator name, or config contents. The engine retains the last valid custom rule definition. An isolated fresh-process test covers import-time loading, not only pure helper tests.
 - `scanBudgetMs` in the user config (or `SENSITIVE_CANARY_SCAN_BUDGET_MS`, which wins) sets the per-hook scan envelope in milliseconds. The default is 30s.
 - The engine caches completed scan windows in memory. It writes them next to the session as `<session>.canary-scan-cache.json` (mode 0600). That file holds rule ids, categories, and offsets, never values. A resumed session reuses the windows a previous process finished. The engine ignores the cache when the active rule set or the cache format changes.
+
+## Stand-ins
+
+PII findings become stable, meaningful stand-ins instead of numbered tokens. Secrets are unchanged: they still get random, format-preserving fakes.
+
+- Hostnames keep role words and their domain structure: `prod-pg-use1.acme.internal` becomes `prod-pg-use1.n4a5b6c.internal.example`. Identifying words become `n`+hex, and hosts in one domain share one stand-in domain. A bare identifying name becomes `host-3c9d0e`.
+- Usernames become `user-3c9d0e`. The same name as an email local part or a home directory gets the same stand-in, so one person stays one person.
+- IPv4 addresses move into 240.0.0.0/5 (never assigned). Addresses in one /24 stay in one stand-in /24, and the last octet is kept. IPv6 moves into 2001:db8::/32 with one stand-in /64 per real /64. MACs become locally administered (`02:…`).
+- Everything else becomes `<label>-<hex>`. Built-in rules pick a label (`person`, `phone`, `ssid`, `id`, …). Set `"label"` (one lowercase word) on your own rules and inventory entries, otherwise they use `pii`.
+- Stand-ins are an HMAC of the value under a random key. The key is the only thing written; there is no table of real values on disk. By default each session has its own key, `<session>.jsonl.canary-alias-key` beside the transcript (mode 0600). A new session gets new stand-ins, so a provider cannot join them across sessions into a profile. Resuming a session reuses its key, and a fork inherits its parent's. `/purge-sessions` deletes the key with its transcript.
+- `"aliasKey": "shared"` (or `SENSITIVE_CANARY_ALIAS_KEY_SCOPE=shared`) uses one key for every session instead: `${XDG_STATE_HOME:-~/.local/state}/sensitive-canary/alias-key`, overridable with `SENSITIVE_CANARY_ALIAS_KEY_FILE`. Stand-ins then stay the same across sessions, and so become linkable. The engine refuses file-tool and Bash reads of either key, like the inventory.
+- `"aliases": "tokens"` in this config, or `SENSITIVE_CANARY_ALIASES=tokens`, restores the `__CANARY_HOST_1__` placeholders.
+
+## Infrastructure inventory
+
+At session start the engine also reads `~/.ssh/config` (following `Include`) and the current repository's git remote URLs. It adds match rules for concrete `Host` aliases, `HostName` values (short names too), `User` values, and remote hosts. Public forges (github.com, gitlab.com, …), service accounts (`git`, `ec2-user`, …), wildcard patterns, and `%` tokens are skipped. These rules stay in memory, like the runtime identity rules, and are capped at 100 per source. `SENSITIVE_CANARY_INFRA_INVENTORY=off` disables them.
+
+## Swap-back
+
+When the model calls a tool with a stand-in, the engine replaces it with the real value in the arguments the tool runs with. Pi documents in-place edits of `event.input` as supported. The transcript keeps the model's stand-in arguments, and the tool's output is aliased again on the way back. Every value swapped in is added to that scan, so it returns as its stand-in even when no rule would have caught it.
+
+- Exact stand-ins resolve from this session's findings and from every inventory entry (minted at session start, so stand-ins from earlier sessions resolve too). Composed stand-ins resolve from their parts: another host in a known stand-in domain, or another address in a known stand-in /24.
+- A stand-in that cannot be resolved (another machine, a re-rolled key) blocks the call.
+- Off-machine rule: `web_fetch` and `web_search` never get swapped values. In a Bash command that talks to the network (curl, wget, nc, ssh, scp, rsync, git push/fetch/pull/clone, …), a stand-in may appear only as the destination host, unless every destination in the command is itself a stand-in (your own hosts). Anything else, such as a stand-in in a query string, a request body, or piped into curl, blocks the call. `[allow-pii]` lifts this rule. The check is lexical: a script written to disk and run later is out of its reach.
+- The secret-file and inventory guards run again on the swapped arguments.
+- Secrets are never swapped back. They keep random fakes, and the fake is what runs.
+- Stand-in home paths (`/home/user-3c9d0e/…`) work with file tools, because the check for a real home path runs on the model's arguments, before the swap.
+
+## Generalized wording
+
+`generalize` replaces words with a general phrase, so meaning survives without specifics. Put the list in `generalize.json` beside the config (a bare array, or `{ "generalize": [...] }`; `SENSITIVE_CANARY_GENERALIZE` overrides the path), or under `generalize` in the config itself. Both load. This repo links `home-manager/config/sensitive-canary/generalize.json`, a starter list (health, legal, employment, security vendors) to edit freely:
+
+```json
+"generalize": [
+  { "id": "medical", "terms": ["headache", "migraine"], "replace": "minor neurological condition" }
+]
+```
+
+- Terms match whole words, case-insensitively unless `"caseSensitive": true`. Longer terms win ("chronic migraine" over "migraine"). Up to 1,000 terms per entry. `replace` is one line of at most 80 characters.
+- The model sees `⟦minor neurological condition⟧`. Text inside `⟦…⟧` is never generalized again.
+- One phrase stands for many terms, so it cannot be swapped back. Tool calls containing `⟦…⟧` are blocked, so general wording is never written into files or commands. `[allow-pii]` bypasses both the replacement and the block.
+- `"scope": "everywhere"` (default) generalizes everywhere the engine scans: your prompts, tool output, and the provider payload. A file containing such a term cannot be edited around that word while the canary is on (use `[allow-pii]` for that turn).
+- `"scope": "prompts"` generalizes only what you type. Use it for words that also appear in code and config (vendor and product names), so those files stay readable and editable.
+- Keep out words that are also ordinary dev vocabulary (`stroke`, `debt`, `fired`, `pip`, Dockerfile `ADD`). Put acronyms in their own `"caseSensitive": true` group.
+- The engine refuses file-tool and Bash reads of `generalize.json`: the list says which topics you consider sensitive.

@@ -12,6 +12,7 @@ import {
 } from "./shapes.ts";
 import { getValidator, isReservedIpv4 } from "./validators.ts";
 import { FIRST_NAMES } from "./first-names.ts";
+import { ALIAS_LABEL } from "./aliases.ts";
 
 export type Category = "secret" | "pii";
 
@@ -56,6 +57,14 @@ interface Rule {
   // `max 3` are five-digit numbers beside a word that says they are not places.
   excludeContext?: string[];
   contextWindow?: number;
+  // Stand-in label for PII findings (`person` -> person-3c9d0e).
+  label?: string;
+  // Exact inventory value, kept in memory so its stand-in can be minted at
+  // session start and swapped back even when it has not appeared yet.
+  inventoryLiteral?: string;
+  // Generalized wording that replaces every match (see GeneralizeEntry).
+  generalize?: string;
+  generalizeScope?: "everywhere" | "prompts";
 }
 
 // JSON representation of a rule, as written in config files. The `regex` is a
@@ -75,6 +84,8 @@ export interface RuleConfig {
   // See Rule.excludeContext.
   excludeContext?: string[];
   contextWindow?: number;
+  // See Rule.label.
+  label?: string;
 }
 
 // Top-level config file: a context window override plus a list of rules.
@@ -84,15 +95,42 @@ export interface CanaryConfig {
   // Per-hook scan envelope in milliseconds. Optional: the default is sized
   // for multi-megabyte sessions, and SENSITIVE_CANARY_SCAN_BUDGET_MS wins.
   scanBudgetMs?: number;
+  // "stand-ins" (default): meaningful, stable replacements for PII.
+  // "tokens": the older __CANARY_HOST_1__ placeholders.
+  aliases?: "stand-ins" | "tokens";
+  // "session" (default): a new stand-in key per session, so stand-ins cannot
+  // be linked across sessions. "shared": one key for every session.
+  aliasKey?: "session" | "shared";
   rules: RuleConfig[];
   inventory?: InventoryEntry[];
+  generalize?: GeneralizeEntry[];
 }
+
+// Words replaced by a general phrase, so meaning survives without the
+// specifics: { id: "medical", terms: ["migraine", "headache"],
+// replace: "minor neurological condition" }. Whole words, case-insensitive
+// unless caseSensitive. One phrase stands for many terms, so it can never be
+// swapped back.
+export interface GeneralizeEntry {
+  id: string;
+  terms: string[];
+  replace: string;
+  caseSensitive?: boolean;
+  // "everywhere" (default): prompts, tool output, and the provider payload.
+  // "prompts": only text you type, so files that use these words (code,
+  // configs) stay readable and editable.
+  scope?: "everywhere" | "prompts";
+}
+
+export const GENERALIZE_ID_PREFIX = "pii-generalize-";
+const MAX_GENERALIZE_TERMS = 1_000;
 
 export interface InventoryEntry {
   id: string;
   literal: string;
   match: "token" | "phrase";
   caseSensitive?: boolean;
+  label?: string;
 }
 
 export const INVENTORY_ID_PREFIX = "pii-inventory-";
@@ -112,11 +150,12 @@ export function escapeRegExp(literal: string): string {
 
 export function compileInventoryEntry(entry: unknown): Rule {
   if (typeof entry !== "object" || entry === null) throw new Error("inventory entry must be an object");
-  const { id, literal, match, caseSensitive } = entry as Record<string, unknown>;
+  const { id, literal, match, caseSensitive, label } = entry as Record<string, unknown>;
   if (typeof id !== "string" || id.length === 0 || /\s/.test(id)) throw new Error('inventory entry needs a whitespace-free "id"');
   if (typeof literal !== "string" || literal.trim().length === 0) throw new Error(`inventory "${String(id)}" has an empty literal`);
   if (match !== "token" && match !== "phrase") throw new Error(`inventory "${String(id)}" needs match "token" or "phrase"`);
   if (caseSensitive !== undefined && typeof caseSensitive !== "boolean") throw new Error(`inventory "${String(id)}" needs boolean caseSensitive`);
+  if (label !== undefined && (typeof label !== "string" || !ALIAS_LABEL.test(label))) throw new Error(`inventory "${String(id)}" needs a lowercase one-word label`);
   const sensitive = caseSensitive ?? true;
   const body = escapeRegExp(literal);
   // Unicode letter/number/underscore boundaries, not ASCII-only \b.
@@ -128,6 +167,8 @@ export function compileInventoryEntry(entry: unknown): Rule {
     description: `Private inventory "${id}" (exact match)`,
     regex: ensureIndices(new RegExp(source, sensitive ? "gu" : "giu")),
     category: "pii",
+    inventoryLiteral: literal,
+    ...(label === undefined ? {} : { label }),
   };
 }
 
@@ -215,6 +256,10 @@ const { SENSITIVE_CANARY_CONFIG: userConfigPath } = process.env;
 const USER_CONFIG_PATH =
   userConfigPath ??
   join(homedir(), ".config", "sensitive-canary", "config.json");
+// Generalize lists can live in their own file beside the config, so they can
+// be edited (and shared) without touching the private inventory.
+export const GENERALIZE_PATH =
+  process.env.SENSITIVE_CANARY_GENERALIZE ?? join(dirname(USER_CONFIG_PATH), "generalize.json");
 
 function readJsonFile(filePath: string): unknown {
   return JSON.parse(readFileSync(filePath, "utf-8"));
@@ -320,6 +365,7 @@ function validateRuleConfig(rc: unknown): asserts rc is RuleConfig {
 // fields so the caller (buildRules) can catch and warn per-rule.
 export function compileRule(rc: RuleConfig): Rule {
   validateRuleConfig(rc);
+  if (rc.label !== undefined && (typeof rc.label !== "string" || !ALIAS_LABEL.test(rc.label))) throw new Error("label must be one lowercase word");
   const { regex: source, flags, validate: validateName, ...rest } = rc;
   // matchAll requires the global flag. Make sure it is always present.
   const flagStr = flags ?? "g";
@@ -374,11 +420,14 @@ function loadUserConfig(): CanaryConfig | null {
 // actually replaces it. buildRules only loads defaults and records these.
 const pendingUserRuleConfigs: RuleConfig[] = [];
 const pendingInventoryEntries: unknown[] = [];
+const pendingGeneralizeEntries: unknown[] = [];
 
 // Scan-budget override recorded while the config loads. Declared before
 // buildRules runs (the budget section initializes after it) so module init
 // order cannot leave the default in place.
 let configuredScanBudgetMs: number | null = null;
+let configuredAliases: "stand-ins" | "tokens" = "stand-ins";
+let configuredAliasKey: "session" | "shared" = "session";
 
 // A positive whole number of milliseconds, or null for "not configured".
 // `Number` rejects trailing junk that parseInt would silently drop.
@@ -440,6 +489,23 @@ function buildRules(): Rule[] {
         for (const entry of userConfig.inventory) pendingInventoryEntries.push(entry);
       }
     }
+    if (userConfig.generalize != null) {
+      if (!Array.isArray(userConfig.generalize)) {
+        process.stderr.write(`sensitive-canary: "generalize" in user config must be an array, ignoring\n`);
+      } else {
+        for (const entry of userConfig.generalize) pendingGeneralizeEntries.push(entry);
+      }
+    }
+    if (userConfig.aliasKey === "session" || userConfig.aliasKey === "shared") {
+      configuredAliasKey = userConfig.aliasKey;
+    } else if (userConfig.aliasKey != null) {
+      process.stderr.write("sensitive-canary: aliasKey in user config must be \"session\" or \"shared\", ignoring\n");
+    }
+    if (userConfig.aliases === "tokens" || userConfig.aliases === "stand-ins") {
+      configuredAliases = userConfig.aliases;
+    } else if (userConfig.aliases != null) {
+      process.stderr.write("sensitive-canary: aliases in user config must be \"stand-ins\" or \"tokens\", ignoring\n");
+    }
     if (envBudget === null) {
       const configBudget = parseScanBudget(userConfig.scanBudgetMs);
       if (configBudget !== null) {
@@ -474,6 +540,69 @@ export function compileInventoryList(entries: unknown[]): Rule[] {
       }
     } catch (e) {
       process.stderr.write("sensitive-canary: invalid inventory entry rejected (details withheld)\n");
+    }
+  }
+  return out;
+}
+
+export function compileGeneralizeEntry(entry: unknown): Rule {
+  if (typeof entry !== "object" || entry === null) throw new Error("generalize entry must be an object");
+  const { id, terms, replace, caseSensitive, scope } = entry as Record<string, unknown>;
+  if (typeof id !== "string" || !/^[A-Za-z0-9_-]+$/.test(id)) throw new Error('generalize entry needs an "id" of letters, digits, _ or -');
+  if (!Array.isArray(terms) || terms.length === 0 || terms.length > MAX_GENERALIZE_TERMS ||
+      terms.some((term) => typeof term !== "string" || term.trim().length === 0 || /[\n⟦⟧]/.test(term))) {
+    throw new Error(`generalize "${id}" needs 1-${MAX_GENERALIZE_TERMS} non-empty single-line terms`);
+  }
+  if (typeof replace !== "string" || replace.trim().length === 0 || replace.length > 80 || /[\n⟦⟧]/.test(replace)) {
+    throw new Error(`generalize "${id}" needs a single-line replace of at most 80 characters`);
+  }
+  if (caseSensitive !== undefined && typeof caseSensitive !== "boolean") throw new Error(`generalize "${id}" needs boolean caseSensitive`);
+  if (scope !== undefined && scope !== "everywhere" && scope !== "prompts") throw new Error(`generalize "${id}" needs scope "everywhere" or "prompts"`);
+  // Longest first, so "chronic migraine" wins over "migraine".
+  const body = [...new Set(terms as string[])].sort((left, right) => right.length - left.length).map((term) => escapeRegExp(term.trim())).join("|");
+  return {
+    id: `${GENERALIZE_ID_PREFIX}${id}`,
+    description: `Generalized wording "${id}"`,
+    regex: ensureIndices(new RegExp(`(?<![\\p{L}\\p{N}_])(?:${body})(?![\\p{L}\\p{N}_])`, caseSensitive === true ? "gu" : "giu")),
+    category: "pii",
+    generalize: replace.trim(),
+    generalizeScope: scope === "prompts" ? "prompts" : "everywhere",
+  };
+}
+
+// generalize.json: either a bare array of entries or { "generalize": [...] }.
+function loadGeneralizeFile(): unknown[] {
+  try {
+    if (!statSync(GENERALIZE_PATH).isFile()) {
+      process.stderr.write("sensitive-canary: generalize file is not a regular file, ignoring\n");
+      return [];
+    }
+    const parsed = readJsonFile(GENERALIZE_PATH) as unknown;
+    const list = Array.isArray(parsed) ? parsed : (parsed as { generalize?: unknown })?.generalize;
+    if (Array.isArray(list)) return list;
+    process.stderr.write("sensitive-canary: generalize file must hold an array, ignoring\n");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") {
+      process.stderr.write("sensitive-canary: could not read generalize file (details withheld)\n");
+    }
+  }
+  return [];
+}
+
+export function compileGeneralizeList(entries: unknown[]): Rule[] {
+  const out: Rule[] = [];
+  const seen = new Set<string>();
+  for (const entry of entries) {
+    try {
+      const rule = compileGeneralizeEntry(entry);
+      if (seen.has(rule.id)) {
+        process.stderr.write("sensitive-canary: duplicate generalize id rejected — keeping first entry\n");
+        continue;
+      }
+      seen.add(rule.id);
+      out.push(rule);
+    } catch {
+      process.stderr.write("sensitive-canary: invalid generalize entry rejected (details withheld)\n");
     }
   }
   return out;
@@ -1037,12 +1166,13 @@ function dedupeByIdLastWins(rules: Rule[]): Rule[] {
 const __defaultRules = buildRules();
 const __userRuleConfigs: RuleConfig[] = [...pendingUserRuleConfigs];
 const __inventoryRules: Rule[] = compileInventoryList([...pendingInventoryEntries]);
+const __generalizeRules: Rule[] = compileGeneralizeList([...pendingGeneralizeEntries, ...loadGeneralizeFile()]);
 // A local rule with the same id as a default replaces it (previously both
 // ran and reported the same occurrence twice).
 export const RULES: Rule[] = applyUserOverrides(
   dedupeByIdLastWins(__defaultRules.concat(LOCAL_RULES)),
   __userRuleConfigs,
-).concat(__inventoryRules);
+).concat(__inventoryRules, __generalizeRules);
 
 // Session-start identity rules. Kept off RULES so budget tests can splice the
 // built-in list without inheriting the host's username, and so shutdown can
@@ -1074,6 +1204,43 @@ export function setRuntimeInventory(entries: InventoryEntry[]): void {
     }
   }
   runtimeInventoryRules = compiled;
+}
+
+// SENSITIVE_CANARY_ALIASES wins over the config file.
+export function aliasStyle(): "stand-ins" | "tokens" {
+  const env = process.env.SENSITIVE_CANARY_ALIASES;
+  if (env === "tokens" || env === "stand-ins") return env;
+  return configuredAliases;
+}
+
+// SENSITIVE_CANARY_ALIAS_KEY_SCOPE wins over the config file.
+export function aliasKeyScope(): "session" | "shared" {
+  const env = process.env.SENSITIVE_CANARY_ALIAS_KEY_SCOPE;
+  if (env === "session" || env === "shared") return env;
+  return configuredAliasKey;
+}
+
+// Custom stand-in label for a rule id, when its config set one.
+export function ruleAliasLabel(ruleId: string): string | undefined {
+  return activeRules().find((rule) => rule.id === ruleId)?.label;
+}
+
+export function ruleGeneralization(ruleId: string): string | undefined {
+  return ruleId.startsWith(GENERALIZE_ID_PREFIX) ? activeRules().find((rule) => rule.id === ruleId)?.generalize : undefined;
+}
+
+export function isPromptOnlyRule(ruleId: string): boolean {
+  return ruleId.startsWith(GENERALIZE_ID_PREFIX) && activeRules().find((rule) => rule.id === ruleId)?.generalizeScope === "prompts";
+}
+
+export function inventoryLiterals(): Array<{ ruleId: string; literal: string; label?: string }> {
+  return activeRules().flatMap((rule) =>
+    rule.inventoryLiteral === undefined ? [] : [{ ruleId: rule.id, literal: rule.inventoryLiteral, label: rule.label }],
+  );
+}
+
+export function aliasLabels(): string[] {
+  return activeRules().flatMap((rule) => (rule.label === undefined ? [] : [rule.label]));
 }
 
 function activeRules(): Rule[] {
