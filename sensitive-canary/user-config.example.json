@@ -50,7 +50,7 @@
     { "id": "example-topic", "terms": ["EXAMPLEtermone", "EXAMPLEtermtwo"], "replace": "an example topic" }
   ],
   "inventory": [
-    { "id": "fullname", "literal": "Jane Exampleperson", "match": "phrase", "label": "person" },
+    { "id": "fullname", "literal": "Jane Exampleperson", "match": "token", "label": "person" },
     { "id": "handle", "literal": "example_handle", "match": "token", "label": "handle" },
     { "id": "org", "literal": "ExampleCorp", "match": "token", "caseSensitive": false, "label": "employer" }
   ]
