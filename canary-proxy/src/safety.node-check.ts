@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { inspectDocument, assignmentEdits } from "./structured-text.ts";
-import { planRedaction } from "./redaction-spans.ts";
-import { withScanBudget } from "./rules.ts";
+import { inspectDocument, assignmentEdits } from "../engine/lib/structured-text.ts";
+import { planRedaction } from "../engine/lib/redaction-spans.ts";
+import { withScanBudget } from "../engine/lib/rules.ts";
 import { REVIEW_FIXTURES, EXPECTED_RANGES } from "../bench/review-corpus.ts";
 import { runFixture, summarize } from "../bench/harness.ts";
 

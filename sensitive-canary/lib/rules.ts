@@ -644,6 +644,11 @@ const NIX_ATTR_LABELS: ReadonlySet<string> = new Set([
   "manager",
 ]);
 
+// Type names that follow a label in annotations (`host: string`,
+// `user: str`), which the labeled host/username rules would otherwise take
+// for values.
+const TYPE_NAMES = /^(?:string|str|number|int|integer|float|double|bool|boolean|any|unknown|never|void|object|bytes|dict|list|tuple|char|symbol|bigint|undefined|option|optional|vec|array|record|promise|map|set|i8|i16|i32|i64|u8|u16|u32|u64|usize|isize|f32|f64)$/i;
+
 const LOCAL_RULES: Rule[] = [
   {
     id: "generic-secret",
@@ -1088,7 +1093,8 @@ const LOCAL_RULES: Rule[] = [
     // names ("Jane") and booleans out without a per-word denylist.
     validate: (value: string) =>
       /^[a-z0-9._][a-z0-9._-]*$/.test(value) &&
-      !/^(?:true|false|null|none|yes|no|on|off)$/.test(value),
+      !/^(?:true|false|null|none|yes|no|on|off)$/.test(value) &&
+      !TYPE_NAMES.test(value),
     category: "pii",
   },
   {
@@ -1098,11 +1104,13 @@ const LOCAL_RULES: Rule[] = [
     // is public knowledge, not PII, and the trailing guard stops the match
     // from firing on its first label. Internal FQDNs are already covered
     // by pii-internal-host regardless of label.
-    regex: /(?:\bhost(?:name)?|\bserver|\bmachine)\s*[:=]\s*["']?([A-Za-z0-9][A-Za-z0-9-]{0,61}[A-Za-z0-9])(?![\w.\-(])/gi,
+    regex: /(?:\bhost(?:name)?|\bserver|\bmachine)\s*[:=]\s*["']?([A-Za-z0-9][A-Za-z0-9-]{0,61}[A-Za-z0-9])(?![\w.\-(<\[])/gi,
     secretGroup: 1,
     // Two-character minimum drops Nix lambda params (`host: u:`). The stem
-    // list drops English contractions (`host: don't`) and bare references.
+    // list drops English contractions (`host: don't`) and bare references,
+    // TYPE_NAMES drops annotations, and the `<` / `[` guard drops generics.
     validate: (value: string) =>
+      !TYPE_NAMES.test(value) &&
       !/^(?:localhost|host|hosts|hostname|hostnames|server|servers|machine|machines|database|db|example|test|testing|local|default|none|null|unknown|url|uri|don|can|won|isn|aren|wasn|weren|doesn|didn|hasn|haven|couldn|wouldn|shouldn|mustn|needn|shan|mayn|oughtn|daren|true|false|yes|no|on|off)$/i.test(value),
     category: "pii",
   },

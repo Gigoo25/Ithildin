@@ -1,7 +1,7 @@
 // New acceptance fixtures, separate from the invalid historical comparison set.
 import type { BenchFixture } from "./corpus.ts";
 import { fakeToken } from "./corpus.ts";
-import { SCAN_WINDOW_CHARS } from "../lib/rules.ts";
+import { SCAN_WINDOW_CHARS } from "../engine/lib/rules.ts";
 const alphabet="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 const token=`sk-ant-${fakeToken(alphabet,95,918)}`;
 const bearer=fakeToken(alphabet,48,719);

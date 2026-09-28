@@ -8,7 +8,7 @@
 
 ## Metrics and gates
 
-The real hooks emit optional synchronous, value-free source-range audit data to the local harness. No observer is installed during normal operation. The engine maps cookie coordinate changes back to original source ranges.
+The engine emits optional synchronous, value-free source-range audit data to the local harness. No observer is installed during normal operation. The engine maps cookie coordinate changes back to original source ranges.
 
 - Detection misses count authored sensitive occurrences without full direct-detection coverage. Repeated-value rendering is not itself a new detector hit.
 - Exposure counts original sensitive source characters outside replacement and omission ranges, including partial fragments. It is not an entropy estimate. It is not a character-by-character comparison with coincidentally similar fake data.
@@ -18,7 +18,7 @@ The real hooks emit optional synchronous, value-free source-range audit data to 
 
 Run with an isolated HOME and no personal configuration, using runtime-resolved executables. `node bench/run.ts --check` exits nonzero on any new acceptance-set miss, exposure, false redaction, omission, syntax error, or unavailable measurement. Nix runs this gate plus Bun and the production Node budget and safety tests.
 
-`--timing` adds one cold scan per fixture in a fresh Node process (module imports excluded) and five warm scans per fixture in the parent process. Each scan uses an independent session and resets extension caches. JIT may remain warm. Reports contain per-fixture sample counts and min/p50/p95/max, runtime, and fingerprints. One cold sample is not a statistically sound latency distribution. Timing is observational, not a machine-independent threshold. No network or model calls run.
+`--timing` adds one cold scan per fixture in a fresh Node process (module imports excluded) and five warm scans per fixture in the parent process. Each scan uses an independent session and resets engine caches. JIT may remain warm. Reports contain per-fixture sample counts and min/p50/p95/max, runtime, and fingerprints. One cold sample is not a statistically sound latency distribution. Timing is observational, not a machine-independent threshold. No network or model calls run.
 
 ## Intentional policy changes
 
@@ -32,4 +32,4 @@ Run with an isolated HOME and no personal configuration, using runtime-resolved 
 
 The existing 65,536-character structured-document ceiling remains. Oversized JSON or oversized recognized assignments now omit explicitly. Long ordinary text still uses windowed scanning. Parsing and rendering share the existing deadline. The change increases no global entropy threshold or scan-time allowance.
 
-Pi core and network routing are unchanged. This extension remains defense in depth. Unexpected errors elsewhere and request routes outside its hooks do not become a mandatory transmission boundary.
+The fixtures run through the proxy's request redaction (bench/hooks.ts), the only redaction layer. It remains defense in depth: it redacts what it recognizes, and is not a confidentiality boundary.

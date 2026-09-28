@@ -17,7 +17,7 @@ if(coldIndex>=0) {
   const legacy=FIXTURES.map(runFixture), results=review.map(runFixture);
   const summary=summarize(results);
   const fingerprint:Record<string,string>={};
-  for(const name of ["corpus.ts","review-corpus.ts","harness.ts","run.ts","../index.ts","../lib/rules.ts","../lib/redaction-spans.ts","../lib/structured-text.ts","../lib/cookies.ts"]) fingerprint[name]=createHash("sha256").update(readFileSync(new URL(name,import.meta.url))).digest("hex");
+  for(const name of ["corpus.ts","review-corpus.ts","harness.ts","run.ts","hooks.ts","../src/canary.ts","../engine/core.ts","../engine/lib/rules.ts","../engine/lib/redaction-spans.ts","../engine/lib/structured-text.ts","../engine/lib/cookies.ts"]) fingerprint[name]=createHash("sha256").update(readFileSync(new URL(name,import.meta.url))).digest("hex");
   const timing:Record<string,unknown>={enabled:false};
   if(process.argv.includes("--timing")) {
     const distribution=(samples:number[])=>{

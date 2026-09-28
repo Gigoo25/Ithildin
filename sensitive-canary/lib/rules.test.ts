@@ -209,6 +209,20 @@ describe("local rule additions", () => {
     }
   });
 
+  it("does not take type annotations for hosts or usernames", () => {
+    for (const text of [
+      "let host: string;",
+      "{ user: string; server: number }",
+      "def f(host: str, user: int):",
+      "hostname: Option<String>",
+      "server: Array<Host>",
+    ]) {
+      expect(
+        scan(text).some((f) => f.ruleId === "pii-labeled-host" || f.ruleId === "pii-labeled-user"),
+      ).toBe(false);
+    }
+  });
+
   it("does not mistake Nix attribute paths for internal hostnames", () => {
     for (const text of [
       "u.xdg.configFile",

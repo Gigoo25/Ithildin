@@ -1,85 +1,36 @@
-// sensitive-canary for Pi.
+// sensitive-canary engine: detection, redaction, stand-ins, and tool guards,
+// with no agent attached. Two front ends share it:
+//   - Pi's extension (config/pi/extensions/sensitive-canary), which hooks
+//     each point of Pi's event bus.
+//   - canary-proxy (packages/canary-proxy), which redacts provider request
+//     bodies for any agent whose base URL points at it.
 //
-// Upstream (coo-quack/sensitive-canary) ships Claude Code hooks: standalone
-// processes that read a JSON envelope on stdin and signal a block through the
-// exit code. Pi's extension API is an in-process event bus instead, so the
-// executables do not transfer. The *detection engine* does, and that is the
-// part worth having -- upstream rules (plus local additions) derived from
-// gitleaks/TruffleHog, entropy filtering, and Luhn validation.
-// lib/{rules,inspector}.ts are vendored from upstream
-// 9111ed20841d1ffefd86092dcb8b52ba082d973a (MIT, see lib/LICENSE).
-// Local code adds provider and entropy rules, Pi allow-tag policy, and cookie
+// lib/{rules,inspector}.ts are vendored from upstream coo-quack/sensitive-canary
+// 9111ed20841d1ffefd86092dcb8b52ba082d973a (MIT, see lib/LICENSE). Local code
+// adds provider and entropy rules, allow-tag policy, stand-ins, and cookie
 // handling. See each file for refresh instructions.
 //
-// The port is deliberately not one-to-one. Pi exposes tool_result and the
-// final provider payload, so detected values can be replaced before they enter
-// the transcript or leave the process. Secret replacements are stable, random,
-// format-preserving strings. PII replacements are stable stand-ins from
-// reserved namespaces (host-3c9d0e, prod-db.n4a5b6c.internal.example,
-// 241.18.5.7; see lib/aliases.ts) that keep roles and relationships. Tool
-// calls that reuse a stand-in are blocked, so none is mistaken for a real
-// path or identifier. `aliases: "tokens"` restores `__CANARY_HOST_1__`.
-//
-// Interception points:
-//   tool_call               -- block secret-file access, cookie transfer, and
-//                              secret-shaped tool arguments.
-//   context                 -- synthesize user-authored sensitive values.
-//   before_provider_request -- scan the final wire payload, including system
-//                              prompts and provider-specific fields.
-//   tool_result             -- synthesize tool output and secret-file values.
-//   message_end             -- persist the redacted view, never the original.
-//   session_before_compact  -- redact the summarization copy.
-//   session_before_tree     -- redact the branch-summary copy. Compaction and
-//                              branch summaries call the provider without
-//                              before_provider_request and serialize stored
-//                              thinking, tool-call arguments, user bash
-//                              output, and extension messages. These events
-//                              stop that path from re-sending a raw value.
-//
-// The latest user prompt can bypass one category or all checks with an
-// explicit allow tag. Older, quoted, and runtime-generated tags do not apply.
-// This scanner remains a defense in depth, not a confidentiality boundary.
-//
-// Redaction is on by default and can be toggled for local models: bare /canary
-// flips it, or /canary on|off|status flips it explicitly (command only, no shortcut).
-// or the --no-canary CLI flag at startup. The toggle persists per session via an appendEntry record and is
-// announced on the `sensitive-canary:mode` event so the footer can show
-// CANARY ON/OFF. While off, every interception point passes through raw.
+// Secret replacements are stable, random, format-preserving strings. PII
+// replacements are stable stand-ins from reserved namespaces (see
+// lib/aliases.ts) that keep roles and relationships; `aliases: "tokens"`
+// restores `__CANARY_HOST_1__`. This scanner is a defense in depth, not a
+// confidentiality boundary.
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { randomBytes } from "node:crypto";
 import { readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { type Finding, type LocatedFinding, mergeRanges, scanWindows, SCAN_WINDOW_OVERLAP, withScanBudget, assertScanBudget, ScanBudgetExceeded, setRuntimeInventory, clearWindowCache, exportWindowCache, importWindowCache, windowCacheRevision, aliasStyle, aliasKeyScope, ruleAliasLabel, aliasLabels, inventoryLiterals, ruleGeneralization, isPromptOnlyRule, GENERALIZE_PATH } from "./lib/rules.ts";
-import { assignInPlace, planSwapBack } from "./lib/swap-back.ts";
-import { AliasBook, aliasKeyPath, aliasSpans, isAliasValue, loadAliasKey, registerAliasLabels, SESSION_KEY_SUFFIX, sessionAliasKey } from "./lib/aliases.ts";
+import { type Finding, type LocatedFinding, mergeRanges, scanWindows, SCAN_WINDOW_OVERLAP, assertScanBudget, ScanBudgetExceeded, clearWindowCache, exportWindowCache, importWindowCache, windowCacheRevision, aliasStyle, aliasKeyScope, ruleAliasLabel, ruleGeneralization, isPromptOnlyRule, GENERALIZE_PATH } from "./lib/rules.ts";
+import { AliasBook, aliasKeyPath, aliasSpans, isAliasValue, loadAliasKey, SESSION_KEY_SUFFIX } from "./lib/aliases.ts";
 import { planRedaction } from "./lib/redaction-spans.ts";
 import { reportRedaction } from "./lib/redaction-audit.ts";
 import { assignmentEdits, inspectDocument } from "./lib/structured-text.ts";
-import {
-  applyAllowTags,
-  dedupeFindings,
-  type Message,
-  randomBird,
-  resolveTagPriority,
-  userTypedText,
-} from "./lib/inspector.ts";
-import { toolResultDigest } from "./lib/certification.ts";
-import {
-  commandSendsCookies,
-  redactCookieHeaders,
-  redactCookieValue,
-} from "./lib/cookies.ts";
+import { applyAllowTags, dedupeFindings, type Message, resolveTagPriority, userTypedText } from "./lib/inspector.ts";
+import { commandSendsCookies, redactCookieHeaders, redactCookieValue } from "./lib/cookies.ts";
 import { isImagePayload } from "./lib/image-payload.ts";
-import { isDotenvFile, isSecretFile } from "./lib/secret-files.ts";
-import { collectRuntimeIdentity, identityFromGit, identityFromGitRemotes, identityFromOs, identityFromSsh } from "./lib/runtime-inventory.ts";
+import { isSecretFile } from "./lib/secret-files.ts";
 
 // Larger strings skip regex scanning and are synthesized in full.
-const MAX_SCAN_BYTES = 2_000_000;
-
-// Persisted toggle record (cf. readonly-mode's STATE_ENTRY pattern).
-const STATE_ENTRY = "sensitive-canary";
-type CanaryState = { enabled?: boolean };
+export const MAX_SCAN_BYTES = 2_000_000;
 
 const FILE_READ_COMMANDS: Record<string, true> = {
   cat: true,
@@ -96,7 +47,7 @@ interface TextChunk {
   text: string;
 }
 
-function isTextChunk(value: unknown): value is TextChunk {
+export function isTextChunk(value: unknown): value is TextChunk {
   if (typeof value !== "object" || value === null) return false;
   if (!("type" in value) || value.type !== "text") return false;
   return "text" in value && typeof value.text === "string";
@@ -196,7 +147,7 @@ function syntheticToken(ruleId: string, value: string): string {
 // Stable within this process so repeated values keep their identity and the
 // model can still follow references. Character classes and separators survive,
 // preserving JSON, URLs, IP-shaped values, and quoted configuration syntax.
-function syntheticValue(value: string): string {
+export function syntheticValue(value: string): string {
   const cached = SYNTHETIC_VALUES.get(value);
   if (cached !== undefined) return cached;
 
@@ -225,11 +176,17 @@ function syntheticValue(value: string): string {
 // One book per process. The key loads lazily so importing the module (bench,
 // tests) never touches the key file until a PII value needs a stand-in.
 let aliasBook: AliasBook | undefined;
-function aliases(): AliasBook {
+export function aliases(): AliasBook {
   // Before any session starts (bench, tests): shared key if configured,
   // otherwise one that lives only in this process.
   aliasBook ??= new AliasBook(aliasKeyScope() === "shared" ? loadAliasKey() : randomBytes(32));
   return aliasBook;
+}
+
+// The canary proxy is one long-lived process serving every session, so it
+// installs a book on its persistent key instead of the per-session one.
+export function setAliasBook(book: AliasBook): void {
+  aliasBook = book;
 }
 
 // PII replacement. Stand-ins keep role, shape, and relationships and stay
@@ -242,7 +199,7 @@ function piiReplacement(ruleId: string, value: string): string {
   return aliases().standIn(ruleId, value, ruleAliasLabel(ruleId));
 }
 
-function isSyntheticValue(value: string): boolean {
+export function isSyntheticValue(value: string): boolean {
   return SYNTHETIC_OUTPUTS.has(value) || aliasBook?.isStandIn(value) === true || isAliasValue(value);
 }
 // Provider payload fields carrying authenticated ciphertext must remain byte-for-byte
@@ -275,7 +232,7 @@ const PROTOCOL_PASSTHROUGH_FIELDS: Record<string, true> = {
   role: true,
 };
 
-function clearCaches(): void {
+export function clearCaches(): void {
   SCAN_CACHE.clear();
   scanCacheBytes = 0;
   SYNTHETIC_VALUES.clear();
@@ -292,7 +249,7 @@ function clearCaches(): void {
 // finding that survives allow-tag filtering passes through redactText, so
 // this one hook records context, provider-payload, tool-result, and
 // persistence redactions with the same per-stage semantics as the warnings.
-const LEDGER = new Map<string, { category: string; count: number }>();
+export const LEDGER = new Map<string, { category: string; count: number }>();
 
 function recordLedger(findings: Finding[]): void {
   for (const finding of findings) {
@@ -302,7 +259,7 @@ function recordLedger(findings: Finding[]): void {
   }
 }
 
-function flushLedger(sessionFile: string | undefined): void {
+export function flushLedger(sessionFile: string | undefined): void {
   if (LEDGER.size === 0) return;
   const byRule: Record<string, { category: string; count: number }> = {};
   let totalHits = 0;
@@ -324,7 +281,7 @@ function flushLedger(sessionFile: string | undefined): void {
 // finished instead of re-paying them on every request.
 let lastScanCacheRevision = -1;
 
-function loadScanCache(sessionFile: string | undefined): void {
+export function loadScanCache(sessionFile: string | undefined): void {
   if (!sessionFile) return;
   try {
     importWindowCache(JSON.parse(readFileSync(`${sessionFile}.canary-scan-cache.json`, "utf-8")));
@@ -333,7 +290,7 @@ function loadScanCache(sessionFile: string | undefined): void {
   }
 }
 
-function flushScanCache(sessionFile: string | undefined): void {
+export function flushScanCache(sessionFile: string | undefined): void {
   if (!sessionFile) return;
   const revision = windowCacheRevision();
   if (revision === lastScanCacheRevision) return;
@@ -370,7 +327,7 @@ function applyTripMarkers(text: string, trips: Array<{ start: number; end: numbe
 // synchronous, so a plain flag cannot leak into another scan.
 let scanningUserText = false;
 
-function asUserText<T>(scan: () => T): T {
+export function asUserText<T>(scan: () => T): T {
   const outer = scanningUserText;
   scanningUserText = true;
   try {
@@ -380,7 +337,7 @@ function asUserText<T>(scan: () => T): T {
   }
 }
 
-function redactText(text: string, allowTags: Set<string> = new Set()): { text: string; hits: number } {
+export function redactText(text: string, allowTags: Set<string> = new Set()): { text: string; hits: number } {
   const sourceLength = text.length;
   const cookieEdits: Array<{start:number;end:number;replacementLength:number}> = [];
   const toOriginal = (range: {start:number;end:number}) => {
@@ -469,7 +426,7 @@ function structuredReplacement(finding: LocatedFinding): string {
 // function leaves tool-call chunks alone unless redactToolArgs is set. Tools
 // execute their arguments after message_end, so the caller decides when a
 // rewrite cannot break a pending call.
-function redactChunks(
+export function redactChunks(
   content: readonly unknown[],
   allowTags: Set<string> = new Set(),
   redactToolArgs = false,
@@ -516,7 +473,7 @@ function redactChunks(
 // Returns a redacted copy of a message. The message_end handler and the
 // summarization hooks use it, and the caller chooses whether tool-call
 // arguments are in scope. Nothing here mutates the input.
-function redactStoredMessage(
+export function redactStoredMessage(
   message: Record<string, unknown>,
   allowTags: Set<string>,
   redactToolArgs: boolean,
@@ -574,7 +531,7 @@ function redactStoredMessage(
 // preparation.messagesToSummarize / turnPrefixMessages after the event.
 // Replacing them here changes only the summarization copy. It never changes
 // the transcript or the messages that tools already executed against.
-function redactCompactionPreparation(preparation: Record<string, unknown>, allowTags: Set<string>): number {
+export function redactCompactionPreparation(preparation: Record<string, unknown>, allowTags: Set<string>): number {
   let hits = 0;
   for (const key of ["messagesToSummarize", "turnPrefixMessages"] as const) {
     const list = preparation[key];
@@ -618,7 +575,7 @@ function redactCompactionPreparation(preparation: Record<string, unknown>, allow
 // Branch summaries read session entries, not messages. The core keeps the
 // array reference it collected, so the handler replaces entries in place.
 // Each original entry must stay untouched for the transcript and the TUI.
-function redactStoredEntry(entry: Record<string, unknown>, allowTags: Set<string>): { entry: Record<string, unknown>; hits: number } {
+export function redactStoredEntry(entry: Record<string, unknown>, allowTags: Set<string>): { entry: Record<string, unknown>; hits: number } {
   if (entry.type === "message" && entry.message && typeof entry.message === "object") {
     const redacted = redactStoredMessage(entry.message as Record<string, unknown>, allowTags, true);
     if (redacted.hits === 0) return { entry, hits: 0 };
@@ -714,7 +671,7 @@ function isChainReference(key: string | undefined, parent: Record<string, unknow
     at("messages", null, "tool_calls", null, "custom", key));
 }
 
-function redactValue(
+export function redactValue(
   value: unknown,
   allowTags: Set<string>,
   key?: string,
@@ -776,7 +733,7 @@ function redactValue(
 // Secret-path files may contain low-entropy passwords that pattern matching
 // cannot detect. Their values are always synthesized while keys remain useful.
 
-function extractFilePathsFromCommand(command: string): string[] {
+export function extractFilePathsFromCommand(command: string): string[] {
   const paths: string[] = [];
   for (const segment of command.split(/\s*[|;&]+\s*/)) {
     const tokens = segment.trim().split(/\s+/).filter(Boolean);
@@ -905,7 +862,7 @@ function globMatches(word: string, cwd: string): string[] {
 // ANSI-C quoting, brace lists, quote removal, string literals, and globs.
 // Arbitrary computation (base64, $(...) output, eval of built strings) stays
 // out of scope: this is a lexical guard, not a sandbox.
-function commandPathCandidates(command: string, cwd: string): string[] {
+export function commandPathCandidates(command: string, cwd: string): string[] {
   const words = shellWords(command);
   const vars = shellAssignments(words);
   const candidates: string[] = [];
@@ -934,7 +891,7 @@ function expandHomePrefix(filePath: string): string {
   return filePath;
 }
 
-function canonicalPath(filePath: string, cwd: string): string {
+export function canonicalPath(filePath: string, cwd: string): string {
   const expanded = path.resolve(cwd, expandHomePrefix(filePath.replace(/^@/, "")));
   try { return realpathSync(expanded); } catch { return expanded; }
 }
@@ -952,7 +909,7 @@ function isCanaryInventory(filePath: string, cwd: string): boolean {
   // The generalize list: which topics you consider sensitive.
   if (expanded.endsWith("/sensitive-canary/generalize.json") || expanded === canonicalPath(GENERALIZE_PATH, cwd)) return true;
   // The stand-in key: with it, stand-ins could be matched back to guesses.
-  if (expanded.endsWith("/sensitive-canary/alias-key") || expanded.endsWith(SESSION_KEY_SUFFIX) || expanded === canonicalPath(aliasKeyPath(), cwd)) return true;
+  if (expanded.endsWith("/sensitive-canary/alias-key") || expanded.endsWith("/sensitive-canary/proxy-alias-key") || expanded.endsWith(SESSION_KEY_SUFFIX) || expanded === canonicalPath(aliasKeyPath(), cwd)) return true;
   return !!override && expanded === canonicalPath(override, cwd);
 }
 
@@ -961,7 +918,7 @@ function commandReadsCanaryInventory(command: string, cwd: string): boolean {
 }
 
 // Candidate path inputs across Pi's file-touching tools.
-function candidatePaths(input: Record<string, unknown>): string[] {
+export function candidatePaths(input: Record<string, unknown>): string[] {
   const out: string[] = [];
   for (const key of ["path", "file_path", "filePath", "file"]) {
     const value = input[key];
@@ -978,7 +935,7 @@ const FILE_PATH_TOOLS = new Set(["read", "write", "edit", "grep", "find", "ls", 
 // model would be typing a path it can only half see. Absolute paths elsewhere
 // (/etc, /nix/store) are fine unless they themselves contain a sensitive
 // value. Windows drive and UNC paths stay blocked. Scan-budget trips block.
-function blocksPrivatePath(toolName: string, targets: string[], cwd: string): boolean {
+export function blocksPrivatePath(toolName: string, targets: string[], cwd: string): boolean {
   if (!FILE_PATH_TOOLS.has(toolName)) return false;
   const home = process.env.HOME ? canonicalPath(process.env.HOME, cwd) : "";
   return targets.some((target) => {
@@ -1000,7 +957,7 @@ function blocksPrivatePath(toolName: string, targets: string[], cwd: string): bo
   });
 }
 
-function synthesizeEnvChunks(content: readonly unknown[]): {
+export function synthesizeEnvChunks(content: readonly unknown[]): {
   content: unknown[];
   hits: number;
 } {
@@ -1027,7 +984,7 @@ function synthesizeEnvChunks(content: readonly unknown[]): {
   return { content: out, hits };
 }
 
-function synthesizeWholeChunks(content: readonly unknown[]): {
+export function synthesizeWholeChunks(content: readonly unknown[]): {
   content: unknown[];
   hits: number;
 } {
@@ -1040,7 +997,7 @@ function synthesizeWholeChunks(content: readonly unknown[]): {
   return { content: out, hits };
 }
 
-const SYNTHESIS_NOTICE =
+export const SYNTHESIS_NOTICE =
   "[sensitive-canary] Synthesized placeholders above are not real data — use only as labels. Never pass to tools, use as paths/commands/identifiers, or reverse.";
 
 const SYNTHESIS_NOTICE_SUFFIX =
@@ -1050,8 +1007,13 @@ const SYNTHESIS_NOTICE_SUFFIX =
 // and the tool_call block errors. Ablation (8 fresh muse-spark sessions,
 // 0 misuse events either way) showed the proactive notice adds nothing
 // measurable here. It cost ~65 tokens per redacted message.
-const SYNTHESIS_SYSTEM_REMINDER =
-  "SENSITIVE-CANARY: Sensitive values can be synthetic placeholders. These placeholders are not real credentials, identities, contact details, or production data. Personal and infrastructure values become stable stand-ins: names under the .example TLD, label-hex words (user-3c9d0e, person-…, host-…), n-hex name parts, 240.0.0.0/5 and 2001:db8:: addresses, 02: MACs. Stand-ins keep roles and relationships (same domain, same subnet, same person) within this session; a new session uses new stand-ins. Preserve only their structure and relationships. Never pass a placeholder to a tool or attempt to reverse it. Never cd into, read, or execute a path containing a placeholder: resolve the dynamic segment at runtime ($HOME, $(id -un), positional selection) instead of reusing redacted text. If one blocks the task, stop and ask the user to re-run with [allow-pii].";
+// Shared by Pi (appended to its system prompt) and canary-proxy (added to
+// every redacted request), so every agent is told the same thing. It tells the
+// model stand-ins are usable in local tools: an earlier "never pass a
+// placeholder to a tool" wording, written before swap-back, made models
+// refuse to even report a value they had seen.
+export const SYNTHESIS_SYSTEM_REMINDER =
+  "SENSITIVE-CANARY: Personal, infrastructure and secret values in this conversation may be replaced before you see them. Personal and infrastructure values become stable stand-ins: names under the .example TLD, label-hex words (user-3c9d0e, person-…, host-…), n-hex name parts (n3c9d0e), 240.0.0.0/5 and 2001:db8:: addresses, 02: MACs. Secrets become synthetic placeholders; ⟦…⟧ marks generalized wording. Stand-ins keep roles and relationships (same domain, same subnet, same person) and stay consistent within a session, but may differ between sessions. When asked for such a value, give the stand-in you saw and say it is redacted; do not refuse. Local tool calls (shell, file read/write/edit/search) may reuse stand-ins: they are mapped back to the real values before the tool runs; a stand-in that cannot be mapped reaches the tool unchanged, so the call fails. Stand-ins are not mapped back for web tools or anything that leaves the machine. Output of tool calls that read secret files (.env, private keys, credentials) is withheld, as are secret-file lines in search results. Do not try to reverse or guess real values. Suggest the user re-run with [allow-pii] only when they need the real value shown to them.";
 
 // Canary's own boilerplate must never be redacted: a user inventory word
 // colliding with it (e.g. a case-insensitive acronym matching ordinary
@@ -1083,7 +1045,7 @@ function boilerplateSpans(text: string): Array<{ start: number; end: number }> {
 
 
 
-function latestAllowTags(messages: Message[]): Set<string> {
+export function latestAllowTags(messages: Message[]): Set<string> {
   const latestUser = [...messages].reverse().find((message) => message.role === "user");
   return resolveTagPriority(latestUser ? userTypedText(latestUser) : "").effectiveAllow;
 }
@@ -1105,7 +1067,7 @@ type AllowGrantCtx = {
   };
 };
 
-async function resolveAllowGrant(
+export async function resolveAllowGrant(
   tags: Set<string>,
   ctx: AllowGrantCtx | undefined,
   prior: boolean | undefined,
@@ -1135,7 +1097,7 @@ async function resolveAllowGrant(
 // The tag maps back to the allow-tag category, exactly like tokenTagFor.
 const PLACEHOLDER_RE = /__CANARY_([A-Z]+)_\d+__/g;
 
-function placeholderViolations(input: unknown, allowTags: Set<string>): string | undefined {
+export function placeholderViolations(input: unknown, allowTags: Set<string>): string | undefined {
   if (allowTags.has("all")) return;
   let serialized: string;
   try {
@@ -1167,7 +1129,7 @@ function placeholderViolations(input: unknown, allowTags: Set<string>): string |
 const SWAPPED = new Map<string, string>();
 const SWAPPED_MAX = 2_000;
 
-function rememberSwapped(value: string, ruleId: string): void {
+export function rememberSwapped(value: string, ruleId: string): void {
   if (value.length < 3 || SWAPPED.has(value)) return;
   if (SWAPPED.size >= SWAPPED_MAX) SWAPPED.delete(SWAPPED.keys().next().value!);
   SWAPPED.set(value, ruleId);
@@ -1191,7 +1153,7 @@ function swappedFindings(text: string): LocatedFinding[] {
   return out;
 }
 
-function blocksSecretAccess(toolName: string, command: string, targets: string[], allowTags: Set<string>, cwd: string): boolean {
+export function blocksSecretAccess(toolName: string, command: string, targets: string[], allowTags: Set<string>, cwd: string): boolean {
   if (allowTags.has("secret")) return false;
   return (
     (toolName === "bash" && (commandReadsSecretFile(command, cwd) || commandSendsCookies(command))) ||
@@ -1201,7 +1163,7 @@ function blocksSecretAccess(toolName: string, command: string, targets: string[]
 
 // Secrets only: host/user/email in commands are normal (ssh, git, $HOME).
 // Block, do not redact-and-run. Scan-budget trips fail closed.
-function toolInputHasSecret(input: unknown, allowTags: Set<string>): boolean {
+export function toolInputHasSecret(input: unknown, allowTags: Set<string>): boolean {
   if (allowTags.has("secret") || allowTags.has("all")) return false;
   let serialized: string;
   try {
@@ -1220,432 +1182,10 @@ function toolInputHasSecret(input: unknown, allowTags: Set<string>): boolean {
 
 // Inventory reads are PII-gated rather than secret-gated: the file holds
 // match patterns, and [allow-pii]/[allow-all] is the matching bypass.
-function blocksInventoryAccess(toolName: string, command: string, targets: string[], allowTags: Set<string>, cwd: string): boolean {
+export function blocksInventoryAccess(toolName: string, command: string, targets: string[], allowTags: Set<string>, cwd: string): boolean {
   if (allowTags.has("pii") || allowTags.has("all")) return false;
   return (
     (toolName === "bash" && commandReadsCanaryInventory(command, cwd)) ||
     targets.some((target) => isCanaryInventory(target, cwd))
   );
-}
-
-// Pi session transcripts (and the recall skill's index of them) hold the
-// user's earlier work: other projects, values typed with [allow-pii], raw
-// pre-redaction history. A model digging through them (seen on an eval
-// looking for past solutions) sends that history to the provider. The
-// recall skill's own search stays available: its script is invoked by name
-// and its bounded output is scanned like any tool result.
-function agentDir(): string {
-  return process.env.PI_CODING_AGENT_DIR || path.join(process.env.HOME ?? "", ".pi", "agent");
-}
-
-function sessionArchiveRoots(cwd: string): string[] {
-  const data = process.env.XDG_DATA_HOME || path.join(process.env.HOME ?? "", ".local", "share");
-  return [path.join(agentDir(), "sessions"), path.join(process.env.HOME ?? "", ".pi", "agent", "sessions"), path.join(data, "pi-session-search")]
-    .map((root) => canonicalPath(root, cwd));
-}
-
-function isSessionArchive(filePath: string, cwd: string): boolean {
-  if (!filePath) return false;
-  const resolved = canonicalPath(filePath.split(/[?:]/)[0] ?? filePath, cwd);
-  return sessionArchiveRoots(cwd).some((root) => resolved === root || resolved.startsWith(`${root}/`));
-}
-
-function commandReadsSessionArchive(command: string, cwd: string): boolean {
-  // Interpreters build these paths from pieces: Path.home()/'.pi'/'agent'/
-  // 'sessions', os.path.join('.pi', 'agent', 'sessions'). Squash quotes,
-  // spaces, and join punctuation, then look for the path shape.
-  const squashed = command.replace(/["'`\s]/g, "").replace(/[,+]/g, "/").replace(/\/+/g, "/");
-  if (/\.pi\/agent\/sessions|pi-session-search\/sessions\.db/.test(squashed)) return true;
-  return commandPathCandidates(command, cwd).some((candidate) => isSessionArchive(candidate, cwd));
-}
-
-function blocksSessionArchiveAccess(toolName: string, command: string, targets: string[], allowTags: Set<string>, cwd: string): boolean {
-  if (allowTags.has("pii") || allowTags.has("all")) return false;
-  return (toolName === "bash" && commandReadsSessionArchive(command, cwd)) || targets.some((target) => isSessionArchive(target, cwd));
-}
-
-function sanitizeToolContent(
-  content: readonly unknown[],
-  fileKind: "none" | "dotenv" | "secret-file",
-  allowTags: Set<string>,
-): { content: unknown[]; hits: number } {
-  if (allowTags.has("all")) return { content: [...content], hits: 0 };
-  if (allowTags.has("secret")) return redactChunks(content, allowTags);
-  if (fileKind === "dotenv") return synthesizeEnvChunks(content);
-  if (fileKind === "secret-file") return synthesizeWholeChunks(content);
-  return redactChunks(content, allowTags);
-}
-
-export default function sensitiveCanary(pi: ExtensionAPI): void {
-  let pendingWarningCount = 0;
-  let allowTags = new Set<string>();
-  let allowGrant: boolean | undefined;
-  let canaryEnabled = true;
-
-  function applyCanary(next: boolean, ctx?: { ui?: { notify?: (message: string, level?: string) => void } }): void {
-    canaryEnabled = next;
-    pi.appendEntry(STATE_ENTRY, { enabled: next });
-    pi.events.emit("sensitive-canary:mode", { enabled: next });
-    ctx?.ui?.notify?.(
-      next
-        ? "Sensitive-canary enabled: values are synthesized before they reach the model"
-        : "Sensitive-canary disabled: raw values reach the model (for local models)",
-      "info",
-    );
-  }
-
-  pi.registerFlag("no-canary", {
-    description: "Start with sensitive-canary redaction disabled (for local models)",
-    type: "boolean",
-    default: false,
-  });
-
-  pi.registerCommand("canary", {
-    description: "Enable, disable, or inspect sensitive-canary redaction",
-    handler: async (args, ctx) => {
-      switch (args.trim().toLowerCase()) {
-        case "on": applyCanary(true, ctx); break;
-        case "off": applyCanary(false, ctx); break;
-        case "": applyCanary(!canaryEnabled, ctx); break;
-        case "status": ctx.ui.notify(`Sensitive-canary ${canaryEnabled ? "enabled" : "disabled"}`, "info"); break;
-        default: ctx.ui.notify("Usage: /canary [on|off|status] (bare /canary toggles)", "info"); return;
-      }
-    },
-  });
-
-  pi.events.on("sensitive-canary:sanitize-stored-text", (event: { text: string; certified: boolean }) => withScanBudget(() => {
-    if (typeof event.text !== "string") return;
-    if (!canaryEnabled) {
-      event.certified = true;
-      return;
-    }
-    event.text = event.text.length > MAX_SCAN_BYTES
-      ? syntheticValue(event.text)
-      : redactText(event.text).text;
-    event.certified = true;
-  }));
-
-  function recordWarning(hits: number): void {
-    pendingWarningCount += hits;
-  }
-
-  function flushWarning(ctx: { ui?: { notify?: (message: string, level: "warning") => void } }): void {
-    if (pendingWarningCount === 0) return;
-    ctx.ui?.notify?.(
-      `${randomBird()} sensitive-canary: synthesized ${pendingWarningCount} value(s) during this response`,
-      "warning",
-    );
-    pendingWarningCount = 0;
-  }
-
-  pi.on("agent_start", () => {
-    pendingWarningCount = 0;
-    allowTags = new Set<string>();
-    allowGrant = undefined;
-    LEDGER.clear();
-  });
-
-  pi.on("session_start", async (event, ctx) => {
-    const state = ctx.sessionManager
-      .getBranch()
-      .filter((entry) => entry.type === "custom" && entry.customType === STATE_ENTRY)
-      .at(-1) as { data?: CanaryState } | undefined;
-    // --no-canary forces off at startup. Otherwise restore the persisted
-    // toggle, defaulting to on. No toast on load: the footer tag shows it.
-    const next = pi.getFlag("no-canary") === true
-      ? false
-      : (typeof state?.data?.enabled === "boolean" ? state.data.enabled : true);
-    canaryEnabled = next;
-    pi.appendEntry(STATE_ENTRY, { enabled: next });
-    pi.events.emit("sensitive-canary:mode", { enabled: next });
-    setRuntimeInventory(collectRuntimeIdentity({
-      ...identityFromOs(),
-      ...identityFromGit(),
-      // SSH config and git remotes name infrastructure; opt out with
-      // SENSITIVE_CANARY_INFRA_INVENTORY=off.
-      ...(process.env.SENSITIVE_CANARY_INFRA_INVENTORY === "off"
-        ? {}
-        : { ...identityFromSsh(), ...identityFromGitRemotes(ctx?.cwd ?? process.cwd()) }),
-    }));
-    registerAliasLabels(aliasLabels());
-    // One key per session unless aliasKey is "shared" (see lib/aliases.ts).
-    const started = event as { reason?: string; previousSessionFile?: string } | undefined;
-    aliasBook = new AliasBook(aliasKeyScope() === "shared"
-      ? loadAliasKey()
-      : sessionAliasKey(ctx.sessionManager.getSessionFile?.(), started?.reason === "fork" ? started.previousSessionFile : undefined));
-    // Mint inventory stand-ins up front, so stand-ins from earlier sessions
-    // swap back before their value has appeared in this one.
-    if (aliasStyle() === "stand-ins") {
-      for (const entry of inventoryLiterals()) aliases().standIn(entry.ruleId, entry.literal, entry.label);
-    }
-    clearCaches();
-    loadScanCache(ctx.sessionManager.getSessionFile());
-  });
-
-  pi.on("agent_end", (_event, ctx) => {
-    flushWarning(ctx);
-    // PI_SESSION_FILE exists only in shell-tool children (or may be inherited
-    // from a parent agent). Resolve the active session at flush time instead.
-    flushLedger(ctx.sessionManager.getSessionFile());
-    flushScanCache(ctx.sessionManager.getSessionFile());
-  });
-
-  pi.on("before_agent_start", (event) => {
-    if (!canaryEnabled) return;
-    if (event.systemPrompt.includes(SYNTHESIS_SYSTEM_REMINDER)) return;
-    return {
-      systemPrompt: `${event.systemPrompt}\n\n${SYNTHESIS_SYSTEM_REMINDER}`,
-    };
-  });
-
-  // ── pre-exec: block direct sensitive-file reads ───────────────────────────
-  pi.on("tool_call", (event, ctx) => {
-    if (!canaryEnabled) return;
-    const input = (event.input ?? {}) as Record<string, unknown>;
-    const command = String(input.command ?? "");
-    const targets = candidatePaths(input);
-    if (blocksSecretAccess(event.toolName, command, targets, allowTags, ctx?.cwd ?? process.cwd())) {
-      return {
-        block: true,
-        reason: "sensitive-canary: refusing direct secret access or transmission. Add [allow-secrets] or [allow-all] to the current user prompt to bypass this check.",
-      };
-    }
-    if (blocksInventoryAccess(event.toolName, command, targets, allowTags, ctx?.cwd ?? process.cwd())) {
-      return {
-        block: true,
-        reason: "sensitive-canary: refusing to read the local PII inventory — its values would dodge the rules built from them. Add [allow-pii] or [allow-all] to the current user prompt to bypass this check.",
-      };
-    }
-    if (blocksSessionArchiveAccess(event.toolName, command, targets, allowTags, ctx?.cwd ?? process.cwd())) {
-      return {
-        block: true,
-        reason: "sensitive-canary: refusing direct reads of Pi session transcripts — they hold earlier work from other sessions and projects. Use the recall skill (pi-session-search.py) to search them, or add [allow-pii] to the current user prompt to bypass this check.",
-      };
-    }
-    const placeholder = placeholderViolations(event.input, allowTags);
-    if (placeholder !== undefined) {
-      return {
-        block: true,
-        reason: placeholder.startsWith("⟦")
-          ? `sensitive-canary: ${placeholder} is generalized wording, not the original text, and cannot be written back or used in a command. Leave that text out of the call, or add [allow-pii] to the current user prompt to bypass this check.`
-          : `sensitive-canary: ${placeholder} is a synthetic placeholder, not a real path or identifier — the call cannot succeed with it. Resolve the real value at runtime ($HOME, $(id -un), positional selection) instead of reusing redacted text. Add [allow-pii] or [allow-all] to the current user prompt to bypass this check.`,
-      };
-    }
-    if (withScanBudget(() => toolInputHasSecret(event.input, allowTags))) {
-      return {
-        block: true,
-        reason: "sensitive-canary: refusing to send a secret in a tool call. Add [allow-secrets] or [allow-all] to the current user prompt to bypass this check.",
-      };
-    }
-    if (withScanBudget(() => blocksPrivatePath(event.toolName, targets, ctx?.cwd ?? process.cwd()))) {
-      return {
-        block: true,
-        reason: "sensitive-canary: file-tool paths inside the home directory, or containing an identifying name, must be relative while canary is on. Retry with a path relative to the current working directory. For home paths, resolve them at runtime in Bash ($HOME), or explicitly use /canary off.",
-      };
-    }
-    // Swap-back runs last, on arguments every check above has passed. Pi
-    // executes the tool with this same object, so mutating it in place is
-    // how the real values reach the tool (documented extension behavior).
-    // The transcript keeps the model's original, stand-in arguments.
-    if (aliasStyle() !== "stand-ins") return;
-    const swap = planSwapBack(event.toolName, event.input, aliases(), allowTags.has("pii") || allowTags.has("all"));
-    if (swap.unresolved.length > 0) {
-      return {
-        block: true,
-        reason: `sensitive-canary: ${swap.unresolved[0]} is a stand-in this session cannot map back to a real value (it may come from another machine or a re-rolled key). Resolve the real value at runtime ($HOME, $(id -un), positional selection), or ask the user.`,
-      };
-    }
-    if (swap.egress.length > 0) {
-      return {
-        block: true,
-        reason: `sensitive-canary: ${swap.egress[0]} stands in for a real value, and this call would send it off the machine (a web tool, or a network command whose destination is not one of your own hosts). Use the stand-in only as the host you connect to, or add [allow-pii] to the current user prompt to bypass this check.`,
-      };
-    }
-    if (swap.resolved.length === 0) return;
-    // Real paths can land on a guarded file (a stand-in home directory).
-    const swappedInput = swap.input as Record<string, unknown>;
-    const swappedCommand = String(swappedInput.command ?? "");
-    const swappedTargets = candidatePaths(swappedInput);
-    if (blocksSecretAccess(event.toolName, swappedCommand, swappedTargets, allowTags, ctx?.cwd ?? process.cwd()) ||
-        blocksInventoryAccess(event.toolName, swappedCommand, swappedTargets, allowTags, ctx?.cwd ?? process.cwd())) {
-      return {
-        block: true,
-        reason: "sensitive-canary: refusing direct secret or inventory access. Add [allow-secrets], [allow-pii], or [allow-all] to the current user prompt to bypass this check.",
-      };
-    }
-    for (const resolved of swap.resolved) rememberSwapped(resolved.value, resolved.ruleId);
-    assignInPlace(event.input, swap.input);
-  });
-
-  // ── ingress: user-authored text, before it reaches the provider ───────────
-  // Stay synchronous unless a TUI confirm is required: bench and most unit
-  // tests call context without await.
-  pi.on("context", (event, ctx) => {
-    if (!canaryEnabled) return;
-    const all = event.messages as readonly unknown[] as Message[];
-    const requested = latestAllowTags(all);
-    const interactive = Boolean(
-      requested.size > 0 &&
-      allowGrant === undefined &&
-      ctx?.hasUI && ctx.ui?.select && ctx.mode && ["tui", "rpc"].includes(ctx.mode),
-    );
-    const redact = () => {
-      if (allowTags.has("all")) return;
-      return withScanBudget(() => {
-    let total = 0;
-    const messages = all.map((message) => asUserText(() => {
-      if (message.role !== "user") return message;
-      if (
-        (typeof message.content === "string" &&
-          message.content.includes(SYNTHESIS_NOTICE)) ||
-        (Array.isArray(message.content) &&
-          message.content.some(
-            (chunk) => isTextChunk(chunk) && chunk.text.includes(SYNTHESIS_NOTICE),
-          ))
-      ) {
-        return message;
-      }
-      if (typeof message.content === "string") {
-        if (message.content.length > MAX_SCAN_BYTES) {
-          total++;
-          return {
-            ...message,
-            content: syntheticValue(message.content),
-          };
-        }
-        const { text, hits } = redactText(message.content, allowTags);
-        if (hits === 0) return message;
-        total += hits;
-        return {
-          ...message,
-          content: text,
-        };
-      }
-      if (!Array.isArray(message.content)) return message;
-      const { content, hits } = redactChunks(message.content, allowTags);
-      if (hits === 0) return message;
-      total += hits;
-      return { ...message, content };
-    }));
-
-    if (total === 0) return;
-    recordWarning(total);
-    return { messages };
-      });
-    };
-    if (interactive) {
-      return (async () => {
-        const resolved = await resolveAllowGrant(requested, ctx, allowGrant);
-        allowGrant = resolved.grant;
-        allowTags = resolved.tags;
-        return redact();
-      })();
-    }
-    if (allowGrant === false) allowTags = new Set();
-    else allowTags = requested;
-    if (requested.size > 0 && allowGrant === undefined) allowGrant = true;
-    return redact();
-  });
-
-  // ── final egress: scan the exact provider payload ─────────────────────────
-  pi.on("before_provider_request", (event, ctx) => withScanBudget(() => {
-    if (!canaryEnabled) return;
-    if (allowTags.has("all")) return;
-    const { value, hits } = redactValue(event.payload, allowTags, undefined, undefined, [], true);
-    if (hits === 0) return;
-
-    recordWarning(hits);
-    return value;
-  }));
-
-  // ── egress: synthesize sensitive values before they enter the transcript ─
-  pi.on("tool_result", (event, ctx) => withScanBudget(() => {
-    if (!canaryEnabled) return;
-    const input = event.input ?? {};
-    const command = String(input.command ?? "");
-    const targets =
-      event.toolName === "bash"
-        ? extractFilePathsFromCommand(command)
-        : candidatePaths(input);
-    const fileKind = targets.some(isDotenvFile)
-      ? "dotenv"
-      : targets.some(isSecretFile)
-        ? "secret-file"
-        : "none";
-    const result = sanitizeToolContent(event.content, fileKind, allowTags);
-    const { content, hits } = result;
-    const finalContent = hits === 0 ? event.content : content;
-    pi.events.emit("sensitive-canary:tool-result-sanitized", {
-      toolCallId: event.toolCallId,
-      digest: toolResultDigest(finalContent),
-    });
-    if (hits === 0) return;
-
-    recordWarning(hits);
-    return { content: finalContent };
-  }));
-  // ── persistence: store the redacted view, never the original ────────────
-  // The context/tool_result handlers patch provider-bound copies. Session
-  // entries keep the originals, and compaction re-sends those originals
-  // without touching the extension bus. This handler redacts the message in
-  // place, and the runner syncs state and storage, so the stored view is the
-  // view the provider saw. Allow-tags behave exactly as on the wire, so
-  // approved values keep working across turns. Tool-call arguments are only
-  // rewritten when the message cannot execute them. The summarization hooks
-  // cover the rest.
-  pi.on("message_end", (event) => withScanBudget(() => {
-    if (!canaryEnabled) return;
-    const message = event.message as Record<string, unknown> | undefined;
-    if (!message || typeof message !== "object") return;
-    const tags =
-      message.role === "user"
-        ? latestAllowTags([{ role: "user", content: message.content } as Message])
-        : allowTags;
-    if (tags.has("all")) return;
-    // Tool calls execute after message_end. Rewriting their arguments here
-    // would feed placeholders to the tool runner. An error, an abort, or a
-    // token-cap stop cannot execute them, so those are safe to rewrite.
-    const stopReason = message.stopReason;
-    const mayExecuteTools =
-      message.role === "assistant" &&
-      stopReason !== "error" && stopReason !== "aborted" && stopReason !== "length";
-    const redact = () => redactStoredMessage(message, tags, !mayExecuteTools);
-    const redacted = message.role === "user" ? asUserText(redact) : redact();
-    if (redacted.hits === 0) return;
-    recordWarning(redacted.hits);
-    return { message: redacted.message };
-  }));
-  // ── summarization: compaction and branch summaries bypass the wire hook ──
-  // completeSummarization calls the agent stream function directly, so
-  // before_provider_request never runs for it. The preparation holds stored
-  // messages (thinking, tool-call arguments, bash output, extension content)
-  // that compaction serializes verbatim. Redact the copy it will use.
-  pi.on("session_before_compact", (event) => withScanBudget(() => {
-    if (!canaryEnabled || allowTags.has("all")) return;
-    const preparation = (event as { preparation?: Record<string, unknown> }).preparation;
-    if (!preparation || typeof preparation !== "object") return;
-    const hits = redactCompactionPreparation(preparation, allowTags);
-    if (hits > 0) recordWarning(hits);
-  }));
-  pi.on("session_before_tree", (event) => withScanBudget(() => {
-    if (!canaryEnabled || allowTags.has("all")) return;
-    const entries = (event as { preparation?: { entriesToSummarize?: unknown[] } }).preparation
-      ?.entriesToSummarize;
-    if (!Array.isArray(entries)) return;
-    let hits = 0;
-    for (let index = 0; index < entries.length; index++) {
-      const entry = entries[index];
-      if (!entry || typeof entry !== "object") continue;
-      const redacted = redactStoredEntry(entry as Record<string, unknown>, allowTags);
-      hits += redacted.hits;
-      if (redacted.entry !== entry) entries[index] = redacted.entry;
-    }
-    if (hits > 0) recordWarning(hits);
-  }));
-  pi.on("session_shutdown", () => {
-    allowTags.clear();
-    allowGrant = undefined;
-    setRuntimeInventory([]);
-    clearCaches();
-  });
 }

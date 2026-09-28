@@ -96,7 +96,7 @@ let spans = /$^/g;
 function compileShapes(): void {
   const labelled = `\\b(?:${[...labels].join("|")})-[0-9a-f]{6}\\b`;
   // Longest shape first, so host-3c9d0e.example is one span, not two.
-  const sources = ["\\b[a-z0-9.-]*(?<![a-z0-9])(?:n|host-)[0-9a-f]{6}(?![a-z0-9])[a-z0-9.-]*\\.example(?![\\w.-])", labelled, "\\bn[0-9a-f]{6}\\b", "\\b24[0-7](?:\\.\\d{1,3}){3}\\b"];
+  const sources = ["\\b[a-z0-9.-]*(?<![a-z0-9])(?:n|host-)[0-9a-f]{6}(?![a-z0-9])[a-z0-9.-]*\\.example(?![\\w-]|\\.[\\w-])", labelled, "\\bn[0-9a-f]{6}\\b", "\\b24[0-7](?:\\.\\d{1,3}){3}\\b"];
   shapes = sources.map((source) => new RegExp(source));
   spans = new RegExp(sources.join("|"), "g");
 }

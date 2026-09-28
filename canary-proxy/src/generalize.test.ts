@@ -2,7 +2,7 @@ import { expect, it } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { compileGeneralizeEntry } from "./lib/rules.ts";
+import { compileGeneralizeEntry } from "../engine/lib/rules.ts";
 
 it("compiles whole-word, longest-first, case-insensitive term lists", () => {
 	const rule = compileGeneralizeEntry({ id: "medical", terms: ["migraine", "chronic migraine", "headache"], replace: "minor neurological condition" });
@@ -26,7 +26,7 @@ it("rejects malformed entries", () => {
 	}
 });
 
-it("generalizes wording end to end without nesting, and blocks writing it back", () => {
+it("generalizes wording end to end without nesting", () => {
 	// Fresh process: generalize rules load from the user config at import.
 	const home = mkdtempSync(join(tmpdir(), "canary-generalize-"));
 	try {
@@ -36,17 +36,14 @@ it("generalizes wording end to end without nesting, and blocks writing it back",
 			generalize: [{ id: "medical", terms: ["headache", "migraine", "condition"], replace: "minor neurological condition" }],
 		}), { mode: 0o600 });
 		const script = [
-			"const m = await import(" + JSON.stringify(new URL("./index.ts", import.meta.url).href) + ");",
+			"const m = await import(" + JSON.stringify(new URL("../bench/hooks.ts", import.meta.url).href) + ");",
 			"const h = {};",
 			"m.default({ on: (n, fn) => { h[n] = fn; }, registerFlag(){}, registerCommand(){}, appendEntry(){}, getFlag: () => false, events: { on(){}, emit(){} } });",
 			"const ctx = { cwd: process.cwd(), sessionManager: { getBranch: () => [], getSessionFile: () => undefined }, ui: { notify(){} } };",
 			"h.agent_start({}, ctx);",
 			"const first = (await h.context({ messages: [{ role: 'user', content: 'I have a Headache today' }] }, ctx)).messages[0].content;",
 			"const again = await h.before_provider_request({ payload: { input: first } }, ctx);",
-			"const blocked = await h.tool_call({ toolName: 'write', input: { path: 'notes.md', content: first } }, ctx);",
-			"await h.context({ messages: [{ role: 'user', content: '[allow-pii] ok' }] }, ctx);",
-			"const allowed = await h.tool_call({ toolName: 'write', input: { path: 'notes.md', content: first } }, ctx);",
-			"console.log(JSON.stringify({ first, again: again === undefined, blocked: blocked?.reason ?? null, allowed: allowed === undefined }));",
+			"console.log(JSON.stringify({ first, again: again === undefined }));",
 		].join("\n");
 		const child = Bun.spawnSync({
 			cmd: [process.execPath, "-e", script],
@@ -58,8 +55,6 @@ it("generalizes wording end to end without nesting, and blocks writing it back",
 		expect(out.first).toBe("I have a ⟦minor neurological condition⟧ today");
 		// "condition" inside the brackets is never generalized again.
 		expect(out.again).toBe(true);
-		expect(out.blocked).toContain("generalized wording");
-		expect(out.allowed).toBe(true);
 	} finally {
 		rmSync(home, { recursive: true, force: true });
 	}
@@ -77,7 +72,7 @@ it("loads generalize.json beside the config and honors prompt-only scope", () =>
 			],
 		}), { mode: 0o600 });
 		const script = [
-			"const m = await import(" + JSON.stringify(new URL("./index.ts", import.meta.url).href) + ");",
+			"const m = await import(" + JSON.stringify(new URL("../bench/hooks.ts", import.meta.url).href) + ");",
 			"const h = {};",
 			"m.default({ on: (n, fn) => { h[n] = fn; }, registerFlag(){}, registerCommand(){}, appendEntry(){}, getFlag: () => false, events: { on(){}, emit(){} } });",
 			"const ctx = { cwd: process.cwd(), sessionManager: { getBranch: () => [], getSessionFile: () => undefined }, ui: { notify(){} } };",
@@ -85,8 +80,8 @@ it("loads generalize.json beside the config and honors prompt-only scope", () =>
 			"const prompt = (await h.context({ messages: [{ role: 'user', content: 'ZqxShield flags my migraine app' }] }, ctx)).messages[0].content;",
 			"const stored = (await h.message_end({ message: { role: 'user', content: 'ZqxShield config' } }, ctx))?.message.content;",
 			"const tool = (await h.tool_result({ toolName: 'bash', content: [{ type: 'text', text: 'ZqxShield: migraine' }] }, ctx))?.content[0].text;",
-			`const guarded = await h.tool_call({ toolName: 'bash', input: { command: 'cat ${join(home, "generalize.json")}' } }, ctx);`,
-			"console.log(JSON.stringify({ prompt, stored, tool, guarded: guarded?.block === true }));",
+			`const guarded = (await h.tool_result({ toolName: 'bash', input: { command: 'cat ${join(home, "generalize.json")}' }, content: [{ type: 'text', text: 'listed terms' }] }, ctx))?.content[0].text;`,
+			"console.log(JSON.stringify({ prompt, stored, tool, guarded: guarded?.startsWith('canary-proxy: withheld') === true }));",
 		].join("\n");
 		const child = Bun.spawnSync({
 			cmd: [process.execPath, "-e", script],

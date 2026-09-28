@@ -2,7 +2,7 @@ import { expect, it } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AliasBook, aliasKind, aliasSpans, expandIpv6, isAliasValue, loadAliasKey, looksLikeAlias, registerAliasLabels, sessionAliasKey } from "./aliases.ts";
+import { AliasBook, aliasKind, aliasMatches, aliasSpans, expandIpv6, isAliasValue, loadAliasKey, looksLikeAlias, registerAliasLabels, sessionAliasKey } from "./aliases.ts";
 
 const KEY = Buffer.alloc(32, 7);
 const book = () => new AliasBook(KEY);
@@ -131,4 +131,12 @@ it("keeps one key per session, reuses it on resume, and inherits it on fork", ()
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
+});
+
+it("takes a .example stand-in whole before sentence punctuation, but not inside a longer name", () => {
+  const standIn = ["n3c9d0e", "corp", "example"].join(".");
+  for (const text of [`mail ${standIn}.`, `mail ${standIn}. Next`, `(${standIn}).`, `${standIn},`]) {
+    expect(aliasMatches(text).map((match) => match.text)).toContain(standIn);
+  }
+  expect(aliasMatches(`${standIn}.com`).map((match) => match.text)).not.toContain(standIn);
 });

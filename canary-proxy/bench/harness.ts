@@ -1,7 +1,7 @@
-// Drives real synchronous hooks, with optional controlled transformations for
-// metric tests. No networking, session file, or private configuration required.
-import sensitiveCanary from "../index.ts";
-import { observeRedactions, type RedactionAudit, type Range } from "../lib/redaction-audit.ts";
+// Drives the proxy's request path (bench/hooks.ts), with optional controlled
+// transformations for metric tests. No networking, session file, or private configuration required.
+import sensitiveCanary from "./hooks.ts";
+import { observeRedactions, type RedactionAudit, type Range } from "../engine/lib/redaction-audit.ts";
 import type { BenchFixture } from "./corpus.ts";
 export interface FixtureResult {
   id: string; support: BenchFixture["support"]; rendered: string;

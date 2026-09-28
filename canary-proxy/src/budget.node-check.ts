@@ -1,8 +1,8 @@
 // Run with Node, the production V8 runtime, not Bun's node:vm compatibility layer.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { RULES, beginScanBudget, clearWindowCache, exportWindowCache, importWindowCache, scanWindows, setScanBudgetMs, withScanBudget } from "./rules.ts";
-import sensitiveCanary from "../index.ts";
+import { RULES, beginScanBudget, clearWindowCache, exportWindowCache, importWindowCache, scanWindows, setScanBudgetMs, withScanBudget } from "../engine/lib/rules.ts";
+import sensitiveCanary from "../bench/hooks.ts";
 
 function withRules(work: () => void): void {
   const saved = RULES.splice(0);

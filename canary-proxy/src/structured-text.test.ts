@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import sensitiveCanary from "../index.ts";
-import { assignmentEdits, structuredEdits } from "./structured-text.ts";
+import sensitiveCanary from "../bench/hooks.ts";
+import { assignmentEdits, structuredEdits } from "../engine/lib/structured-text.ts";
 
 function setup() {
   const handlers: Record<string, (e: any, c?: any) => any> = {};
