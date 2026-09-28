@@ -10,10 +10,10 @@
 // Every request carries the whole conversation, and redacting it re-mints
 // every stand-in the model can name, so the book never needs to be saved.
 
+import { existsSync, statSync } from "node:fs";
 import path from "node:path";
-import { aliases, asUserText, blocksInventoryAccess, blocksSecretAccess, candidatePaths, flushScanCache, latestAllowTags, loadScanCache, redactValue, rememberSwapped, setAliasBook, SYNTHESIS_SYSTEM_REMINDER } from "../engine/core.ts";
+import { aliases, asUserText, blocksInventoryAccess, blocksSecretAccess, candidatePaths, flushScanCache, isSecretPath, latestAllowTags, loadScanCache, redactValue, rememberSwapped, setAliasBook } from "../engine/core.ts";
 import { AliasBook, aliasKeyPath, loadAliasKey, registerAliasLabels } from "../engine/lib/aliases.ts";
-import { isSecretFile } from "../engine/lib/secret-files.ts";
 import type { Message } from "../engine/lib/inspector.ts";
 import { aliasLabels, aliasStyle, inventoryLiterals, setRuntimeInventory, withScanBudget } from "../engine/lib/rules.ts";
 import { collectRuntimeIdentity, identityFromGit, identityFromOs, identityFromSsh } from "../engine/lib/runtime-inventory.ts";
@@ -168,9 +168,10 @@ function redactOpenAi(format: Format, body: Record<string, unknown>, tags: Set<s
 
 export function redactRequest(format: Format, body: Record<string, unknown>): { body: Record<string, unknown>; hits: number; tags: Set<string> } {
   const tags = requestAllowTags(format, body);
-  if (tags.has("all")) return { body, hits: 0, tags };
-  const result = redactBody(format, body, tags);
-  return { body: withReminder(format, result.body), hits: result.hits, tags };
+  const stripped = stripAllowTags(format, body);
+  if (tags.has("all")) return { body: stripped, hits: 0, tags };
+  const result = redactBody(format, stripped, tags);
+  return { body: result.body, hits: result.hits, tags };
 }
 
 // One scan envelope per request. Split out so tests can set the allow tags.
@@ -190,15 +191,42 @@ export function redactBody(format: Format, body: Record<string, unknown>, tags: 
 // Results are matched to calls by id, which every format carries. Checked on
 // the harness's real arguments, before redaction rewrites them.
 
-export const WITHHELD_NOTICE = "canary-proxy: withheld. This tool call read a secret file (.env, private key, credentials) or the canary inventory, so its output was not sent to the model provider. Work with the file through commands that do not print its values, or ask the user to add [allow-secrets] (inventory: [allow-pii]) to their prompt.";
+export const WITHHELD_NOTICE = "Output withheld: this call read a protected file (.env, private keys, credentials), so its contents are not shown. Work with such files through commands that do not print their values, or ask the user to include [allow-secrets] in their prompt.";
 
-function readsSecret(name: string, input: unknown, tags: Set<string>): boolean {
+// The agent's working directory, from its system prompt (Claude: "Primary
+// working directory:", Pi: "Current working directory:"). The latest mention
+// wins: Claude reports a changed cwd in later user turns. Relative tool paths
+// resolve against it, so links to secret files are followed from the right
+// place. Falls back to $HOME.
+const CWD_LINE = /(?:Primary|Current) working directory: ([^\n]+)/g;
+
+export function requestCwd(format: Format, body: Record<string, unknown>): string {
+  const texts: string[] = [];
+  const add = (content: unknown) => { for (const block of textBlocks(content)) texts.push(block.text); };
+  add(format === "anthropic" ? body.system : format === "responses" ? body.instructions : undefined);
+  const list = format === "responses" ? body.input : body.messages;
+  if (Array.isArray(list)) {
+    for (const item of list) {
+      const role = (item as { role?: unknown } | null)?.role;
+      if (role === "user" || role === "system" || role === "developer") add((item as { content?: unknown }).content);
+    }
+  }
+  let cwd: string | undefined;
+  for (const text of texts) for (const match of text.matchAll(CWD_LINE)) cwd = match[1]!.trim();
+  try {
+    if (cwd && path.isAbsolute(cwd) && statSync(cwd).isDirectory()) return cwd;
+  } catch {
+    // A stale or foreign cwd: fall through.
+  }
+  return process.env.HOME ?? process.cwd();
+}
+
+function readsSecret(name: string, input: unknown, tags: Set<string>, cwd: string): boolean {
   if (!input || typeof input !== "object" || Array.isArray(input)) return false;
   const record = input as Record<string, unknown>;
   const tool = BASH_TOOLS.has(name) ? "bash" : name;
   const command = String(record.command ?? "");
   const targets = candidatePaths(record);
-  const cwd = process.env.HOME ?? process.cwd();
   return blocksSecretAccess(tool, command, targets, tags, cwd) || blocksInventoryAccess(tool, command, targets, tags, cwd);
 }
 
@@ -214,20 +242,22 @@ function parseArgs(json: unknown): unknown {
 function withholdSecretReads(format: Format, body: Record<string, unknown>, tags: Set<string>): { body: Record<string, unknown>; hits: number } {
   const list = format === "responses" ? body.input : body.messages;
   if (!Array.isArray(list)) return { body, hits: 0 };
+  const cwd = requestCwd(format, body);
+  const listed = secretListing(cwd);
   const secret = new Set<string>();
   for (const item of list) {
     if (!item || typeof item !== "object") continue;
     const record = item as Record<string, unknown>;
     if (format === "anthropic" && Array.isArray(record.content)) {
       for (const block of record.content as Array<Record<string, unknown>>) {
-        if (block?.type === "tool_use" && readsSecret(String(block.name), block.input, tags)) secret.add(String(block.id));
+        if (block?.type === "tool_use" && readsSecret(String(block.name), block.input, tags, cwd)) secret.add(String(block.id));
       }
     } else if (format === "chat" && Array.isArray(record.tool_calls)) {
       for (const call of record.tool_calls as Array<{ id?: unknown; function?: { name?: unknown; arguments?: unknown } }>) {
-        if (readsSecret(String(call?.function?.name), parseArgs(call?.function?.arguments), tags)) secret.add(String(call.id));
+        if (readsSecret(String(call?.function?.name), parseArgs(call?.function?.arguments), tags, cwd)) secret.add(String(call.id));
       }
     } else if (format === "responses" && (record.type === "function_call" || record.type === "custom_tool_call")) {
-      if (readsSecret(String(record.name), parseArgs(record.arguments ?? record.input), tags)) secret.add(String(record.call_id));
+      if (readsSecret(String(record.name), parseArgs(record.arguments ?? record.input), tags, cwd)) secret.add(String(record.call_id));
     }
   }
   let hits = 0;
@@ -237,7 +267,7 @@ function withholdSecretReads(format: Format, body: Record<string, unknown>, tags
       hits++;
       return WITHHELD_NOTICE;
     }
-    const lines = withholdSecretLines(content);
+    const lines = withholdSecretLines(content, listed);
     hits += lines.hits;
     return lines.content;
   };
@@ -268,23 +298,40 @@ function withholdSecretReads(format: Format, body: Record<string, unknown>, tags
 // Search output names a file on each line (grep -rn, rg: "path:12:text",
 // context "path-12-text") or once above its rows (search_files, rg --heading:
 // "path:" then "12:text"). A search over a directory reads secret files the
-// call never named, so their lines are withheld one by one. Paths with spaces
-// are not recognized; neither is any other output shape.
-export const WITHHELD_LINE = "[canary-proxy: secret-file line withheld]";
-const GROUP_HEADER = /^(\S+):$/;
+// call never named, so their lines are withheld one by one. Other output
+// shapes are not recognized.
+export const WITHHELD_LINE = "[protected-file line withheld]";
+const GROUP_HEADER = /^(\S[^:]*):$/;
 // search_files rows: "  12: text", "  12- context", "  12:5 text" (column);
 // rg --heading: "12:text".
 const GROUP_ROW = /^(\s*\d+(?::\d+)?[:-]?(?=\s)|\s*\d+[:-])/;
-const FLAT_CONTEXT = /^(\S+?)-\d+-/;
+const FLAT_CONTEXT = /^(\S.*?)-\d+-/;
 
-function withholdLines(text: string): { text: string; hits: number } {
+// Whether a listed path is a secret file, following links. A name with spaces
+// counts only when it exists: "Loaded .env: 3 vars" is prose, not a path.
+// Memoized per request: every line of every result is a candidate.
+function secretListing(cwd: string): (listed: string) => boolean {
+  const seen = new Map<string, boolean>();
+  return (listed) => {
+    let secret = seen.get(listed);
+    if (secret === undefined) {
+      secret = (!/\s/.test(listed) || existsSync(path.resolve(cwd, listed))) && isSecretPath(listed, cwd);
+      seen.set(listed, secret);
+    }
+    return secret;
+  };
+}
+
+function withholdLines(text: string, secret: (listed: string) => boolean): { text: string; hits: number } {
   if (!text.includes(":") && !text.includes("-")) return { text, hits: 0 };
   let hits = 0;
   let group = false;
   const lines = text.split("\n").map((line) => {
+    // A header that is not a secret file may still be a flat line ending
+    // in ":" (".env-3-KEY:"), so it falls through to the flat checks.
     const header = GROUP_HEADER.exec(line);
-    if (header) {
-      group = isSecretFile(header[1]!);
+    if (header && secret(header[1]!)) {
+      group = true;
       return line;
     }
     const row = GROUP_ROW.exec(line);
@@ -294,9 +341,12 @@ function withholdLines(text: string): { text: string; hits: number } {
       return `${row[1]} ${WITHHELD_LINE}`;
     }
     group = false;
+    // Match lines put ":" after the path, context lines "-12-"; context text
+    // can hold a ":" too, so both heads are checked.
     const colon = line.indexOf(":");
-    const head = colon > 0 ? line.slice(0, colon) : FLAT_CONTEXT.exec(line)?.[1];
-    if (!head || /\s/.test(head) || !isSecretFile(head)) return line;
+    const head = [colon > 0 ? line.slice(0, colon) : undefined, FLAT_CONTEXT.exec(line)?.[1]]
+      .find((candidate) => candidate !== undefined && secret(candidate));
+    if (!head) return line;
     hits++;
     return `${head}: ${WITHHELD_LINE}`;
   });
@@ -305,60 +355,54 @@ function withholdLines(text: string): { text: string; hits: number } {
 
 // Tool result content: a string, or text parts (Anthropic text blocks, chat
 // text parts, Responses input_text).
-function withholdSecretLines(content: unknown): { content: unknown; hits: number } {
+function withholdSecretLines(content: unknown, secret: (listed: string) => boolean): { content: unknown; hits: number } {
   if (typeof content === "string") {
-    const out = withholdLines(content);
+    const out = withholdLines(content, secret);
     return { content: out.text, hits: out.hits };
   }
   if (!Array.isArray(content)) return { content, hits: 0 };
   let hits = 0;
   const parts = content.map((part) => {
     if (!part || typeof part !== "object" || typeof (part as { text?: unknown }).text !== "string") return part;
-    const out = withholdLines((part as { text: string }).text);
+    const out = withholdLines((part as { text: string }).text, secret);
     hits += out.hits;
     return out.hits === 0 ? part : { ...part, text: out.text };
   });
   return hits === 0 ? { content, hits } : { content: parts, hits };
 }
 
-// ── reminder ────────────────────────────────────────────────────────────────
-// The model must know what a stand-in is, or it takes one for the real value.
-// Every agent gets it here; none sends its own. It goes on every request, not
-// only redacted ones, so the prompt prefix never changes mid-conversation and
-// the provider's cache stays warm. It is added after redaction: its example
-// stand-ins must not be rewritten.
+// ── provider blindness ──────────────────────────────────────────────────────
+// The provider must not learn that values are swapped. The proxy adds nothing
+// that mentions redaction, and the allow tags the user types are removed from
+// the typed text it forwards; they still set this request's policy here. Tool
+// output keeps them: rewriting it would corrupt what a command printed.
 
-// A request that already carries it (a client that adds it, or a second
-// pass through the proxy) is left alone. Only the system slots are checked:
-// a conversation that quotes the reminder still needs it.
-function hasReminder(format: Format, body: Record<string, unknown>): boolean {
-  const slots = format === "anthropic" ? [body.system]
-    : format === "responses" ? [body.instructions, Array.isArray(body.input) ? body.input[0] : undefined]
-    : [Array.isArray(body.messages) ? body.messages[0] : undefined];
-  return slots.some((slot) => slot !== undefined && JSON.stringify(slot).includes(JSON.stringify(SYNTHESIS_SYSTEM_REMINDER).slice(1, -1)));
+// Same tag set the engine parses (resolveTagPriority).
+const ALLOW_TAG = /\[(?:allow|mask)-(?:all|secrets?|pii)\][ \t]?/gi;
+
+function stripTagText(content: unknown): unknown {
+  if (typeof content === "string") return content.replace(ALLOW_TAG, "");
+  if (!Array.isArray(content)) return content;
+  return content.map((block) => {
+    if (!block || typeof block !== "object") return block;
+    const { type, text } = block as { type?: unknown; text?: unknown };
+    return (type === "text" || type === "input_text") && typeof text === "string" ? { ...block, text: text.replace(ALLOW_TAG, "") } : block;
+  });
 }
 
-function withReminder(format: Format, body: Record<string, unknown>): Record<string, unknown> {
-  if (hasReminder(format, body)) return body;
-  if (format === "anthropic") {
-    const system = body.system;
-    if (Array.isArray(system)) return { ...body, system: [...system, { type: "text", text: SYNTHESIS_SYSTEM_REMINDER }] };
-    return { ...body, system: typeof system === "string" && system ? `${system}\n\n${SYNTHESIS_SYSTEM_REMINDER}` : SYNTHESIS_SYSTEM_REMINDER };
-  }
-  // Responses: a developer item, not `instructions`, which the ChatGPT
-  // backend checks against its own copy.
-  if (format === "responses") {
-    const input = typeof body.input === "string" ? [{ role: "user", content: body.input }] : body.input;
-    if (!Array.isArray(input)) return body;
-    return { ...body, input: [{ role: "developer", content: SYNTHESIS_SYSTEM_REMINDER }, ...input] };
-  }
-  if (!Array.isArray(body.messages)) return body;
-  // Some chat templates reject a second system message: extend the first.
-  const [first, ...rest] = body.messages as Array<{ role?: unknown; content?: unknown }>;
-  if (first && (first.role === "system" || first.role === "developer") && typeof first.content === "string") {
-    return { ...body, messages: [{ ...first, content: `${first.content}\n\n${SYNTHESIS_SYSTEM_REMINDER}` }, ...rest] };
-  }
-  return { ...body, messages: [{ role: "system", content: SYNTHESIS_SYSTEM_REMINDER }, ...body.messages] };
+export function stripAllowTags(format: Format, body: Record<string, unknown>): Record<string, unknown> {
+  if (format === "responses" && typeof body.input === "string") return { ...body, input: stripTagText(body.input) };
+  const key = format === "responses" ? "input" : "messages";
+  const list = body[key];
+  if (!Array.isArray(list)) return body;
+  return {
+    ...body,
+    [key]: list.map((item) => {
+      if (!item || typeof item !== "object" || (item as { role?: unknown }).role !== "user") return item;
+      const record = item as { content?: unknown };
+      return { ...record, content: stripTagText(record.content) };
+    }),
+  };
 }
 
 // ── swap-back ───────────────────────────────────────────────────────────────

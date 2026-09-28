@@ -876,7 +876,7 @@ export function commandPathCandidates(command: string, cwd: string): string[] {
 }
 
 function commandReadsSecretFile(command: string, cwd: string): boolean {
-  return commandPathCandidates(command, cwd).some(isSecretFile);
+  return commandPathCandidates(command, cwd).some((candidate) => isSecretPath(candidate, cwd));
 }
 
 // The local canary inventory holds real PII used as match patterns. The model
@@ -894,6 +894,12 @@ function expandHomePrefix(filePath: string): string {
 export function canonicalPath(filePath: string, cwd: string): string {
   const expanded = path.resolve(cwd, expandHomePrefix(filePath.replace(/^@/, "")));
   try { return realpathSync(expanded); } catch { return expanded; }
+}
+
+// A link to a secret file reads the secret under its own name, so the link's
+// target decides too. Relative paths resolve against the agent's cwd.
+export function isSecretPath(filePath: string, cwd: string): boolean {
+  return isSecretFile(filePath) || isSecretFile(canonicalPath(filePath, cwd));
 }
 
 function isCanaryInventory(filePath: string, cwd: string): boolean {
@@ -1157,7 +1163,7 @@ export function blocksSecretAccess(toolName: string, command: string, targets: s
   if (allowTags.has("secret")) return false;
   return (
     (toolName === "bash" && (commandReadsSecretFile(command, cwd) || commandSendsCookies(command))) ||
-    targets.some(isSecretFile)
+    targets.some((target) => isSecretPath(target, cwd))
   );
 }
 

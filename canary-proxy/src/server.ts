@@ -103,9 +103,15 @@ function rewriteSse(body: ReadableStream<Uint8Array>, format: Format, tags: Set<
 }
 
 export function createHandler(routes: Record<string, Route>, fetchUpstream: typeof fetch = fetch) {
+  // Values redacted in each route's latest conversation request, for the
+  // status badges: only this machine learns that swapping happens. A request
+  // carries the whole conversation, so this is the conversation's count.
+  // Single-message side requests (titles, quota probes) do not overwrite it;
+  // sessions sharing a route do.
+  const redactedCounts: Record<string, number> = {};
   return async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
-    if (url.pathname === "/_canary/health") return Response.json({ ok: true, routes: Object.keys(routes) });
+    if (url.pathname === "/_canary/health") return Response.json({ ok: true, routes: Object.keys(routes), redacted: redactedCounts });
     const match = /^\/([^/]+)(\/.*)?$/.exec(url.pathname);
     const route = match ? routes[match[1]!] : undefined;
     if (!match || !route) return refuse(404, `no route for ${url.pathname.split("/")[1] ?? ""}`);
@@ -140,6 +146,9 @@ export function createHandler(routes: Record<string, Route>, fetchUpstream: type
             scanMs = Math.round(performance.now() - started);
             tags = redacted.tags;
             hits = redacted.hits;
+            const record = parsed as { messages?: unknown; input?: unknown };
+            const turns = Array.isArray(record.messages) ? record.messages : record.input;
+            if (Array.isArray(turns) && turns.length > 1) redactedCounts[match[1]!] = hits;
             body = JSON.stringify(redacted.body);
           } catch (error) {
             return refuse(500, `redaction failed (${(error as Error).name}), refusing to forward unscanned`);

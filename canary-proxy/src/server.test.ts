@@ -1,9 +1,8 @@
-import { beforeAll, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SYNTHESIS_SYSTEM_REMINDER } from "../engine/core.ts";
-import { initEngine, redactRequest, swapText, WITHHELD_LINE, WITHHELD_NOTICE } from "./canary.ts";
+import { initEngine, redactRequest, requestCwd, stripAllowTags, swapText, WITHHELD_LINE, WITHHELD_NOTICE } from "./canary.ts";
 import { createHandler, DEFAULT_ROUTES, loadRoutes, upstreamUrl } from "./server.ts";
 
 const EMAIL = "jane.doe@acme-corp.com";
@@ -81,6 +80,18 @@ describe("requests", () => {
     const up = fakeUpstream(() => Response.json({ content: [] }));
     await createHandler(DEFAULT_ROUTES, up.fetch)(post("anthropic/v1/messages", { messages: [{ role: "user", content: `[allow-all] ${EMAIL}` }] }));
     expect(JSON.stringify(up.seen[0]!.body)).toContain(EMAIL);
+  });
+
+  it("reports each route's redaction count on /_canary/health, ignoring single-message side requests", async () => {
+    const up = fakeUpstream(() => Response.json({}));
+    const handler = createHandler(DEFAULT_ROUTES, up.fetch);
+    const health = async () => ((await (await handler(new Request("http://127.0.0.1/_canary/health"))).json()) as { redacted: Record<string, number> }).redacted;
+    expect(await health()).toEqual({});
+    await handler(post("anthropic/v1/messages", { messages: [{ role: "user", content: `mail ${EMAIL}` }, { role: "assistant", content: "ok" }, { role: "user", content: `and ${EMAIL}` }] }));
+    const counted = (await health()).anthropic!;
+    expect(counted).toBeGreaterThan(0);
+    await handler(post("anthropic/v1/messages", { messages: [{ role: "user", content: "title this" }] }));
+    expect((await health()).anthropic).toBe(counted);
   });
 
   it("refuses unknown routes and compressed bodies", async () => {
@@ -169,27 +180,29 @@ describe("reply text", () => {
   });
 });
 
-describe("reminder", () => {
-  it("tells every format's model about stand-ins, once, without redacting its examples", () => {
+describe("provider blindness", () => {
+  it("adds nothing that tells the provider about redaction", () => {
     const anthropic = redactRequest("anthropic", { system: [{ type: "text", text: "base" }], messages: [{ role: "user", content: "hi" }] }).body;
-    expect((anthropic.system as Array<{ text: string }>).at(-1)!.text).toBe(SYNTHESIS_SYSTEM_REMINDER);
-    expect(redactRequest("anthropic", { system: "base", messages: [] }).body.system).toBe(`base\n\n${SYNTHESIS_SYSTEM_REMINDER}`);
-    const chat = redactRequest("chat", { messages: [{ role: "user", content: "hi" }] }).body.messages as Array<{ role: string; content: string }>;
-    expect(chat[0]).toEqual({ role: "system", content: SYNTHESIS_SYSTEM_REMINDER });
-    const merged = redactRequest("chat", { messages: [{ role: "system", content: "base" }, { role: "user", content: "hi" }] }).body.messages as Array<{ content: string }>;
-    expect(merged.length).toBe(2);
-    expect(merged[0]!.content).toBe(`base\n\n${SYNTHESIS_SYSTEM_REMINDER}`);
+    expect(anthropic.system).toEqual([{ type: "text", text: "base" }]);
+    const chat = redactRequest("chat", { messages: [{ role: "user", content: "hi" }] }).body;
+    expect(chat.messages).toEqual([{ role: "user", content: "hi" }]);
     const responses = redactRequest("responses", { instructions: "codex", input: "hi" }).body;
-    expect(responses.instructions).toBe("codex");
-    expect((responses.input as unknown[])[0]).toEqual({ role: "developer", content: SYNTHESIS_SYSTEM_REMINDER });
-    // A system prompt that already carries it is left alone.
-    const pi = redactRequest("anthropic", { system: `base\n\n${SYNTHESIS_SYSTEM_REMINDER}`, messages: [] }).body;
-    expect(pi.system).toBe(`base\n\n${SYNTHESIS_SYSTEM_REMINDER}`);
-    // Quoting it in the conversation does not count.
-    const quoted = redactRequest("anthropic", { messages: [{ role: "user", content: SYNTHESIS_SYSTEM_REMINDER }] }).body;
-    expect(quoted.system).toBe(SYNTHESIS_SYSTEM_REMINDER);
-    // [allow-all] passes the body untouched.
-    expect(redactRequest("anthropic", { messages: [{ role: "user", content: "[allow-all] hi" }] }).body.system).toBeUndefined();
+    expect(responses).toEqual({ instructions: "codex", input: "hi" });
+  });
+
+  it("strips allow tags from typed text but still honours them", () => {
+    const tagged = redactRequest("anthropic", { messages: [{ role: "user", content: "[mask-secret] hi [allow-all]" }] });
+    expect(tagged.tags.has("all")).toBe(true);
+    expect((tagged.body.messages as Array<{ content: unknown }>)[0]!.content).toBe("hi ");
+    const blocks = stripAllowTags("anthropic", { messages: [
+      { role: "user", content: [{ type: "text", text: "show [allow-pii] it" }, { type: "tool_result", tool_use_id: "t", content: "grep hit: [allow-pii]" }] },
+      { role: "assistant", content: [{ type: "text", text: "use [allow-pii]" }] },
+    ] }).messages as Array<{ content: Array<{ text?: string; content?: string }> }>;
+    expect(blocks[0]!.content[0]!.text).toBe("show it");
+    // Tool output and model text are not typed: left alone.
+    expect(blocks[0]!.content[1]!.content).toBe("grep hit: [allow-pii]");
+    expect(blocks[1]!.content[0]!.text).toBe("use [allow-pii]");
+    expect(stripAllowTags("responses", { input: "[allow-secrets] go" }).input).toBe("go");
   });
 });
 
@@ -360,6 +373,63 @@ describe("secret reads", () => {
     const groupedOut = (out.messages[2]!.content[1]!.content[0].text as string).split("\n");
     expect(groupedOut).toEqual(["src/app.ts:", "  3: const port = env.PORT;", "config/.env.local:", `  2: ${WITHHELD_LINE}`, `  3- ${WITHHELD_LINE}`, `  4:5 ${WITHHELD_LINE}`, `5: ${WITHHELD_LINE}`, "README.md:", "  9: copy .env.example"]);
     expect(JSON.stringify(out)).not.toContain("staple");
+  });
+});
+
+describe("secret links and spaced paths", () => {
+  const VALUE = "PLAIN_SETTING=correct horse battery";
+  let dir: string;
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), "canary-links-"));
+    writeFileSync(join(dir, ".env"), VALUE);
+    symlinkSync(".env", join(dir, "settings.txt"));
+    mkdirSync(join(dir, "my app"));
+    writeFileSync(join(dir, "my app", ".env"), VALUE);
+  });
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  // Claude names its cwd in the system prompt; Pi says "Current working directory".
+  const request = (system: string, tool: Record<string, unknown>, output: string) => ({
+    system,
+    messages: [
+      { role: "user", content: "look" },
+      { role: "assistant", content: [{ type: "tool_use", id: "t1", ...tool }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: output }] },
+    ],
+  });
+  const result = (body: Record<string, unknown>) =>
+    ((redactRequest("anthropic", body).body as { messages: Array<{ content: Array<{ content: unknown }> }> }).messages[2]!.content[0]!.content) as string;
+
+  it("reads the agent's cwd from Claude's or Pi's system prompt, falling back to $HOME", () => {
+    expect(requestCwd("anthropic", { system: ` - Primary working directory: ${dir}\n`, messages: [] })).toBe(dir);
+    expect(requestCwd("chat", { messages: [{ role: "system", content: `Current working directory: ${dir}` }] })).toBe(dir);
+    // The latest mention wins: Claude reports cwd changes in user turns.
+    expect(requestCwd("anthropic", { system: "Primary working directory: /", messages: [{ role: "user", content: `Primary working directory: ${dir}` }] })).toBe(dir);
+    expect(requestCwd("anthropic", { system: "Primary working directory: /no/such/dir", messages: [] })).toBe(process.env.HOME!);
+  });
+
+  it("withholds a read through a link to a secret file", () => {
+    const system = `Primary working directory: ${dir}`;
+    expect(result(request(system, { name: "Read", input: { file_path: "settings.txt" } }, VALUE))).toBe(WITHHELD_NOTICE);
+    expect(result(request(system, { name: "Bash", input: { command: "cat settings.txt" } }, VALUE))).toBe(WITHHELD_NOTICE);
+    // Without the cwd the relative link cannot be followed.
+    expect(result(request("", { name: "Read", input: { file_path: "settings.txt" } }, VALUE))).toBe(VALUE);
+  });
+
+  it("withholds search lines listed under a link's name or a path with spaces", () => {
+    const system = `Current working directory: ${dir}`;
+    const secretFile = ["my app", ".env"].join("/");
+    const flat = [`settings.txt:1:${VALUE}`, `${secretFile}:1:${VALUE}`, "Loaded settings: done", `Loaded ${[".", "env"].join("")}: 3 vars`].join("\n");
+    expect(result(request(system, { name: "Grep", input: { pattern: "PLAIN" } }, flat)).split("\n")).toEqual([
+      `settings.txt: ${WITHHELD_LINE}`,
+      `${secretFile}: ${WITHHELD_LINE}`,
+      "Loaded settings: done",
+      `Loaded ${[".", "env"].join("")}: 3 vars`,
+    ]);
+    const grouped = [`${secretFile}:`, `  1: ${VALUE}`, "settings.txt:", `  1: ${VALUE}`].join("\n");
+    expect(result(request(system, { name: "search_files", input: { pattern: "PLAIN" } }, grouped)).split("\n")).toEqual([
+      `${secretFile}:`, `  1: ${WITHHELD_LINE}`, "settings.txt:", `  1: ${WITHHELD_LINE}`,
+    ]);
   });
 });
 

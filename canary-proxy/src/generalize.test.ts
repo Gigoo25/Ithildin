@@ -81,7 +81,7 @@ it("loads generalize.json beside the config and honors prompt-only scope", () =>
 			"const stored = (await h.message_end({ message: { role: 'user', content: 'ZqxShield config' } }, ctx))?.message.content;",
 			"const tool = (await h.tool_result({ toolName: 'bash', content: [{ type: 'text', text: 'ZqxShield: migraine' }] }, ctx))?.content[0].text;",
 			`const guarded = (await h.tool_result({ toolName: 'bash', input: { command: 'cat ${join(home, "generalize.json")}' }, content: [{ type: 'text', text: 'listed terms' }] }, ctx))?.content[0].text;`,
-			"console.log(JSON.stringify({ prompt, stored, tool, guarded: guarded?.startsWith('canary-proxy: withheld') === true }));",
+			"console.log(JSON.stringify({ prompt, stored, tool, guarded: guarded?.startsWith('Output withheld') === true }));",
 		].join("\n");
 		const child = Bun.spawnSync({
 			cmd: [process.execPath, "-e", script],
