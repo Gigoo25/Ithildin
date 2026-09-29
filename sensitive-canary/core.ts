@@ -251,6 +251,28 @@ export function clearCaches(): void {
 // persistence redactions with the same per-stage semantics as the warnings.
 export const LEDGER = new Map<string, { category: string; count: number }>();
 
+// Distinct values found while collectValues runs, for canary-proxy's badge
+// counts. In memory for one call only; the values never leave it.
+let valueSink: Set<string> | undefined;
+
+export function collectValues<T>(work: () => T): { result: T; values: number } {
+  const previous = valueSink;
+  const sink = new Set<string>();
+  valueSink = sink;
+  try {
+    return { result: work(), values: sink.size };
+  } finally {
+    valueSink = previous;
+  }
+}
+
+// Overlapping findings (one address matched as an email and as user@host)
+// are one value: their merged span's text is what gets counted.
+function collectSpans(text: string, findings: Array<{ start: number; end: number }>): void {
+  if (!valueSink) return;
+  for (const range of mergeRanges(findings.map(({ start, end }) => ({ start, end })))) valueSink.add(text.slice(range.start, range.end));
+}
+
 function recordLedger(findings: Finding[]): void {
   for (const finding of findings) {
     const entry = LEDGER.get(finding.ruleId) ?? { category: finding.category, count: 0 };
@@ -383,6 +405,7 @@ export function redactText(text: string, allowTags: Set<string> = new Set()): { 
     .filter((finding) => scanningUserText || !isPromptOnlyRule(finding.ruleId));
   const uniqueFindings = dedupeFindings(findings);
   recordLedger(uniqueFindings);
+  collectSpans(text, findings);
   const expandedTrips = mergeRanges(
     trips.map((trip) => ({
       start: Math.max(0, trip.start - SCAN_WINDOW_OVERLAP),

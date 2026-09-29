@@ -82,16 +82,44 @@ describe("requests", () => {
     expect(JSON.stringify(up.seen[0]!.body)).toContain(EMAIL);
   });
 
-  it("reports each route's redaction count on /_canary/health, ignoring single-message side requests", async () => {
+  it("reports the conversation's badge on /_canary/health, ignoring single-message side requests", async () => {
     const up = fakeUpstream(() => Response.json({}));
     const handler = createHandler(DEFAULT_ROUTES, up.fetch);
-    const health = async () => ((await (await handler(new Request("http://127.0.0.1/_canary/health"))).json()) as { redacted: Record<string, number> }).redacted;
-    expect(await health()).toEqual({});
+    const health = async (query = "route=anthropic") => (await (await handler(new Request(`http://127.0.0.1/_canary/health?${query}`))).json()) as { badge: string };
+    expect((await health()).badge).toBe("CANARY ON");
+    // One value, however often it appears.
     await handler(post("anthropic/v1/messages", { messages: [{ role: "user", content: `mail ${EMAIL}` }, { role: "assistant", content: "ok" }, { role: "user", content: `and ${EMAIL}` }] }));
-    const counted = (await health()).anthropic!;
-    expect(counted).toBeGreaterThan(0);
+    expect((await health()).badge).toBe("CANARY ON · 1m (+1)");
     await handler(post("anthropic/v1/messages", { messages: [{ role: "user", content: "title this" }] }));
-    expect((await health()).anthropic).toBe(counted);
+    expect((await health()).badge).toBe("CANARY ON · 1m (+1)");
+  });
+
+  it("keeps one badge per session and never forwards the proxy's session header", async () => {
+    const up = fakeUpstream(() => Response.json({}));
+    const handler = createHandler(DEFAULT_ROUTES, up.fetch);
+    const send = (headers: Record<string, string>, messages: unknown[]) => handler(new Request("http://127.0.0.1/anthropic/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json", ...headers },
+      body: JSON.stringify({ messages }),
+    }));
+    const badge = async (session: string) => ((await (await handler(new Request(`http://127.0.0.1/_canary/health?route=anthropic&session=${session}`))).json()) as { badge: string }).badge;
+    const call = (id: string, content: string) => [
+      { role: "assistant", content: [{ type: "tool_use", id, name: "Bash", input: { command: "cat notes" } }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: id, content }] },
+    ];
+    const first = [{ role: "user", content: `mail ${EMAIL}` }];
+    await send({ "x-canary-session": "pi-1" }, [...first, ...call("t1", "nothing here")]);
+    await send({ "x-Claude-Code-Session-Id": "claude-1" }, [{ role: "user", content: "hi" }, { role: "assistant", content: "hello" }]);
+    expect(await badge("pi-1")).toBe("CANARY ON · 1m (+1)");
+    expect(await badge("claude-1")).toBe("CANARY ON · 0");
+    expect(up.seen[0]!.headers.get("x-canary-session")).toBeNull();
+    // A tool result in the same turn adds to the turn; a new prompt starts
+    // the count again.
+    const second = [...first, ...call("t1", "nothing here"), ...call("t2", "from user-a0ea33@acme-corp.com")];
+    await send({ "x-canary-session": "pi-1" }, second);
+    expect(await badge("pi-1")).toBe("CANARY ON · 2m (+2)");
+    await send({ "x-canary-session": "pi-1" }, [...second, { role: "assistant", content: "done" }, { role: "user", content: "thanks" }]);
+    expect(await badge("pi-1")).toBe("CANARY ON · 2m");
   });
 
   it("refuses unknown routes and compressed bodies", async () => {

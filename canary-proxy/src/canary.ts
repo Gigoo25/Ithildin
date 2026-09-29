@@ -12,7 +12,7 @@
 
 import { existsSync, statSync } from "node:fs";
 import path from "node:path";
-import { aliases, asUserText, blocksInventoryAccess, blocksSecretAccess, candidatePaths, flushScanCache, isSecretPath, latestAllowTags, loadScanCache, redactValue, rememberSwapped, setAliasBook } from "../engine/core.ts";
+import { aliases, asUserText, collectValues, blocksInventoryAccess, blocksSecretAccess, candidatePaths, flushScanCache, isSecretPath, latestAllowTags, loadScanCache, redactValue, rememberSwapped, setAliasBook } from "../engine/core.ts";
 import { AliasBook, aliasKeyPath, loadAliasKey, registerAliasLabels } from "../engine/lib/aliases.ts";
 import type { Message } from "../engine/lib/inspector.ts";
 import { aliasLabels, aliasStyle, inventoryLiterals, setRuntimeInventory, withScanBudget } from "../engine/lib/rules.ts";
@@ -75,6 +75,19 @@ export function requestAllowTags(format: Format, body: Record<string, unknown>):
     if (blocks.length > 0) users.push({ role: "user", content: blocks });
   }
   return latestAllowTags(users);
+}
+
+// Typed user prompts in a request, for the badges' per-turn count. Turns
+// holding tool results are not prompts, even with harness text beside them.
+export function typedPromptCount(format: Format, body: Record<string, unknown>): number {
+  const list = format === "responses" ? body.input : body.messages;
+  if (!Array.isArray(list)) return typeof list === "string" ? 1 : 0;
+  return list.filter((item) => {
+    if (!item || typeof item !== "object" || (item as { role?: unknown }).role !== "user") return false;
+    const content = (item as { content?: unknown }).content;
+    if (Array.isArray(content) && content.some((block) => (block as { type?: unknown } | null)?.type === "tool_result")) return false;
+    return textBlocks(content).length > 0;
+  }).length;
 }
 
 // ── request redaction ───────────────────────────────────────────────────────
@@ -166,40 +179,52 @@ function redactOpenAi(format: Format, body: Record<string, unknown>, tags: Set<s
   return { value: out, hits };
 }
 
-export function redactRequest(format: Format, body: Record<string, unknown>): { body: Record<string, unknown>; hits: number; tags: Set<string> } {
+// What one request's redaction did, by kind, for the status badges: distinct
+// values masked (stand-ins and generalized words), tool results withheld as
+// protected-file reads, search lines withheld from protected files, and
+// inline images withheld. hits counts findings instead, per text scanned.
+export interface Counts {
+  masked: number;
+  files: number;
+  lines: number;
+  images: number;
+}
+
+export function redactRequest(format: Format, body: Record<string, unknown>): { body: Record<string, unknown>; hits: number; counts: Counts; tags: Set<string> } {
   const tags = requestAllowTags(format, body);
   // Each prompt's own tag decides its images, read before tags are stripped;
   // the notice goes in after, so its own tag mention survives.
   const images = withholdImages(format, stripAllowTags(format, body), body);
-  if (tags.has("all")) return { body: images.body, hits: images.hits, tags };
+  if (tags.has("all")) return { body: images.body, hits: images.hits, counts: { masked: 0, files: 0, lines: 0, images: images.hits }, tags };
   const stripped = images.body;
   const result = redactBody(format, stripped, tags);
-  return { body: result.body, hits: result.hits + images.hits, tags };
+  return { body: result.body, hits: result.hits + images.hits, counts: { ...result.counts, images: images.hits }, tags };
 }
 
 // Query parameter values, scanned like body strings. API query strings are
 // flags (?beta=true), so this rarely finds anything, but a URL is sent too.
-export function redactQuery(search: string, tags: Set<string>): { search: string; hits: number } {
-  if (search === "" || search === "?" || tags.has("all")) return { search, hits: 0 };
+export function redactQuery(search: string, tags: Set<string>): { search: string; hits: number; values: number } {
+  if (search === "" || search === "?" || tags.has("all")) return { search, hits: 0, values: 0 };
   const params = new URLSearchParams(search);
   let hits = 0;
-  withScanBudget(() => {
+  const { values } = collectValues(() => withScanBudget(() => {
     for (const [name, value] of [...params]) {
       const result = redactValue(value, tags, name, undefined, ["query", name], true);
       if (result.hits === 0) continue;
       hits += result.hits;
       params.set(name, String(result.value));
     }
-  });
-  return hits === 0 ? { search, hits } : { search: `?${params}`, hits };
+  }));
+  return hits === 0 ? { search, hits, values } : { search: `?${params}`, hits, values };
 }
 
 // One scan envelope per request. Split out so tests can set the allow tags.
-export function redactBody(format: Format, body: Record<string, unknown>, tags: Set<string>): { body: Record<string, unknown>; hits: number } {
+export function redactBody(format: Format, body: Record<string, unknown>, tags: Set<string>): { body: Record<string, unknown>; hits: number; counts: Counts } {
   return withScanBudget(() => {
     const withheld = withholdSecretReads(format, body, tags);
-    const result = format === "anthropic" ? redactAnthropic(withheld.body, tags) : redactOpenAi(format, withheld.body, tags);
-    return { body: result.value, hits: result.hits + withheld.hits };
+    const { result, values } = collectValues(() => format === "anthropic" ? redactAnthropic(withheld.body, tags) : redactOpenAi(format, withheld.body, tags));
+    const counts = { masked: values, files: withheld.files, lines: withheld.hits - withheld.files, images: 0 };
+    return { body: result.value, hits: result.hits + withheld.hits, counts };
   });
 }
 
@@ -259,9 +284,11 @@ function parseArgs(json: unknown): unknown {
   }
 }
 
-function withholdSecretReads(format: Format, body: Record<string, unknown>, tags: Set<string>): { body: Record<string, unknown>; hits: number } {
+// hits counts withheld results and withheld lines together; files, the
+// results alone.
+function withholdSecretReads(format: Format, body: Record<string, unknown>, tags: Set<string>): { body: Record<string, unknown>; hits: number; files: number } {
   const list = format === "responses" ? body.input : body.messages;
-  if (!Array.isArray(list)) return { body, hits: 0 };
+  if (!Array.isArray(list)) return { body, hits: 0, files: 0 };
   const cwd = requestCwd(format, body);
   const listed = secretListing(cwd);
   const secret = new Set<string>();
@@ -281,10 +308,12 @@ function withholdSecretReads(format: Format, body: Record<string, unknown>, tags
     }
   }
   let hits = 0;
+  let files = 0;
   // A result is withheld whole, or has its secret-file search lines withheld.
   const result = (id: unknown, content: unknown): unknown => {
     if (secret.has(String(id))) {
       hits++;
+      files++;
       return WITHHELD_NOTICE;
     }
     const lines = withholdSecretLines(content, listed);
@@ -312,7 +341,7 @@ function withholdSecretReads(format: Format, body: Record<string, unknown>, tags
     }
     return item;
   });
-  return hits === 0 ? { body, hits } : { body: { ...body, [format === "responses" ? "input" : "messages"]: replaced }, hits };
+  return hits === 0 ? { body, hits, files } : { body: { ...body, [format === "responses" ? "input" : "messages"]: replaced }, hits, files };
 }
 
 // Search output names a file on each line (grep -rn, rg: "path:12:text",

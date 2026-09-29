@@ -18,7 +18,8 @@
 import { readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { type Format, initEngine, redactQuery, redactRequest, saveScanCache } from "./canary.ts";
+import { type Counts, type Format, initEngine, redactQuery, redactRequest, saveScanCache, typedPromptCount } from "./canary.ts";
+import { createStatusBook } from "./status.ts";
 import { createRewriter, formatSse, parseSseBlock, swapResponseBody } from "./streams.ts";
 
 export interface Route {
@@ -63,6 +64,10 @@ export function upstreamUrl(route: Route, rest: string, search: string): string 
   return route.upstream.replace(/\/+$/, "") + tail + search;
 }
 
+// Pi's footer tags its requests with its session id (the proxy's own header,
+// never forwarded); Claude sends X-Claude-Code-Session-Id itself.
+const SESSION_HEADER = "x-canary-session";
+
 const HOP_HEADERS = ["host", "connection", "content-length", "accept-encoding", "transfer-encoding", "keep-alive", "upgrade", "te", "trailer", "proxy-connection", "proxy-authorization"];
 
 function log(line: string): void {
@@ -103,15 +108,15 @@ function rewriteSse(body: ReadableStream<Uint8Array>, format: Format, tags: Set<
 }
 
 export function createHandler(routes: Record<string, Route>, fetchUpstream: typeof fetch = fetch) {
-  // Values redacted in each route's latest conversation request, for the
-  // status badges: only this machine learns that swapping happens. A request
-  // carries the whole conversation, so this is the conversation's count.
-  // Single-message side requests (titles, quota probes) do not overwrite it;
-  // sessions sharing a route do.
-  const redactedCounts: Record<string, number> = {};
+  // What redaction did per conversation, for the status badges (status.ts):
+  // only this machine learns that swapping happens.
+  const book = createStatusBook();
   return async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
-    if (url.pathname === "/_canary/health") return Response.json({ ok: true, routes: Object.keys(routes), redacted: redactedCounts });
+    if (url.pathname === "/_canary/health") {
+      const status = book.lookup(url.searchParams.get("session") ?? undefined, url.searchParams.get("route") ?? undefined);
+      return Response.json({ ok: true, routes: Object.keys(routes), badge: status?.badge ?? "CANARY ON", status });
+    }
     const match = /^\/([^/]+)(\/.*)?$/.exec(url.pathname);
     const route = match ? routes[match[1]!] : undefined;
     if (!match || !route) return refuse(404, `no route for ${url.pathname.split("/")[1] ?? ""}`);
@@ -120,13 +125,17 @@ export function createHandler(routes: Record<string, Route>, fetchUpstream: type
     const rest = match[2] ?? "";
     const format = formatForPath(rest);
 
+    const session = request.headers.get(SESSION_HEADER) ?? request.headers.get("x-Claude-Code-Session-Id") ?? undefined;
     const headers = new Headers(request.headers);
     for (const name of HOP_HEADERS) headers.delete(name);
+    headers.delete(SESSION_HEADER);
     headers.set("accept-encoding", "identity");
 
     let body: BodyInit | undefined;
     let tags = new Set<string>();
     let hits = 0;
+    let counts: Counts | undefined;
+    let prompts = 0;
     let scanMs = 0;
     if (request.method !== "GET" && request.method !== "HEAD") {
       const encoding = request.headers.get("content-encoding");
@@ -147,9 +156,14 @@ export function createHandler(routes: Record<string, Route>, fetchUpstream: type
             scanMs = Math.round(performance.now() - started);
             tags = redacted.tags;
             hits = redacted.hits;
+            // Single-message side requests (titles, quota probes) are not the
+            // conversation, so they do not set its badge.
             const record = parsed as { messages?: unknown; input?: unknown };
             const turns = Array.isArray(record.messages) ? record.messages : record.input;
-            if (Array.isArray(turns) && turns.length > 1) redactedCounts[match[1]!] = hits;
+            if (Array.isArray(turns) && turns.length > 1) {
+              counts = redacted.counts;
+              prompts = typedPromptCount(format ?? "chat", parsed as Record<string, unknown>);
+            }
             body = JSON.stringify(redacted.body);
           } catch (error) {
             return refuse(500, `redaction failed (${(error as Error).name}), refusing to forward unscanned`);
@@ -166,10 +180,12 @@ export function createHandler(routes: Record<string, Route>, fetchUpstream: type
       const query = redactQuery(url.search, tags);
       search = query.search;
       hits += query.hits;
+      if (counts) counts.masked += query.values;
     } catch (error) {
       return refuse(500, `query redaction failed (${(error as Error).name}), refusing to forward unscanned`);
     }
     const target = upstreamUrl(route, rest, search);
+    if (counts) book.record(session, match[1]!, counts, prompts);
 
     let upstream: Response;
     try {
