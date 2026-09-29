@@ -208,6 +208,10 @@ export function createHandler(routes: Record<string, Route>, fetchUpstream: type
   };
 }
 
+// Longest a stop waits for in-flight replies. modules/canary-proxy.nix sets
+// TimeoutStopSec above it.
+const DRAIN_MS = 300_000;
+
 function arg(name: string): string | undefined {
   const index = process.argv.indexOf(`--${name}`);
   return index >= 0 ? process.argv[index + 1] : undefined;
@@ -227,10 +231,15 @@ if (import.meta.main) {
   const routes = loadRoutes(routesFile);
   initEngine();
   setInterval(saveScanCache, 30_000).unref();
+  const server = Bun.serve({ hostname: "127.0.0.1", port, idleTimeout: 255, fetch: createHandler(routes) });
+  // A rules edit restarts the proxy. Stop taking requests but let streaming
+  // replies finish, so the edit does not cut a response off mid-turn; agents
+  // retry the refused connections. systemd's TimeoutStopSec is the backstop.
   process.on("SIGTERM", () => {
     saveScanCache();
-    process.exit(0);
+    log("draining in-flight requests");
+    void server.stop(false).then(() => process.exit(0));
+    setTimeout(() => process.exit(0), DRAIN_MS);
   });
-  Bun.serve({ hostname: "127.0.0.1", port, idleTimeout: 255, fetch: createHandler(routes) });
   log(`listening on http://127.0.0.1:${port} (routes: ${Object.keys(routes).join(", ")})`);
 }
