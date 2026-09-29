@@ -9,7 +9,7 @@ if (( status > 1 )); then
     echo 'Cannot scan source for literal canary placeholders' >&2
     exit "$status"
 fi
-hits=$(printf '%s\n' "$hits" | grep -vE '^\./home-manager/packages/sensitive-canary/core\.ts:' || true)
+hits=$(printf '%s\n' "$hits" | grep -vE '^\./pkgs/sensitive-canary/core\.ts:' || true)
 if [[ -n "$hits" ]]; then
     printf 'literal canary placeholders in source (never write redactions back):\n%s\n' "$hits" >&2
     exit 1
