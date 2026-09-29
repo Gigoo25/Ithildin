@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { collectRuntimeIdentity, gitRemoteHost, identityFromGit, identityFromGitRemotes, identityFromSsh } from "./runtime-inventory.ts";
 import { RULES, scan, setRuntimeInventory } from "./rules.ts";
+import { aliases, redactText } from "../core.ts";
+import { planSwapBack } from "./swap-back.ts";
 
 const UNIQUE_USER = "zzzxquniqueuser";
 const UNIQUE_HOST = "zzzxquniquehost";
@@ -134,5 +136,53 @@ describe("infrastructure sources", () => {
     expect(entries.find((entry) => entry.literal === "203.0.113.44")?.id).toMatch(/-ip-\d+$/);
     setRuntimeInventory(entries);
     expect(scan("ssh ZQXBOX then 203.0.113.44").map((finding) => finding.secretValue).sort()).toEqual(["203.0.113.44", "ZQXBOX"]);
+  });
+});
+
+// `od -c` layout: a 7-digit octal offset, then 16 bytes per line in
+// right-aligned 4-wide columns.
+function odC(text: string): string {
+  const lines: string[] = [];
+  for (let at = 0; at < text.length; at += 16) {
+    const columns = [...text.slice(at, at + 16)].map((char) => (char === "\n" ? "\\n" : char).padStart(4)).join("");
+    lines.push(at.toString(8).padStart(7, "0") + columns);
+  }
+  return `${lines.join("\n")}\n${text.length.toString(8).padStart(7, "0")}\n`;
+}
+
+describe("spaced-out identity literals", () => {
+  const MIXED_HOST = "ZQXLAB-KWVRT7";
+
+  it("catches a hostname spelled out by od -c, across its line break", () => {
+    setRuntimeInventory(collectRuntimeIdentity({ hostname: MIXED_HOST }));
+    // 13 characters of prefix put the name across the 16-byte line boundary.
+    const dump = odC(JSON.stringify(["zqxalpha", MIXED_HOST]));
+    expect(dump).not.toContain(MIXED_HOST);
+    expect(scan(dump).some((f) => f.category === "pii")).toBe(true);
+    expect(scan([...MIXED_HOST].join(" ")).some((f) => f.category === "pii")).toBe(true);
+  });
+
+  it("leaves spaced text that is not the whole value alone", () => {
+    setRuntimeInventory(collectRuntimeIdentity({ hostname: MIXED_HOST }));
+    expect(scan("Z Q X L A B").some((f) => f.ruleId.startsWith("pii-inventory-"))).toBe(false);
+    expect(scan("Z Q X L A B - K W V R T").some((f) => f.ruleId.startsWith("pii-inventory-"))).toBe(false);
+  });
+
+  it("gives both spellings one stand-in that swaps back to the exact value", () => {
+    const previous = process.env.SENSITIVE_CANARY_ALIASES;
+    process.env.SENSITIVE_CANARY_ALIASES = "stand-ins";
+    try {
+      setRuntimeInventory(collectRuntimeIdentity({ hostname: MIXED_HOST }));
+      const standIn = redactText(`host ${MIXED_HOST}`).text.slice("host ".length);
+      expect(standIn).not.toContain(MIXED_HOST);
+      const dump = redactText(odC(MIXED_HOST)).text;
+      expect(dump).toContain(standIn);
+      expect(dump).not.toMatch(/Z\s+Q\s+X/);
+      const swap = planSwapBack("bash", { command: `nix eval .#hosts.${standIn}.config` }, aliases(), true);
+      expect(swap.input).toEqual({ command: `nix eval .#hosts.${MIXED_HOST}.config` });
+    } finally {
+      if (previous === undefined) delete process.env.SENSITIVE_CANARY_ALIASES;
+      else process.env.SENSITIVE_CANARY_ALIASES = previous;
+    }
   });
 });

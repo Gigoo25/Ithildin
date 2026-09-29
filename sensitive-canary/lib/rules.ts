@@ -148,6 +148,21 @@ export function escapeRegExp(literal: string): string {
   return literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+// Gap between the characters of a spaced-out value: `od -c` columns, `sed
+// 's/./& /g'`, and a dump's line break plus its offset column. The two
+// alternatives start on disjoint characters and every run is bounded, so the
+// pattern cannot backtrack catastrophically.
+const SPACED_GAP = "(?:[ \\t]{1,8}(?:\\r?\\n(?:[0-9A-Fa-f]{6,16}:?)?[ \\t]{0,8})?|\\r?\\n(?:[0-9A-Fa-f]{6,16}:?)?[ \\t]{0,8})";
+const MIN_SPACED_CHARS = 3;
+
+// The value spelled one character at a time. Without it, `od -c` output
+// carried an inventory hostname to the provider in plain sight: every
+// character was there, just never next to the one before.
+function spacedSource(literal: string): string | undefined {
+  const chars = Array.from(literal).filter((char) => !/\s/u.test(char));
+  return chars.length < MIN_SPACED_CHARS ? undefined : chars.map(escapeRegExp).join(SPACED_GAP);
+}
+
 export function compileInventoryEntry(entry: unknown): Rule {
   if (typeof entry !== "object" || entry === null) throw new Error("inventory entry must be an object");
   const { id, literal, match, caseSensitive, label } = entry as Record<string, unknown>;
@@ -157,7 +172,8 @@ export function compileInventoryEntry(entry: unknown): Rule {
   if (caseSensitive !== undefined && typeof caseSensitive !== "boolean") throw new Error(`inventory "${String(id)}" needs boolean caseSensitive`);
   if (label !== undefined && (typeof label !== "string" || !ALIAS_LABEL.test(label))) throw new Error(`inventory "${String(id)}" needs a lowercase one-word label`);
   const sensitive = caseSensitive ?? true;
-  const body = escapeRegExp(literal);
+  const spaced = spacedSource(literal);
+  const body = spaced === undefined ? escapeRegExp(literal) : `(?:${escapeRegExp(literal)}|${spaced})`;
   // Unicode letter/number/underscore boundaries, not ASCII-only \b.
   const source = match === "token"
     ? `(?<![\\p{L}\\p{N}_])${body}(?![\\p{L}\\p{N}_])`
@@ -649,6 +665,12 @@ const NIX_ATTR_LABELS: ReadonlySet<string> = new Set([
 // for values.
 const TYPE_NAMES = /^(?:string|str|number|int|integer|float|double|bool|boolean|any|unknown|never|void|object|bytes|dict|list|tuple|char|symbol|bigint|undefined|option|optional|vec|array|record|promise|map|set|i8|i16|i32|i64|u8|u16|u32|u64|usize|isize|f32|f64)$/i;
 
+// Words that fill a user or host slot in docs, code and command templates
+// (`user@host`, `host:path`, `chown user:group`, `user:password@`, `git@`,
+// `const user = await …`), never an identity. One false hit here is not
+// local: a matched word is learned and redacted everywhere after it.
+const PLACEHOLDER_NAMES = /^(?:user|users|username|login|owner|name|me|you|someone|anonymous|guest|nobody|root|admin|git|group|password|passwd|pass|secret|token|email|mail|noreply|no-reply|path|paths|port|dir|file|files|addr|address|ip|domain|remote|target|dest|destination|await|async|new|this|self|typeof|function|require|import)$/i;
+
 const LOCAL_RULES: Rule[] = [
   {
     id: "generic-secret",
@@ -1082,18 +1104,22 @@ const LOCAL_RULES: Rule[] = [
     // npm `repo@v1` / `bar@1.0.0` are packages, not addresses.
     regex: /\b([a-z_][a-z0-9_.-]{0,30}[a-z0-9_-]?)@(?![Vv]?\d+(\.\d+)*\b)(?=[A-Za-z0-9.-]*[A-Za-z])/gi,
     secretGroup: 1,
+    validate: (value: string) => !PLACEHOLDER_NAMES.test(value),
     category: "pii",
   },
   {
     id: "pii-labeled-user",
     description: "Username in labeled assignment (generic)",
-    regex: /(?:\buser(?:name)?|\blogin|\bowner)\s*[:=]\s*["']?([A-Za-z0-9._-]{3,32})/gi,
+    // The value ends the phrase: `user: recursive delete` is prose and
+    // `user = await createUser()` is code.
+    regex: /(?:\buser(?:name)?|\blogin|\bowner)\s*[:=]\s*["']?([A-Za-z0-9._-]{3,32})(?![A-Za-z0-9._-]|[ \t]+[A-Za-z(])/gi,
     secretGroup: 1,
     // Common username syntax: lowercase POSIX-style. This keeps display
     // names ("Jane") and booleans out without a per-word denylist.
     validate: (value: string) =>
       /^[a-z0-9._][a-z0-9._-]*$/.test(value) &&
       !/^(?:true|false|null|none|yes|no|on|off)$/.test(value) &&
+      !PLACEHOLDER_NAMES.test(value) &&
       !TYPE_NAMES.test(value),
     category: "pii",
   },
@@ -1111,7 +1137,8 @@ const LOCAL_RULES: Rule[] = [
     // TYPE_NAMES drops annotations, and the `<` / `[` guard drops generics.
     validate: (value: string) =>
       !TYPE_NAMES.test(value) &&
-      !/^(?:localhost|host|hosts|hostname|hostnames|server|servers|machine|machines|database|db|example|test|testing|local|default|none|null|unknown|url|uri|don|can|won|isn|aren|wasn|weren|doesn|didn|hasn|haven|couldn|wouldn|shouldn|mustn|needn|shan|mayn|oughtn|daren|true|false|yes|no|on|off)$/i.test(value),
+      !/^(?:localhost|host|hosts|hostname|hostnames|server|servers|machine|machines|database|db|example|test|testing|local|default|none|null|unknown|url|uri|don|can|won|isn|aren|wasn|weren|doesn|didn|hasn|haven|couldn|wouldn|shouldn|mustn|needn|shan|mayn|oughtn|daren|true|false|yes|no|on|off)$/i.test(value) &&
+      !PLACEHOLDER_NAMES.test(value),
     category: "pii",
   },
   {
@@ -1245,6 +1272,14 @@ export function inventoryLiterals(): Array<{ ruleId: string; literal: string; la
   return activeRules().flatMap((rule) =>
     rule.inventoryLiteral === undefined ? [] : [{ ruleId: rule.id, literal: rule.inventoryLiteral, label: rule.label }],
   );
+}
+
+// The value an inventory match stands for. A spaced-out match is longer than
+// its literal and takes the literal's stand-in, so both spellings of one
+// value read as the same thing and swap back to the real value.
+export function inventoryStandInValue(ruleId: string, value: string): string {
+  const literal = activeRules().find((rule) => rule.id === ruleId)?.inventoryLiteral;
+  return literal === undefined || value.length === literal.length ? value : literal;
 }
 
 export function aliasLabels(): string[] {

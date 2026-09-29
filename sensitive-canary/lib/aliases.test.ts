@@ -1,4 +1,4 @@
-import { expect, it } from "bun:test";
+import { expect, it, spyOn } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -110,7 +110,13 @@ it("creates a private key file once and reuses it", () => {
 		expect(loadAliasKey(file).equals(first)).toBe(true);
 		expect(readFileSync(file, "utf8").trim()).toMatch(/^[0-9a-f]{64}$/);
 		writeFileSync(file, "not a key\n");
-		expect(loadAliasKey(file).equals(first)).toBe(false);
+		const warn = spyOn(process.stderr, "write").mockImplementation(() => true);
+		try {
+			expect(loadAliasKey(file).equals(first)).toBe(false);
+			expect(String(warn.mock.calls[0]?.[0])).toContain("alias key file is malformed");
+		} finally {
+			warn.mockRestore();
+		}
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}

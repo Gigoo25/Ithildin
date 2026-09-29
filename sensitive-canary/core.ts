@@ -19,9 +19,10 @@
 import { randomBytes } from "node:crypto";
 import { readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { type Finding, type LocatedFinding, mergeRanges, scanWindows, SCAN_WINDOW_OVERLAP, assertScanBudget, ScanBudgetExceeded, clearWindowCache, exportWindowCache, importWindowCache, windowCacheRevision, aliasStyle, aliasKeyScope, ruleAliasLabel, ruleGeneralization, isPromptOnlyRule, GENERALIZE_PATH } from "./lib/rules.ts";
+import { type Finding, type LocatedFinding, mergeRanges, scanWindows, SCAN_WINDOW_OVERLAP, assertScanBudget, ScanBudgetExceeded, clearWindowCache, exportWindowCache, importWindowCache, windowCacheRevision, aliasStyle, aliasKeyScope, ruleAliasLabel, ruleGeneralization, inventoryStandInValue, isPromptOnlyRule, GENERALIZE_PATH } from "./lib/rules.ts";
 import { AliasBook, aliasKeyPath, aliasSpans, isAliasValue, loadAliasKey, SESSION_KEY_SUFFIX } from "./lib/aliases.ts";
 import { planRedaction } from "./lib/redaction-spans.ts";
+import { redactEncoded } from "./lib/encoded.ts";
 import { reportRedaction } from "./lib/redaction-audit.ts";
 import { assignmentEdits, inspectDocument } from "./lib/structured-text.ts";
 import { applyAllowTags, dedupeFindings, type Message, resolveTagPriority, userTypedText } from "./lib/inspector.ts";
@@ -192,7 +193,8 @@ export function setAliasBook(book: AliasBook): void {
 // PII replacement. Stand-ins keep role, shape, and relationships and stay
 // stable across sessions; `aliases: "tokens"` restores the numbered
 // __CANARY_*__ placeholders.
-function piiReplacement(ruleId: string, value: string): string {
+function piiReplacement(ruleId: string, rawValue: string): string {
+  const value = inventoryStandInValue(ruleId, rawValue);
   const general = ruleGeneralization(ruleId);
   if (general !== undefined) return `⟦${general}⟧`;
   if (aliasStyle() === "tokens") return syntheticToken(ruleId, value);
@@ -361,20 +363,34 @@ export function asUserText<T>(scan: () => T): T {
 
 export function redactText(text: string, allowTags: Set<string> = new Set()): { text: string; hits: number } {
   const sourceLength = text.length;
-  const cookieEdits: Array<{start:number;end:number;replacementLength:number}> = [];
-  const toOriginal = (range: {start:number;end:number}) => {
-    const project = (at:number, end:boolean) => {
-      let delta=0;
-      for(const edit of cookieEdits) {
-        const left=edit.start+delta, right=left+edit.replacementLength;
-        if(at < left || (at === left && !end)) break;
-        if(at < right || (at === right && end)) return end ? edit.end : edit.start;
-        delta += edit.replacementLength-(edit.end-edit.start);
-      }
-      return at-delta;
-    };
-    return {start:project(range.start,false),end:project(range.end,true)};
+  type Edit = {start:number;end:number;replacementLength:number};
+  // Each pass records edits in the coordinates of its own input; ranges map
+  // back through the passes in reverse.
+  const encodedEdits: Edit[] = [];
+  const cookieEdits: Edit[] = [];
+  const project = (edits: Edit[], at:number, end:boolean) => {
+    let delta=0;
+    for(const edit of edits) {
+      const left=edit.start+delta, right=left+edit.replacementLength;
+      if(at < left || (at === left && !end)) break;
+      if(at < right || (at === right && end)) return end ? edit.end : edit.start;
+      delta += edit.replacementLength-(edit.end-edit.start);
+    }
+    return at-delta;
   };
+  const toOriginal = (range: {start:number;end:number}) => {
+    const passes = [cookieEdits, encodedEdits];
+    return {
+      start: passes.reduce((at, edits) => project(edits, at, false), range.start),
+      end: passes.reduce((at, edits) => project(edits, at, true), range.end),
+    };
+  };
+  let encodedHits = 0;
+  if (!allowTags.has("all")) {
+    const encoded = redactEncoded(text, (decoded) => scanWindows(decoded).findings.filter((f) => !isSyntheticValue(f.secretValue) && (scanningUserText || !isPromptOnlyRule(f.ruleId))), (category) => allowTags.has(category), (start,end,replacementLength)=>encodedEdits.push({start,end,replacementLength}));
+    text = encoded.text;
+    encodedHits = encoded.hits;
+  }
   let cookieHits = 0;
   if (!allowTags.has("secret")) {
     const cookieResult = redactCookieHeaders(text, syntheticValue, isSyntheticValue, (start,end,replacementLength)=>cookieEdits.push({start,end,replacementLength}));
@@ -388,7 +404,7 @@ export function redactText(text: string, allowTags: Set<string> = new Set()): { 
   // overlapping forbidden secret.
   const omitted = () => {
     reportRedaction({ sourceLength, detections: [], replacements: [], omissions: [{start:0,end:sourceLength}], coordinateSystem: "original" });
-    return { text: `[sensitive-canary: omitted ${text.length} chars (scan budget exceeded or incomplete document inspection)]`, hits: cookieHits + 1 };
+    return { text: `[sensitive-canary: omitted ${text.length} chars (scan budget exceeded or incomplete document inspection)]`, hits: encodedHits + cookieHits + 1 };
   };
   const document = inspectDocument(text);
   if (document.status === "incomplete") return omitted();
@@ -428,8 +444,9 @@ export function redactText(text: string, allowTags: Set<string> = new Set()): { 
   if (document.status === "json") {
     try { JSON.parse(planned.text); assertScanBudget(); } catch { return omitted(); }
   }
-  reportRedaction({ sourceLength, detections: [...cookieEdits.map(({start,end})=>({start,end})), ...findings.map(toOriginal)], replacements: [...cookieEdits.map(({start,end})=>({start,end})), ...planned.edits.filter(e=>!e.replacement.startsWith("[sensitive-canary: omitted")).map(toOriginal)], omissions: planned.edits.filter(e=>e.replacement.startsWith("[sensitive-canary: omitted")).map(toOriginal), coordinateSystem: "original" });
-  return { text: planned.text, hits: cookieHits + uniqueFindings.length + trips.length + (planned.text !== text && uniqueFindings.length === 0 && trips.length === 0 ? 1 : 0) };
+  const passEdits = [...encodedEdits.map(({start,end})=>({start,end})), ...cookieEdits.map((edit)=>toOriginal({start:edit.start,end:edit.end}))];
+  reportRedaction({ sourceLength, detections: [...passEdits, ...findings.map(toOriginal)], replacements: [...passEdits, ...planned.edits.filter(e=>!e.replacement.startsWith("[sensitive-canary: omitted")).map(toOriginal)], omissions: planned.edits.filter(e=>e.replacement.startsWith("[sensitive-canary: omitted")).map(toOriginal), coordinateSystem: "original" });
+  return { text: planned.text, hits: encodedHits + cookieHits + uniqueFindings.length + trips.length + (planned.text !== text && uniqueFindings.length === 0 && trips.length === 0 ? 1 : 0) };
 }
 
 function structuredReplacement(finding: LocatedFinding): string {

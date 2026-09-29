@@ -583,3 +583,28 @@ describe("freeform name recall", () => {
     expect(scan("Dr Pepper is in the fridge").some((f) => f.ruleId === "pii-titled-name")).toBe(true);
   });
 });
+
+// A placeholder matched once is learned and then redacted everywhere, so the
+// generic user/host rules must leave template words alone.
+describe("placeholder words in user and host slots", () => {
+  it("does not take template words for identities", () => {
+    for (const text of [
+      "ssh user@host host:path",
+      "git clone git@github.com:owner/repo",
+      "chown user:group file",
+      "postgres://user:password@db.internal.example/app",
+      "Blocked by user: recursive delete (rm -r)",
+      "const user = await createUser({ name: \"Alice\" });",
+      "rsync -a host: path",
+    ]) {
+      const hits = scan(text).filter((f) => ["pii-user-at-host", "pii-labeled-user", "pii-labeled-host"].includes(f.ruleId));
+      expect(hits.map((f) => f.secretValue)).toEqual([]);
+    }
+  });
+
+  it("still finds real names in the same slots", () => {
+    expect(scan("ssh zqxops@buildbox").some((f) => f.ruleId === "pii-user-at-host")).toBe(true);
+    expect(scan("user: zqxops\n").some((f) => f.ruleId === "pii-labeled-user")).toBe(true);
+    expect(scan("hostname = zqxbuild").some((f) => f.ruleId === "pii-labeled-host")).toBe(true);
+  });
+});

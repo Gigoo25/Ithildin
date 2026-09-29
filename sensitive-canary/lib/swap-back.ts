@@ -43,15 +43,31 @@ const OPTION_VALUES = new Set(["-p", "-P", "-i", "-l", "-o", "-F", "-J", "-L", "
 type Span = { text: string; start: number; end: number };
 
 function standInSpans(text: string, book: AliasBook): Span[] {
-  const found = aliasMatches(text);
+  let found = aliasMatches(text);
+  // Whole stand-ins glued into a longer word: the model mangled them, so no
+  // piece is swapped (a lone last piece came back lowercased).
+  const glued: Array<{ start: number; end: number }> = [];
   // IPv6 and MAC stand-ins share their shape with documentation values, so
   // only exact stand-ins this process minted are swapped.
   for (const standIn of book.standIns()) {
-    if (!standIn.startsWith("2001:db8:") && !standIn.startsWith("02:") && !standIn.startsWith("02-")) continue;
+    if (standIn.startsWith("2001:db8:") || standIn.startsWith("02:") || standIn.startsWith("02-")) {
+      for (let at = text.indexOf(standIn); at >= 0; at = text.indexOf(standIn, at + 1)) {
+        found.push({ text: standIn, start: at, end: at + standIn.length });
+      }
+      continue;
+    }
+    // A multi-label host stand-in (n1a2b3c-n4d5e6f) matches the shapes only
+    // piece by piece, and pieces resolve through the lowercased part map: a
+    // mixed-case hostname came back lowercased and a case-sensitive lookup
+    // (a flake attribute) failed. Taken whole, it resolves to the exact value.
+    if (!/[-_.]/.test(standIn) || standIn.endsWith(".example")) continue;
     for (let at = text.indexOf(standIn); at >= 0; at = text.indexOf(standIn, at + 1)) {
-      found.push({ text: standIn, start: at, end: at + standIn.length });
+      const end = at + standIn.length;
+      if (/[A-Za-z0-9]/.test(text[at - 1] ?? "") || /[A-Za-z0-9]/.test(text[end] ?? "")) glued.push({ start: at, end });
+      else found.push({ text: standIn, start: at, end });
     }
   }
+  found = found.filter((span) => !glued.some((range) => span.start < range.end && span.end > range.start));
   found.sort((left, right) => left.start - right.start || right.end - left.end);
   const spans: Span[] = [];
   for (const span of found) if (!spans.length || span.start >= spans[spans.length - 1]!.end) spans.push(span);
