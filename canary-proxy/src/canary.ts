@@ -14,7 +14,7 @@ import { createHmac } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
 import path from "node:path";
 import { aliases, asUserText, collectValues, blocksInventoryAccess, blocksSecretAccess, candidatePaths, flushScanCache, isSecretPath, latestAllowTags, loadScanCache, redactValue, rememberSwapped, setAliasBook } from "../engine/core.ts";
-import { AliasBook, aliasKeyPath, aliasMatches, loadAliasKey, registerAliasLabels } from "../engine/lib/aliases.ts";
+import { AliasBook, aliasKeyPath, aliasMatches, aliasSpans, loadAliasKey, registerAliasLabels } from "../engine/lib/aliases.ts";
 import type { Message } from "../engine/lib/inspector.ts";
 import { aliasLabels, aliasStyle, inventoryLiterals, setRuntimeInventory, withScanBudget } from "../engine/lib/rules.ts";
 import { collectRuntimeIdentity, identityFromGit, identityFromOs, identityFromSsh } from "../engine/lib/runtime-inventory.ts";
@@ -32,6 +32,7 @@ let scanCacheBase: string | undefined;
 export function saveScanCache(): void {
   flushScanCache(scanCacheBase);
   saveReplay();
+  aliases().saveCounters();
 }
 
 export function initEngine(keyFile = process.env.SENSITIVE_CANARY_PROXY_KEY_FILE ?? path.join(path.dirname(aliasKeyPath()), "proxy-alias-key")): void {
@@ -43,8 +44,10 @@ export function initEngine(keyFile = process.env.SENSITIVE_CANARY_PROXY_KEY_FILE
   }));
   registerAliasLabels(aliasLabels());
   const aliasKey = loadAliasKey(keyFile);
-  setAliasBook(new AliasBook(aliasKey));
+  const book = new AliasBook(aliasKey);
+  setAliasBook(book);
   scanCacheBase = path.join(path.dirname(keyFile), "proxy");
+  book.loadCounters(`${scanCacheBase}-standins.json`);
   initReplay(createHmac("sha256", aliasKey).update("replay").digest(), `${scanCacheBase}-replay.json`);
   loadScanCache(scanCacheBase);
   if (aliasStyle() === "stand-ins") {
@@ -282,6 +285,18 @@ export interface Counts {
 export function redactRequest(format: Format, body: Record<string, unknown>): { body: Record<string, unknown>; hits: number; counts: Counts; tags: Set<string> } {
   const tags = requestAllowTags(format, body);
   rememberLiterals(format, body);
+  // A new stand-in must not equal a word the conversation already holds:
+  // swap-back would turn that word into the real value.
+  let corpus: string | undefined;
+  aliases().setCorpus(() => (corpus ??= JSON.stringify(body)));
+  try {
+    return redactWithCorpus(format, body, tags);
+  } finally {
+    aliases().setCorpus(undefined);
+  }
+}
+
+function redactWithCorpus(format: Format, body: Record<string, unknown>, tags: Set<string>): { body: Record<string, unknown>; hits: number; counts: Counts; tags: Set<string> } {
   // Each prompt's own tag decides its images, read before tags are stripped;
   // the notice goes in after, so its own tag mention survives.
   const images = withholdImages(format, stripAllowTags(format, body), body);
@@ -736,7 +751,12 @@ function swapToolName(name: string): string {
 export function swapToolArguments(toolName: string, args: unknown, tags: Set<string>, callId?: string): { args: unknown; swapped: number; blocked?: boolean } {
   if (aliasStyle() !== "stand-ins") return { args, swapped: 0 };
   const swap = planSwapBack(swapToolName(toolName), args, aliases(), tags.has("pii") || tags.has("all"));
-  const invented = WRITE_TOOLS.has(toolName) ? [...new Set(swap.unresolved)].filter((token) => !seenLiterals.has(token)) : [];
+  // Old hash-like shapes: stand-ins now look real, so a model that writes a
+  // label and six hex digits copied them from an older transcript or made
+  // them up.
+  const invented = WRITE_TOOLS.has(toolName)
+    ? [...new Set(aliasSpans(JSON.stringify(args ?? {})))].filter((token) => !seenLiterals.has(token) && !aliases().isStandIn(token))
+    : [];
   if (invented.length > 0) {
     if (callId) {
       if (blockedCalls.size > MAX_REMEMBERED) blockedCalls.clear();

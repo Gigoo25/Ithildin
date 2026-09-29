@@ -10,7 +10,7 @@ const book = () => new AliasBook(Buffer.alloc(32, 7));
 it("swaps a multi-label host stand-in back with its exact case", () => {
   const aliasBook = book();
   const standIn = aliasBook.standIn("pii-inventory-runtime-host", "ZQXLAB-KWVRT7");
-  expect(standIn).toMatch(/^n[0-9a-f]{6}-n[0-9a-f]{6}$/);
+  expect(standIn).toMatch(/^[a-z]{6}-[a-z]{5}[0-9]$/);
   const swap = planSwapBack("bash", { command: `nix eval .#hosts.${standIn}.config` }, aliasBook, true);
   expect(swap.input).toEqual({ command: "nix eval .#hosts.ZQXLAB-KWVRT7.config" });
   expect(swap.resolved).toHaveLength(1);

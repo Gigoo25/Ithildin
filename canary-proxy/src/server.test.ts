@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { IMAGE_NOTICE, initEngine, redactRequest, requestCwd, standInBlocked, stripAllowTags, swapText, WITHHELD_LINE, WITHHELD_NOTICE } from "./canary.ts";
 import { createHandler, DEFAULT_ROUTES, loadRoutes, upstreamUrl } from "./server.ts";
+import { looksLikeAlias } from "../engine/lib/aliases.ts";
 
 const EMAIL = "jane.doe@acme-corp.com";
 let standIn = "";
@@ -620,6 +621,20 @@ describe("invented stand-ins", () => {
     const bash = { command: `grep -r ${INVENTED} .` };
     const other = createHandler(DEFAULT_ROUTES, fakeUpstream(() => toolUse("toolu_b", "bash", bash)).fetch);
     expect(await args(await other(post("anthropic/v1/messages", { stream: true, messages: [{ role: "user", content: "hi" }] })))).toEqual(bash);
+  });
+});
+
+describe("lookalike stand-ins", () => {
+  // Hash-like stand-ins read as corrupted data, and a model rewrote a file
+  // to repair them. Stand-ins now look like the values they replace.
+  it("replace a value with one of the same kind, which swaps back", () => {
+    const body = redactRequest("anthropic", { messages: [{ role: "user", content: `mail ${EMAIL} today` }] }).body;
+    const text = (body.messages as Array<{ content: string }>)[0]!.content;
+    expect(text).not.toContain(EMAIL);
+    expect(looksLikeAlias(text)).toBe(false);
+    const standIn = text.split(" ")[1]!;
+    expect(standIn).toMatch(/^[a-z0-9.-]+@[a-z0-9.-]+$/);
+    expect(swapText(`sent to ${standIn}`, new Set()).text).toBe(`sent to ${EMAIL}`);
   });
 });
 
