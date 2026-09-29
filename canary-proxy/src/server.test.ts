@@ -609,3 +609,56 @@ describe("invented stand-ins", () => {
     expect(await args(await other(post("anthropic/v1/messages", { stream: true, messages: [{ role: "user", content: "hi" }] })))).toEqual(bash);
   });
 });
+
+describe("replay of the model's own turns", () => {
+  const writeCall = (id: string, input: unknown) => sse([
+    { data: { type: "content_block_start", index: 0, content_block: { type: "tool_use", id, name: "write", input: {} } } },
+    { data: { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: JSON.stringify(input) } } },
+    { data: { type: "content_block_stop", index: 0 } },
+  ]);
+  const history = (id: string, input: unknown) => [
+    { role: "user", content: "write it" },
+    { role: "assistant", content: [{ type: "tool_use", id, name: "write", input }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: "ok" }] },
+  ];
+  const sentInput = (seen: Seen) => ((seen.body as { messages: Array<{ content: Array<{ input?: unknown }> }> }).messages[1]!.content[0]!.input);
+
+  it("gives the model back a value it wrote itself, byte for byte", async () => {
+    // The model wrote the real value (no stand-in); re-redacting it made the
+    // model read its own write as wrong content.
+    const input = { path: "own.py", content: `OWNER = "${EMAIL}"  # own-1` };
+    const up = fakeUpstream((seen) => seen.body && up.seen.length === 1 ? writeCall("toolu_o1", input) : Response.json({ content: [] }));
+    const handler = createHandler(DEFAULT_ROUTES, up.fetch);
+    await (await handler(post("anthropic/v1/messages", { stream: true, messages: [{ role: "user", content: "write it" }] }))).text();
+    await handler(post("anthropic/v1/messages", { messages: [...history("toolu_o1", input), { role: "user", content: `and ${EMAIL}` }] }));
+    expect(sentInput(up.seen[1]!)).toEqual(input);
+    // Everything else is still redacted.
+    expect(JSON.stringify((up.seen[1]!.body as { messages: unknown[] }).messages.at(-1))).not.toContain(EMAIL);
+  });
+
+  it("gives back the stand-in the model wrote, and redacts a copy the harness changed", async () => {
+    const input = { path: "own.md", content: `mail ${standIn} (own-2)` };
+    const up = fakeUpstream(() => up.seen.length === 1 ? writeCall("toolu_o2", input) : Response.json({ content: [] }));
+    const handler = createHandler(DEFAULT_ROUTES, up.fetch);
+    const swapped = JSON.parse(events(await (await handler(post("anthropic/v1/messages", { stream: true, messages: [{ role: "user", content: "write it" }] }))).text())
+      .filter((e) => e.type === "content_block_delta").map((e) => (e.delta as { partial_json: string }).partial_json).join(""));
+    expect(swapped.content).toBe(`mail ${EMAIL} (own-2)`);
+    await handler(post("anthropic/v1/messages", { messages: history("toolu_o2", swapped) }));
+    expect(sentInput(up.seen[1]!)).toEqual(input);
+    await handler(post("anthropic/v1/messages", { messages: history("toolu_o2", { ...swapped, content: `${swapped.content}!` }) }));
+    expect(JSON.stringify(sentInput(up.seen[2]!))).not.toContain(EMAIL);
+  });
+
+  it("replays Chat Completions text", async () => {
+    const reply = `Owner is ${EMAIL} (own-3)`;
+    const up = fakeUpstream(() => up.seen.length === 1
+      ? sse([{ data: { id: "c", choices: [{ index: 0, delta: { content: reply }, finish_reason: null }] } }, { data: { id: "c", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] } }, { data: "[DONE]" }])
+      : Response.json({}));
+    const handler = createHandler(DEFAULT_ROUTES, up.fetch);
+    await (await handler(post("opencode-go/chat/completions", { stream: true, messages: [{ role: "user", content: "who" }] }))).text();
+    await handler(post("opencode-go/chat/completions", { messages: [{ role: "user", content: "who" }, { role: "assistant", content: reply }, { role: "user", content: EMAIL }] }));
+    const messages = (up.seen[1]!.body as { messages: Array<{ content: string }> }).messages;
+    expect(messages[1]!.content).toBe(reply);
+    expect(messages[2]!.content).not.toContain(EMAIL);
+  });
+});

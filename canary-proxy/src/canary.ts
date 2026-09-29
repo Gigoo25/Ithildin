@@ -10,6 +10,7 @@
 // Every request carries the whole conversation, and redacting it re-mints
 // every stand-in the model can name, so the book never needs to be saved.
 
+import { createHmac } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
 import path from "node:path";
 import { aliases, asUserText, collectValues, blocksInventoryAccess, blocksSecretAccess, candidatePaths, flushScanCache, isSecretPath, latestAllowTags, loadScanCache, redactValue, rememberSwapped, setAliasBook } from "../engine/core.ts";
@@ -18,6 +19,7 @@ import type { Message } from "../engine/lib/inspector.ts";
 import { aliasLabels, aliasStyle, inventoryLiterals, setRuntimeInventory, withScanBudget } from "../engine/lib/rules.ts";
 import { collectRuntimeIdentity, identityFromGit, identityFromOs, identityFromSsh } from "../engine/lib/runtime-inventory.ts";
 import { planSwapBack } from "../engine/lib/swap-back.ts";
+import { argsKey, initReplay, recordOriginal, replayOriginal, saveReplay } from "./replay.ts";
 
 export type Format = "anthropic" | "chat" | "responses";
 
@@ -29,6 +31,7 @@ let scanCacheBase: string | undefined;
 
 export function saveScanCache(): void {
   flushScanCache(scanCacheBase);
+  saveReplay();
 }
 
 export function initEngine(keyFile = process.env.SENSITIVE_CANARY_PROXY_KEY_FILE ?? path.join(path.dirname(aliasKeyPath()), "proxy-alias-key")): void {
@@ -39,8 +42,10 @@ export function initEngine(keyFile = process.env.SENSITIVE_CANARY_PROXY_KEY_FILE
     ...(process.env.SENSITIVE_CANARY_INFRA_INVENTORY === "off" ? {} : identityFromSsh()),
   }));
   registerAliasLabels(aliasLabels());
-  setAliasBook(new AliasBook(loadAliasKey(keyFile)));
+  const aliasKey = loadAliasKey(keyFile);
+  setAliasBook(new AliasBook(aliasKey));
   scanCacheBase = path.join(path.dirname(keyFile), "proxy");
+  initReplay(createHmac("sha256", aliasKey).update("replay").digest(), `${scanCacheBase}-replay.json`);
   loadScanCache(scanCacheBase);
   if (aliasStyle() === "stand-ins") {
     for (const entry of inventoryLiterals()) aliases().standIn(entry.ruleId, entry.literal, entry.label);
@@ -134,12 +139,17 @@ function redactAnthropic(body: Record<string, unknown>, tags: Set<string>): { va
       const { content, ...fields } = message as Record<string, unknown>;
       const next: Record<string, unknown> = { ...fields };
       const user = fields.role === "user";
-      if (typeof content === "string") {
+      const replayed = !user && typeof content === "string" ? replayOriginal("text", content) : undefined;
+      if (replayed !== undefined) {
+        next.content = replayed;
+      } else if (typeof content === "string") {
         const result = typed(user, () => redactValue(content, tags, "content", message as Record<string, unknown>, ["messages", i, "content"], true));
         hits += result.hits;
         next.content = result.value;
       } else if (Array.isArray(content)) {
         next.content = content.map((block, j) => {
+          const replayed = user ? undefined : replayAnthropicBlock(block);
+          if (replayed !== undefined) return replayed;
           const text = user && (block as { type?: unknown } | null)?.type === "text";
           const result = typed(text, () => redactAnthropicBlock(block, tags, ["messages", i, "content", j]));
           hits += result.hits;
@@ -156,6 +166,69 @@ function redactAnthropic(body: Record<string, unknown>, tags: Set<string>): { va
   return { value: out, hits };
 }
 
+// The model's own turns, as the provider sent them (replay.ts). Undefined
+// when the harness's copy is not a recorded one.
+function replayAnthropicBlock(block: unknown): unknown {
+  if (!block || typeof block !== "object") return undefined;
+  const record = block as Record<string, unknown>;
+  if (record.type === "text" && typeof record.text === "string") {
+    const text = replayOriginal("text", record.text);
+    return text === undefined ? undefined : { ...record, text };
+  }
+  if (record.type === "tool_use") {
+    const harness = argsKey(record.input);
+    const original = harness === undefined ? undefined : replayOriginal("args", harness);
+    return original === undefined ? undefined : { ...record, input: JSON.parse(original) };
+  }
+  return undefined;
+}
+
+// A Chat assistant message or a Responses function call with every
+// replayable part put back and every other part redacted. Undefined when
+// nothing replays, so the item takes the ordinary walk.
+function replayOpenAiItem(item: Record<string, unknown>, tags: Set<string>, location: Array<string | number>): { value: unknown; hits: number } | undefined {
+  let replays = 0;
+  let hits = 0;
+  const redact = (value: unknown, at: Array<string | number>, key?: string, parent?: Record<string, unknown>) => {
+    const result = redactValue(value, tags, key, parent, at, true);
+    hits += result.hits;
+    return result.value;
+  };
+  const replay = (kind: "text" | "args", value: unknown): string | undefined => {
+    const harness = kind === "text" ? (typeof value === "string" ? value : undefined) : argsKey(value);
+    const original = harness === undefined ? undefined : replayOriginal(kind, harness);
+    if (original !== undefined) replays++;
+    return original;
+  };
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(item)) {
+    const at = [...location, key];
+    if (key === "content" && typeof value === "string") {
+      out[key] = replay("text", value) ?? redact(value, at, key, item);
+    } else if (key === "content" && Array.isArray(value)) {
+      out[key] = value.map((part, i) => {
+        const record = part as { type?: unknown; text?: unknown } | null;
+        const original = record?.type === "text" || record?.type === "output_text" ? replay("text", record.text) : undefined;
+        return original === undefined ? redact(part, [...at, i]) : { ...record, text: original };
+      });
+    } else if (key === "tool_calls" && Array.isArray(value)) {
+      out[key] = value.map((call, i) => {
+        const { function: fn, ...fields } = (call ?? {}) as { function?: { arguments?: unknown } };
+        const original = typeof fn?.arguments === "string" ? replay("args", fn.arguments) : undefined;
+        if (original === undefined) return redact(call, [...at, i]);
+        return { ...(redact(fields, [...at, i]) as Record<string, unknown>), function: { ...fn, arguments: original } };
+      });
+    } else if (key === "arguments" && typeof value === "string") {
+      out[key] = replay("args", value) ?? redact(value, at, key, item);
+    } else if (["type", "role", "id", "call_id", "name"].includes(key) && typeof value === "string") {
+      out[key] = value;
+    } else {
+      out[key] = redact(value, at, key, item);
+    }
+  }
+  return replays === 0 ? undefined : { value: out, hits };
+}
+
 // Chat messages and Responses input items: the same walk as the rest of the
 // body, with user items scanned as typed text.
 function redactOpenAi(format: Format, body: Record<string, unknown>, tags: Set<string>): { value: Record<string, unknown>; hits: number } {
@@ -166,6 +239,14 @@ function redactOpenAi(format: Format, body: Record<string, unknown>, tags: Set<s
   const out = top.value as Record<string, unknown>;
   if (Array.isArray(list)) {
     out[key] = list.map((item, i) => {
+      const record = item as Record<string, unknown> | null;
+      if (record && typeof record === "object" && (record.role === "assistant" || record.type === "function_call")) {
+        const replayed = replayOpenAiItem(record, tags, [key, i]);
+        if (replayed) {
+          hits += replayed.hits;
+          return replayed.value;
+        }
+      }
       const user = !!item && typeof item === "object" && (item as { role?: unknown }).role === "user";
       const result = typed(user, () => redactValue(item, tags, undefined, undefined, [key, i], true));
       hits += result.hits;
@@ -659,6 +740,9 @@ export function swapToolArguments(toolName: string, args: unknown, tags: Set<str
   // literal in source or docs), or one bound off the machine, stays a stand-in
   // in swap.input: that span fails on a name that does not exist rather than
   // leaking the value, while resolved spans beside it still get real values.
+  const harness = argsKey(swap.resolved.length === 0 ? args : swap.input);
+  const original = argsKey(args);
+  if (harness !== undefined && original !== undefined) recordOriginal("args", harness, original);
   if (swap.resolved.length === 0) return { args, swapped: 0 };
   for (const resolved of swap.resolved) rememberSwapped(resolved.value, resolved.ruleId);
   return { args: swap.input, swapped: swap.resolved.length };
@@ -675,6 +759,14 @@ export function swapText(text: string, tags: Set<string>): { text: string; swapp
   if (swap.resolved.length === 0) return { text, swapped: 0 };
   for (const resolved of swap.resolved) rememberSwapped(resolved.value, resolved.ruleId);
   return { text: swap.input as string, swapped: swap.resolved.length };
+}
+
+// A whole reply block: swapped, and recorded so the next request gives the
+// model back exactly what it wrote (replay.ts).
+export function swapWholeText(text: string, tags: Set<string>): { text: string; swapped: number } {
+  const result = swapText(text, tags);
+  if (text !== "") recordOriginal("text", result.text, text);
+  return result;
 }
 
 // Arguments as a JSON string (OpenAI shapes, Anthropic streaming).

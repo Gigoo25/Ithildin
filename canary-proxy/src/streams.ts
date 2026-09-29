@@ -11,7 +11,8 @@
 // One rewriter per format, each fed parsed SSE events and returning the
 // events to send on. Non-streaming bodies get the same swap in one pass.
 
-import { type Format, swapText, swapToolArguments, swapToolJson } from "./canary.ts";
+import { type Format, swapText, swapToolArguments, swapToolJson, swapWholeText } from "./canary.ts";
+import { recordOriginal } from "./replay.ts";
 
 export interface SseEvent {
   event?: string;
@@ -56,17 +57,23 @@ const HOLD_TAIL = 160;
 
 class TextHold {
   private held = "";
+  // The whole block as the provider sent it and as released, for replay.ts.
+  private raw = "";
+  private out = "";
   constructor(private readonly tags: Set<string>, private readonly count: (swapped: number) => void) {}
 
   push(chunk: string): string {
     this.held += chunk;
+    this.raw += chunk;
     const space = Math.max(this.held.lastIndexOf(" "), this.held.lastIndexOf("\n"), this.held.lastIndexOf("\t"));
     const cut = space >= 0 ? space + 1 : this.held.length > HOLD_LIMIT ? this.held.length - HOLD_TAIL : 0;
     return this.release(cut);
   }
 
   flush(): string {
-    return this.release(this.held.length);
+    const rest = this.release(this.held.length);
+    if (this.raw !== "") recordOriginal("text", this.out, this.raw);
+    return rest;
   }
 
   private release(cut: number): string {
@@ -74,6 +81,7 @@ class TextHold {
     const out = swapText(this.held.slice(0, cut), this.tags);
     this.held = this.held.slice(cut);
     this.count(out.swapped);
+    this.out += out.text;
     return out.text;
   }
 }
@@ -333,7 +341,7 @@ export function swapResponseBody(format: Format, body: Record<string, unknown>, 
   if (format === "anthropic" && Array.isArray(body.content)) {
     for (const block of body.content as Array<{ type?: string; id?: string; name?: string; input?: unknown; text?: unknown }>) {
       if (block?.type === "text" && typeof block.text === "string") {
-        const result = swapText(block.text, tags);
+        const result = swapWholeText(block.text, tags);
         block.text = result.text;
         swapped += result.swapped;
       }
@@ -345,7 +353,7 @@ export function swapResponseBody(format: Format, body: Record<string, unknown>, 
   } else if (format === "chat" && Array.isArray(body.choices)) {
     for (const choice of body.choices as Array<{ message?: { content?: unknown; tool_calls?: ChatToolCall[] } }>) {
       if (choice.message && typeof choice.message.content === "string") {
-        const result = swapText(choice.message.content, tags);
+        const result = swapWholeText(choice.message.content, tags);
         choice.message.content = result.text;
         swapped += result.swapped;
       }
@@ -361,7 +369,7 @@ export function swapResponseBody(format: Format, body: Record<string, unknown>, 
       if (item?.type === "message" && Array.isArray(item.content)) {
         for (const part of item.content) {
           if (part?.type !== "output_text" || typeof part.text !== "string") continue;
-          const result = swapText(part.text, tags);
+          const result = swapWholeText(part.text, tags);
           part.text = result.text;
           swapped += result.swapped;
         }
