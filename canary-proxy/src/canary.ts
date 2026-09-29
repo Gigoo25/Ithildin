@@ -19,6 +19,7 @@ import type { Message } from "../engine/lib/inspector.ts";
 import { aliasLabels, aliasStyle, inventoryLiterals, setRuntimeInventory, withScanBudget } from "../engine/lib/rules.ts";
 import { collectRuntimeIdentity, identityFromGit, identityFromOs, identityFromSsh } from "../engine/lib/runtime-inventory.ts";
 import { planSwapBack } from "../engine/lib/swap-back.ts";
+import { protectedBlocked, protectedChange } from "./protect.ts";
 import { argsKey, initReplay, recordOriginal, replayOriginal, saveReplay } from "./replay.ts";
 
 export type Format = "anthropic" | "chat" | "responses";
@@ -71,12 +72,15 @@ function textBlocks(content: unknown): Array<{ type: "text"; text: string }> {
   });
 }
 
+const PROTECTED_TAG = /\[allow-protected\]/i;
+
 export function requestAllowTags(format: Format, body: Record<string, unknown>): Set<string> {
   const list = format === "responses"
     ? (typeof body.input === "string" ? [{ role: "user", content: body.input }] : body.input)
     : body.messages;
   if (!Array.isArray(list)) return new Set();
   const users: Message[] = [];
+  let typed = "";
   for (const item of list) {
     if (!item || typeof item !== "object" || (item as { role?: unknown }).role !== "user") continue;
     const content = (item as { content?: unknown }).content;
@@ -88,9 +92,14 @@ export function requestAllowTags(format: Format, body: Record<string, unknown>):
     // a turn decides only when it carries a tag of its own.
     const results = Array.isArray(content) && content.some((block) => (block as { type?: unknown } | null)?.type === "tool_result");
     if (results && latestAllowTags([{ role: "user", content: blocks }]).size === 0) continue;
+    if (!results) typed = blocks.map((block) => block.text).join("\n");
     users.push({ role: "user", content: blocks });
   }
-  return latestAllowTags(users);
+  const tags = latestAllowTags(users);
+  // Proxy-only, like [allow-images]: the latest typed prompt decides, not a
+  // tool-result turn, whatever tags that carries.
+  if (PROTECTED_TAG.test(typed)) tags.add("protected");
+  return tags;
 }
 
 // Typed user prompts in a request, for the badges' per-turn count. Turns
@@ -284,6 +293,7 @@ export interface Counts {
 
 export function redactRequest(format: Format, body: Record<string, unknown>): { body: Record<string, unknown>; hits: number; counts: Counts; tags: Set<string> } {
   const tags = requestAllowTags(format, body);
+  requestDirs.set(tags, requestCwd(format, body));
   rememberLiterals(format, body);
   // A new stand-in must not equal a word the conversation already holds:
   // swap-back would turn that word into the real value.
@@ -323,9 +333,10 @@ const WRITE_TOOLS = new Set(["write", "edit", "Write", "Edit", "MultiEdit", "Not
 // Stand-in-shaped text seen in real input: system prompts, typed prompts and
 // tool results. The model's own turns do not count: they hold what it made up.
 const seenLiterals = new Set<string>();
-// Blocked call id -> the stand-ins that blocked it. Kept, not consumed: every
-// later request carries the same failed result and must read the same.
-const blockedCalls = new Map<string, string[]>();
+// Blocked call id -> the notice its result is replaced with. Kept, not
+// consumed: every later request carries the same failed result and must read
+// the same. Protected changes (protect.ts) are blocked the same way.
+const blockedCalls = new Map<string, string>();
 const MAX_REMEMBERED = 50_000;
 
 function rememberLiterals(format: Format, body: Record<string, unknown>): void {
@@ -359,9 +370,9 @@ function explainBlocked(format: Format, body: Record<string, unknown>): Record<s
   if (blockedCalls.size === 0) return body;
   let hits = 0;
   const notice = (id: unknown): string | undefined => {
-    const tokens = blockedCalls.get(String(id));
-    if (tokens) hits++;
-    return tokens && standInBlocked(tokens);
+    const text = blockedCalls.get(String(id));
+    if (text) hits++;
+    return text;
   };
   const replaced = list.map((item) => {
     if (!item || typeof item !== "object") return item;
@@ -709,8 +720,9 @@ export function withholdImages(format: Format, body: Record<string, unknown>, ta
 // the typed text it forwards; they still set this request's policy here. Tool
 // output keeps them: rewriting it would corrupt what a command printed.
 
-// Same tag set the engine parses (resolveTagPriority), plus [allow-images].
-const ALLOW_TAG = /\[(?:(?:allow|mask)-(?:all|secrets?|pii)|allow-images?)\][ \t]?/gi;
+// Same tag set the engine parses (resolveTagPriority), plus [allow-images]
+// and [allow-protected].
+const ALLOW_TAG = /\[(?:(?:allow|mask)-(?:all|secrets?|pii)|allow-(?:images?|protected))\][ \t]?/gi;
 
 function stripTagText(content: unknown): unknown {
   if (typeof content === "string") return content.replace(ALLOW_TAG, "");
@@ -756,7 +768,31 @@ function swapToolName(name: string): string {
   return "web_fetch";
 }
 
-export function swapToolArguments(toolName: string, args: unknown, tags: Set<string>, callId?: string): { args: unknown; swapped: number; blocked?: boolean } {
+type Swapped = { args: unknown; swapped: number; blocked?: boolean };
+
+function block(callId: string | undefined, notice: string): Swapped {
+  if (callId) {
+    if (blockedCalls.size > MAX_REMEMBERED) blockedCalls.clear();
+    blockedCalls.set(callId, notice);
+  }
+  return { args: {}, swapped: 0, blocked: true };
+}
+
+// The request's cwd, for protected paths named relative to it. Keyed by the
+// request's tag set, the one thing every reply rewriter is handed.
+const requestDirs = new WeakMap<Set<string>, string>();
+
+// Checked on the arguments as written and as swapped: a path may hold a
+// stand-in (a home directory) that only its real value resolves.
+export function swapToolArguments(toolName: string, args: unknown, tags: Set<string>, callId?: string): Swapped {
+  const result = swapArguments(toolName, args, tags, callId);
+  if (result.blocked || tags.has("protected")) return result;
+  const cwd = requestDirs.get(tags) ?? process.env.HOME ?? process.cwd();
+  const kind = protectedChange(toolName, args, cwd) ?? (result.swapped > 0 ? protectedChange(toolName, result.args, cwd) : undefined);
+  return kind ? block(callId, protectedBlocked(kind)) : result;
+}
+
+function swapArguments(toolName: string, args: unknown, tags: Set<string>, callId?: string): Swapped {
   if (aliasStyle() !== "stand-ins") return { args, swapped: 0 };
   const swap = planSwapBack(swapToolName(toolName), args, aliases(), tags.has("pii") || tags.has("all"));
   // Old hash-like shapes: stand-ins now look real, so a model that writes a
@@ -765,13 +801,7 @@ export function swapToolArguments(toolName: string, args: unknown, tags: Set<str
   const invented = WRITE_TOOLS.has(toolName)
     ? [...new Set(aliasSpans(JSON.stringify(args ?? {})))].filter((token) => !seenLiterals.has(token) && !aliases().isStandIn(token))
     : [];
-  if (invented.length > 0) {
-    if (callId) {
-      if (blockedCalls.size > MAX_REMEMBERED) blockedCalls.clear();
-      blockedCalls.set(callId, invented);
-    }
-    return { args: {}, swapped: 0, blocked: true };
-  }
+  if (invented.length > 0) return block(callId, standInBlocked(invented));
   // Swap per span. A stand-in the book cannot resolve (often a stand-in-shaped
   // literal in source or docs), or one bound off the machine, stays a stand-in
   // in swap.input: that span fails on a name that does not exist rather than
