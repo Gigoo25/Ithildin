@@ -4,7 +4,8 @@
 # contain them (token-format doc examples and the does-not-rescan fixture).
 {
   pkgs,
-  src,
+  root,
+  src ? root,
 }:
 
 pkgs.runCommand "check-canary-literals"

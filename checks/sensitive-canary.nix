@@ -1,7 +1,8 @@
 # Unit tests for the sensitive-canary engine, apart from any agent.
 {
   pkgs,
-  src,
+  root,
+  src ? root + "/pkgs/sensitive-canary",
 }:
 
 pkgs.runCommand "check-sensitive-canary"

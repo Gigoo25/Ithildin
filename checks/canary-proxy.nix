@@ -4,8 +4,9 @@
 # synthetic bench (bench/README.md).
 {
   pkgs,
-  src,
-  engine,
+  root,
+  src ? root + "/pkgs/canary-proxy",
+  engine ? root + "/pkgs/sensitive-canary",
 }:
 
 pkgs.runCommand "check-canary-proxy"
