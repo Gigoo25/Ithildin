@@ -10,7 +10,7 @@ export interface BenchFixture {
   support: FixtureSupport;
   input: string;
   expectedSecrets: string[];
-  expectedRanges?: Array<{start:number;end:number}>;
+  expectedRanges?: Array<{start:number;end:number}> | undefined;
   mustPreserve: string[];
 }
 
@@ -30,7 +30,6 @@ export function fakeToken(alphabet: string, length: number, seed: number): strin
   return out;
 }
 
-const HEX = "0123456789abcdef";
 const B64URL = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
 const SECRET_A = `sk-ant-${fakeToken(B64URL, 95, 101)}`;

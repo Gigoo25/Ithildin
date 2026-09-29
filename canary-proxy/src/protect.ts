@@ -107,6 +107,7 @@ function protectedPath(filePath: string, cwd: string, roots: ReturnType<typeof p
     if (CLAUDE_SETTINGS.test(spelling)) return "config";
     if (roots.files.includes(spelling) || roots.dirs.some((dir) => within(spelling, dir))) return "config";
   }
+  return undefined;
 }
 
 // Removing or moving a directory takes what is below it: a repo (its .git)
@@ -116,6 +117,7 @@ function holdsProtected(filePath: string, cwd: string, roots: ReturnType<typeof 
     if (existsSync(path.join(spelling, ".git"))) return "git";
     if ([...roots.dirs, ...roots.files].some((root) => within(root, spelling))) return "config";
   }
+  return undefined;
 }
 
 // ── bash ────────────────────────────────────────────────────────────────────
@@ -248,6 +250,7 @@ function bashChange(command: string, cwd: string, roots: ReturnType<typeof prote
       }
     }
   }
+  return undefined;
 }
 
 // What a tool call would change that is protected, or undefined.
@@ -262,4 +265,5 @@ export function protectedChange(toolName: string, args: unknown, cwd: string): P
     const kind = protectedPath(target, cwd, roots);
     if (kind) return kind;
   }
+  return undefined;
 }

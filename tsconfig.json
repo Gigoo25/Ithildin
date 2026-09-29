@@ -1,0 +1,27 @@
+{
+  // Type checking only; Bun runs the sources as they are.
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "types": ["bun"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitReturns": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noPropertyAccessFromIndexSignature": false,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "allowUnreachableCode": false,
+    "allowUnusedLabels": false,
+    "useUnknownInCatchVariables": true,
+    "skipLibCheck": true
+  },
+  "include": ["sensitive-canary/**/*.ts", "canary-proxy/src/**/*.ts", "canary-proxy/bench/**/*.ts"],
+  "exclude": ["canary-proxy/engine"]
+}

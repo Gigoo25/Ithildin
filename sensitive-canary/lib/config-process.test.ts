@@ -46,7 +46,7 @@ it("honors scanBudgetMs from the user config and the environment override",()=>{
   const home=mkdtempSync(join(tmpdir(),"canary-budget-check-"));
   const file=join(home,"config.json");
   const script=`const m=await import(${JSON.stringify(new URL("./rules.ts",import.meta.url).href)}); console.log(JSON.stringify({budget:m.currentScanBudgetMs(),default:m.DEFAULT_SCAN_BUDGET_MS}));`;
-  const base={...process.env,HOME:home,XDG_CACHE_HOME:join(home,"cache"),SENSITIVE_CANARY_CONFIG:file};
+  const base: Record<string, string | undefined>={...process.env,HOME:home,XDG_CACHE_HOME:join(home,"cache"),SENSITIVE_CANARY_CONFIG:file};
   delete base.SENSITIVE_CANARY_SCAN_BUDGET_MS;
   writeFileSync(file,JSON.stringify({scanBudgetMs:45000,rules:[]}),{mode:0o600});
   const fromConfig=Bun.spawnSync({cmd:[process.execPath,"-e",script],env:base,timeout:10000});

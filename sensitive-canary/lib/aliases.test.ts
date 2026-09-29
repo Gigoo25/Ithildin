@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FIRST_NAMES } from "./first-names.ts";
-import { AliasBook, aliasKind, aliasMatches, aliasSpans, expandIpv6, isAliasValue, loadAliasKey, looksLikeAlias, registerAliasLabels, sessionAliasKey } from "./aliases.ts";
+import { AliasBook, aliasKind, aliasMatches, aliasSpans, expandIpv6, loadAliasKey, looksLikeAlias, registerAliasLabels, sessionAliasKey } from "./aliases.ts";
 
 const KEY = Buffer.alloc(32, 7);
 const book = () => new AliasBook(KEY);
@@ -30,7 +30,7 @@ it("maps identifying name parts consistently across hosts", () => {
 	const [a, c] = [b.host("zqxfalcon-web"), b.host("zqxfalcon-db")];
 	expect(a).toMatch(/^[a-z]{9}-web$/);
 	expect(a.split("-")[0]).toBe(c.split("-")[0]);
-	expect(b.host("zqxfalcon")).toBe(a.split("-")[0]);
+	expect(b.host("zqxfalcon")).toBe(a.split("-")[0]!);
 });
 
 it("mints stand-ins that look like the value: same shape, case and digits", () => {

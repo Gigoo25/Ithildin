@@ -1,10 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import sensitiveCanary from "../bench/hooks.ts";
+import { createHooks } from "../bench/hooks.ts";
 import { assignmentEdits, structuredEdits } from "../engine/lib/structured-text.ts";
 
 function setup() {
-  const handlers: Record<string, (e: any, c?: any) => any> = {};
-  sensitiveCanary({ on: (n: string, f: never) => void (handlers[n] = f), registerFlag() {}, registerCommand() {}, appendEntry() {}, getFlag: () => false, events: { on() {}, emit() {} } } as never);
+  const handlers = createHooks();
   const ctx = { sessionManager: { getSessionFile: () => undefined }, ui: { notify() {} } } as never;
   handlers.agent_start({}, ctx);
   return { handlers, ctx };
@@ -63,7 +62,7 @@ describe("structured documents", () => {
   it("falls back to text detection on malformed JSON", () => {
     const input = `{"password": "unterminated`;
     expect(structuredEdits(input)).toEqual([]);
-    const { handlers, ctx } = setup();
+    const { handlers } = setup();
     try {
       handlers.session_shutdown();
     } finally {

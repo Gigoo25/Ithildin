@@ -91,8 +91,8 @@ export interface RuntimeIdentity {
   username?: string;
   hostname?: string;
   homedir?: string;
-  gitName?: string;
-  gitEmail?: string;
+  gitName?: string | undefined;
+  gitEmail?: string | undefined;
   // From ~/.ssh/config: Host aliases, HostName values, User values.
   sshHosts?: string[];
   sshHostNames?: string[];

@@ -474,6 +474,7 @@ function readsSecret(name: string, input: unknown, tags: Set<string>, cwd: strin
   const targets = candidatePaths(record);
   if (blocksSecretAccess(tool, command, targets, tags, cwd)) return WITHHELD_NOTICE;
   if (blocksInventoryAccess(tool, command, targets, tags, cwd)) return INVENTORY_NOTICE;
+  return undefined;
 }
 
 function parseArgs(json: unknown): unknown {

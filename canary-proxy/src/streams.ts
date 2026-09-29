@@ -15,7 +15,7 @@ import { type Format, swapText, swapToolArguments, swapToolJson, swapWholeText }
 import { recordOriginal } from "./replay.ts";
 
 export interface SseEvent {
-  event?: string;
+  event?: string | undefined;
   data: string;
 }
 
@@ -90,7 +90,7 @@ class TextHold {
 
 class AnthropicRewriter implements Rewriter {
   swapped = 0;
-  private readonly calls = new Map<number, { name: string; id?: string; json: string }>();
+  private readonly calls = new Map<number, { name: string; id?: string | undefined; json: string }>();
   private readonly texts = new Map<number, TextHold>();
   constructor(private readonly tags: Set<string>) {}
 
@@ -231,7 +231,7 @@ class ChatRewriter implements Rewriter {
 
 // ── OpenAI Responses (incl. Codex) ──────────────────────────────────────────
 
-type ResponseItem = { type?: string; id?: string; call_id?: string; name?: string; arguments?: string; content?: Array<{ type?: string; text?: unknown }> };
+type ResponseItem = { type?: string; id?: string; call_id?: string; name?: string | undefined; arguments?: string; content?: Array<{ type?: string; text?: unknown }> };
 
 class ResponsesRewriter implements Rewriter {
   swapped = 0;

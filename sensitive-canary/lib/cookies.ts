@@ -24,11 +24,12 @@ function redactSegment(
   isSynthetic: IsSynthetic,
 ): CookieRedaction {
   const match = /^(\s*[^=;\s]+\s*=\s*)(.*?)(\s*)$/.exec(segment);
-  if (!match || match[2].length === 0 || isSynthetic(match[2])) {
+  const [, head = "", value = "", tail = ""] = match ?? [];
+  if (!match || value.length === 0 || isSynthetic(value)) {
     return { text: segment, hits: 0 };
   }
   return {
-    text: `${match[1]}${replaceValue(match[2])}${match[3]}`,
+    text: `${head}${replaceValue(value)}${tail}`,
     hits: 1,
   };
 }

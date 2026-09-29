@@ -2,11 +2,10 @@ import { describe, expect, it } from "bun:test";
 import { planRedaction } from "../engine/lib/redaction-spans.ts";
 import { inspectDocument, assignmentEdits, STRUCTURED_MAX_CHARS } from "../engine/lib/structured-text.ts";
 import { withScanBudget, type LocatedFinding } from "../engine/lib/rules.ts";
-import sensitiveCanary from "../bench/hooks.ts";
+import { createHooks } from "../bench/hooks.ts";
 const finding = (secretValue: string, start: number, category: "pii" | "secret" = "secret"): LocatedFinding => ({ ruleId:"fixture", description:"fixture", category, secretValue, start, end:start+secretValue.length, score:1, matchRedacted:"" });
 function sanitize(text: string, tag = "", repeat = false) {
-  const handlers: Record<string, (...args:any[])=>any>={};
-  sensitiveCanary({on:(name:string,fn:any)=>{handlers[name]=fn;},registerFlag(){},registerCommand(){},appendEntry(){},getFlag:()=>false,events:{on(){},emit(){}}} as never);
+  const handlers=createHooks();
   const ctx={sessionManager:{getSessionFile:()=>undefined},ui:{notify(){}}};
   handlers.agent_start({},ctx);
   try {

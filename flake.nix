@@ -12,7 +12,9 @@
       # Every checks/<name>.nix becomes check <name>, as in the dotfiles flake
       # this repo was split from.
       checkNames = map (file: nixpkgs.lib.removeSuffix ".nix" file) (
-        builtins.filter (file: nixpkgs.lib.hasSuffix ".nix" file) (builtins.attrNames (builtins.readDir ./checks))
+        builtins.filter (file: nixpkgs.lib.hasSuffix ".nix" file) (
+          builtins.attrNames (builtins.readDir ./checks)
+        )
       );
     in
     {
@@ -29,6 +31,13 @@
           canary-proxy-package = self.packages.${system}.canary-proxy;
         };
 
-      formatter.${system} = pkgs.nixfmt-rfc-style;
+      # nixfmt alone reads stdin; `nix fmt` with no arguments formats the repo.
+      formatter.${system} = pkgs.writeShellApplication {
+        name = "fmt";
+        runtimeInputs = [ pkgs.nixfmt ];
+        text = ''
+          find "''${@:-.}" -name '*.nix' -type f -not -path '*/node_modules/*' -exec nixfmt {} +
+        '';
+      };
     };
 }

@@ -5,7 +5,6 @@ import { SCAN_WINDOW_CHARS } from "../engine/lib/rules.ts";
 const alphabet="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 const token=`sk-ant-${fakeToken(alphabet,95,918)}`;
 const bearer=fakeToken(alphabet,48,719);
-const cookie=fakeToken(alphabet,25,117);
 function fixture(id:string,input:string,expectedSecrets:string[],mustPreserve:string[],representation:BenchFixture["representation"]="text"):BenchFixture {
   return {id:`review-${id}`,group:id.split("-")[0]!,description:"Synthetic review acceptance",input,expectedSecrets,mustPreserve,representation,support:"supported"};
 }

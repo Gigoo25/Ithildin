@@ -1,0 +1,9 @@
+{
+  "name": "canary",
+  "private": true,
+  "type": "module",
+  "description": "Type definitions only, for tsc. Nothing here is loaded at runtime: the engine and proxy use Bun and Node built-ins alone.",
+  "devDependencies": {
+    "@types/bun": "1.4.2"
+  }
+}

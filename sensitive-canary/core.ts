@@ -19,7 +19,7 @@
 import { randomBytes } from "node:crypto";
 import { readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { type Finding, type LocatedFinding, mergeRanges, scanWindows, SCAN_WINDOW_OVERLAP, assertScanBudget, clearWindowCache, exportWindowCache, importWindowCache, windowCacheRevision, aliasStyle, aliasKeyScope, ruleAliasLabel, ruleGeneralization, inventoryStandInValue, isPromptOnlyRule, GENERALIZE_PATH } from "./lib/rules.ts";
+import { type LocatedFinding, mergeRanges, scanWindows, SCAN_WINDOW_OVERLAP, assertScanBudget, clearWindowCache, exportWindowCache, importWindowCache, windowCacheRevision, aliasStyle, aliasKeyScope, ruleAliasLabel, ruleGeneralization, inventoryStandInValue, isPromptOnlyRule, GENERALIZE_PATH } from "./lib/rules.ts";
 import { AliasBook, aliasKeyPath, isAliasValue, loadAliasKey, SESSION_KEY_SUFFIX } from "./lib/aliases.ts";
 import { planRedaction } from "./lib/redaction-spans.ts";
 import { redactEncoded } from "./lib/encoded.ts";
@@ -32,16 +32,6 @@ import { isSecretFile } from "./lib/secret-files.ts";
 
 // Larger strings skip regex scanning and are synthesized in full.
 export const MAX_SCAN_BYTES = 2_000_000;
-
-interface TextChunk {
-  type: "text";
-  text: string;
-}
-
-interface ThinkingChunk {
-  type: "thinking";
-  thinking: string;
-}
 
 // Bounded memo so the context handler does not re-scan the whole transcript on
 // every API call. Keyed by exact text.

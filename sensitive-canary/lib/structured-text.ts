@@ -1,5 +1,5 @@
 // Structured DOCUMENT text only. It never traverses provider numeric fields.
-import { assertScanBudget, type LocatedFinding } from "./rules.ts";
+import { assertScanBudget, type Category, type LocatedFinding } from "./rules.ts";
 import type { ScalarEnvelope } from "./redaction-spans.ts";
 const SECRET_LABELS = new Set(["password", "clientsecret", "apikey", "accesstoken", "refreshtoken", "privatekey"]);
 const PII_LABELS = new Set(["accountnumber", "bankaccountnumber", "passportnumber"]);
@@ -64,7 +64,7 @@ export function inspectDocument(text: string, check = assertScanBudget): Documen
       if(frame) frame.key=null;
       if (!key || decoded.length === 0) continue;
       const label=normalize(key);
-      const category=SECRET_LABELS.has(label) ? "secret" : PII_LABELS.has(label) ? "pii" : null;
+      const category: Category | null=SECRET_LABELS.has(label) ? "secret" : PII_LABELS.has(label) ? "pii" : null;
       if (!category) continue;
       // Boolean/null/empty sentinels are handled above. Nonempty explicit
       // credential values are not exempted merely because they look weak.
@@ -98,7 +98,7 @@ export function assignmentEdits(text: string, check = assertScanBudget): Located
     check();
     if(m) {
       const label=normalize(m[1]!);
-      const category=SECRET_LABELS.has(label) ? "secret" : PII_LABELS.has(label) ? "pii" : null;
+      const category: Category | null=SECRET_LABELS.has(label) ? "secret" : PII_LABELS.has(label) ? "pii" : null;
       const group=m[2] !== undefined ? 2 : m[3] !== undefined ? 3 : 4;
       const val=m[group]!;
       if(category && val.length && !(group === 4 && /^(?:null|true|false)$/.test(val))) {

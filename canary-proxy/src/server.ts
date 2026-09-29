@@ -160,7 +160,7 @@ export function createHandler(routes: Record<string, Route>, fetchUpstream: type
     headers.delete(SESSION_HEADER);
     headers.set("accept-encoding", "identity");
 
-    let body: BodyInit | undefined;
+    let body: RequestInit["body"];
     let tags = new Set<string>();
     let hits = 0;
     let counts: Counts | undefined;

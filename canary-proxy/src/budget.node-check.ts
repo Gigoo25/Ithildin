@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { RULES, beginScanBudget, clearWindowCache, exportWindowCache, importWindowCache, scanWindows, setScanBudgetMs, withScanBudget } from "../engine/lib/rules.ts";
-import sensitiveCanary from "../bench/hooks.ts";
+import { createHooks } from "../bench/hooks.ts";
 
 function withRules(work: () => void): void {
   const saved = RULES.splice(0);
@@ -85,15 +85,7 @@ test("provider hooks use one scan envelope across payload fields, renewed on the
   // Each field is cheaper than the per-rule cap, but their combined cost exceeds
   // the unchanged 10-second default. Fake time makes this test instantaneous.
   RULES.push(rule(() => { clock += 6_000; return true; }));
-  const handlers: Record<string, Function> = {};
-  sensitiveCanary({
-    on: (name: string, fn: Function) => { handlers[name] = fn; },
-    registerFlag() {},
-    registerCommand() {},
-    appendEntry() {},
-    getFlag: () => false,
-    events: { on() {}, emit() {} },
-  } as any);
+  const handlers = createHooks();
   handlers.session_shutdown(); // Clear memoized fixtures from other tests.
   // Keep the old envelope so the fixture costs below keep their meaning.
   setScanBudgetMs(10_000);
@@ -150,8 +142,10 @@ test("exports completed windows without values and replays them", () => {
     const replay = scanWindows(text);
     assert.deepEqual(replay.trips, []);
     assert.equal(replay.findings.length, 1);
-    assert.equal(replay.findings[0].secretValue, secret);
-    assert.ok(replay.findings[0].description.length > 0);
+    const [finding] = replay.findings;
+    assert.ok(finding);
+    assert.equal(finding.secretValue, secret);
+    assert.ok(finding.description.length > 0);
   } finally {
     clearWindowCache();
   }

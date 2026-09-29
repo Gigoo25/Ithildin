@@ -37,8 +37,7 @@ it("generalizes wording end to end without nesting", () => {
 		}), { mode: 0o600 });
 		const script = [
 			"const m = await import(" + JSON.stringify(new URL("../bench/hooks.ts", import.meta.url).href) + ");",
-			"const h = {};",
-			"m.default({ on: (n, fn) => { h[n] = fn; }, registerFlag(){}, registerCommand(){}, appendEntry(){}, getFlag: () => false, events: { on(){}, emit(){} } });",
+			"const h = m.createHooks();",
 			"const ctx = { cwd: process.cwd(), sessionManager: { getBranch: () => [], getSessionFile: () => undefined }, ui: { notify(){} } };",
 			"h.agent_start({}, ctx);",
 			"const first = (await h.context({ messages: [{ role: 'user', content: 'I have a Headache today' }] }, ctx)).messages[0].content;",
@@ -73,8 +72,7 @@ it("loads generalize.json beside the config and honors prompt-only scope", () =>
 		}), { mode: 0o600 });
 		const script = [
 			"const m = await import(" + JSON.stringify(new URL("../bench/hooks.ts", import.meta.url).href) + ");",
-			"const h = {};",
-			"m.default({ on: (n, fn) => { h[n] = fn; }, registerFlag(){}, registerCommand(){}, appendEntry(){}, getFlag: () => false, events: { on(){}, emit(){} } });",
+			"const h = m.createHooks();",
 			"const ctx = { cwd: process.cwd(), sessionManager: { getBranch: () => [], getSessionFile: () => undefined }, ui: { notify(){} } };",
 			"h.agent_start({}, ctx);",
 			"const prompt = (await h.context({ messages: [{ role: 'user', content: 'ZqxShield flags my migraine app' }] }, ctx)).messages[0].content;",

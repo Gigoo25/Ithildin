@@ -1048,7 +1048,7 @@ const LOCAL_RULES: Rule[] = [
     validate: (value: string) => {
       const match = /^(-?\d{1,3}(?:\.\d+)?)\s*°?\s*([NS])?[\s,;]+(-?\d{1,3}(?:\.\d+)?)\s*°?\s*([EW])?$/i.exec(value);
       if (!match) return false;
-      const [, latRaw, ns, lonRaw, ew] = match;
+      const [, latRaw = "", ns, lonRaw = "", ew] = match;
       if (Math.abs(Number(latRaw)) > 90 || Math.abs(Number(lonRaw)) > 180) return false;
       const frac = (part: string): boolean => part.includes(".");
       const marked = value.includes("°") || ns !== undefined || ew !== undefined;
@@ -1239,7 +1239,7 @@ export function isPromptOnlyRule(ruleId: string): boolean {
   return ruleId.startsWith(GENERALIZE_ID_PREFIX) && activeRules().find((rule) => rule.id === ruleId)?.generalizeScope === "prompts";
 }
 
-export function inventoryLiterals(): Array<{ ruleId: string; literal: string; label?: string }> {
+export function inventoryLiterals(): Array<{ ruleId: string; literal: string; label?: string | undefined }> {
   return activeRules().flatMap((rule) =>
     rule.inventoryLiteral === undefined ? [] : [{ ruleId: rule.id, literal: rule.inventoryLiteral, label: rule.label }],
   );
@@ -1797,8 +1797,7 @@ export function scanWindows(
   const startedAt = Date.now();
   const totalBudget = remainingBudget();
   let consecutiveTrips = 0;
-  for (let i = 0; i < slices.length; i++) {
-    const slice = slices[i];
+  for (const [i, slice] of slices.entries()) {
     const sliceText = text.slice(slice.start, slice.end);
     // Cache first: a window that completed before is free, and an envelope
     // another string already spent must not turn a known-clean slice into an
