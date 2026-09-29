@@ -355,6 +355,19 @@ describe("secret reads", () => {
     expect(allowed.messages.find((m) => m.role === "tool")!.content).toBe(VALUE);
   });
 
+  it("an Anthropic prompt's [allow-secrets] outlives the tool results after it", () => {
+    const messages = (prompt: string) => [
+      { role: "user", content: prompt },
+      { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "bash", input: { command: "ls" } }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "app" }, { type: "text", text: "<system-reminder>note</system-reminder>" }] },
+      { role: "assistant", content: [{ type: "tool_use", id: "t2", name: "bash", input: { command: "cat .env" } }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "t2", content: VALUE }] },
+    ];
+    const result = (prompt: string) => ((redactRequest("anthropic", { messages: messages(prompt) }).body.messages as Array<{ content: unknown }>)[4]!.content as Array<{ content: unknown }>)[0]!.content;
+    expect(result("show it")).toBe(WITHHELD_NOTICE);
+    expect(result("[allow-secrets] show it")).toBe(VALUE);
+  });
+
   it("withholds Responses outputs by call id and leaves .env.example alone", () => {
     const input = [
       { role: "user", content: [{ type: "input_text", text: "compare" }] },

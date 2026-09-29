@@ -76,8 +76,16 @@ export function requestAllowTags(format: Format, body: Record<string, unknown>):
   const users: Message[] = [];
   for (const item of list) {
     if (!item || typeof item !== "object" || (item as { role?: unknown }).role !== "user") continue;
-    const blocks = textBlocks((item as { content?: unknown }).content);
-    if (blocks.length > 0) users.push({ role: "user", content: blocks });
+    const content = (item as { content?: unknown }).content;
+    const blocks = textBlocks(content);
+    if (blocks.length === 0) continue;
+    // Anthropic tool results come back as user turns, often with harness text
+    // beside them. Taken as the latest prompt, they cancelled the typed tag
+    // at the first tool call, so [allow-secrets] never reached a read. Such
+    // a turn decides only when it carries a tag of its own.
+    const results = Array.isArray(content) && content.some((block) => (block as { type?: unknown } | null)?.type === "tool_result");
+    if (results && latestAllowTags([{ role: "user", content: blocks }]).size === 0) continue;
+    users.push({ role: "user", content: blocks });
   }
   return latestAllowTags(users);
 }
