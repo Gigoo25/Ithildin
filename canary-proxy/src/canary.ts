@@ -168,10 +168,30 @@ function redactOpenAi(format: Format, body: Record<string, unknown>, tags: Set<s
 
 export function redactRequest(format: Format, body: Record<string, unknown>): { body: Record<string, unknown>; hits: number; tags: Set<string> } {
   const tags = requestAllowTags(format, body);
-  const stripped = stripAllowTags(format, body);
-  if (tags.has("all")) return { body: stripped, hits: 0, tags };
+  // Each prompt's own tag decides its images, read before tags are stripped;
+  // the notice goes in after, so its own tag mention survives.
+  const images = withholdImages(format, stripAllowTags(format, body), body);
+  if (tags.has("all")) return { body: images.body, hits: images.hits, tags };
+  const stripped = images.body;
   const result = redactBody(format, stripped, tags);
-  return { body: result.body, hits: result.hits, tags };
+  return { body: result.body, hits: result.hits + images.hits, tags };
+}
+
+// Query parameter values, scanned like body strings. API query strings are
+// flags (?beta=true), so this rarely finds anything, but a URL is sent too.
+export function redactQuery(search: string, tags: Set<string>): { search: string; hits: number } {
+  if (search === "" || search === "?" || tags.has("all")) return { search, hits: 0 };
+  const params = new URLSearchParams(search);
+  let hits = 0;
+  withScanBudget(() => {
+    for (const [name, value] of [...params]) {
+      const result = redactValue(value, tags, name, undefined, ["query", name], true);
+      if (result.hits === 0) continue;
+      hits += result.hits;
+      params.set(name, String(result.value));
+    }
+  });
+  return hits === 0 ? { search, hits } : { search: `?${params}`, hits };
 }
 
 // One scan envelope per request. Split out so tests can set the allow tags.
@@ -371,14 +391,105 @@ function withholdSecretLines(content: unknown, secret: (listed: string) => boole
   return hits === 0 ? { content, hits } : { content: parts, hits };
 }
 
+// ── images ──────────────────────────────────────────────────────────────────
+// Images, PDFs and audio are opaque to the rules: a screenshot of a terminal
+// or a scanned letter would reach the provider whole. Inline ones are
+// replaced with a notice unless the prompt that brought them in carries
+// [allow-images] (or [allow-all]): the user's own message for a pasted image,
+// the latest typed prompt before it for one a tool read. Deciding per prompt,
+// not per request, keeps earlier turns byte-stable, and so the prompt cache.
+// Images by URL or uploaded file id are already the provider's to fetch.
+
+export const IMAGE_NOTICE = "Image withheld: images and documents cannot be checked for sensitive values, so this one is not shown. Ask the user to include [allow-images] in their prompt if you need to see it.";
+const IMAGE_TAG = /\[allow-(?:images?|all)\]/i;
+
+function isInlineData(value: unknown): boolean {
+  return typeof value === "string" && value.startsWith("data:");
+}
+
+// Anthropic image/document with a base64 source; chat image_url, file and
+// input_audio parts; Responses input_image and input_file.
+function isOpaqueBlock(block: Record<string, unknown>): boolean {
+  const source = block.source as { type?: unknown } | undefined;
+  switch (block.type) {
+    case "image":
+    case "document":
+      return source?.type === "base64";
+    case "image_url":
+      return isInlineData((block.image_url as { url?: unknown } | undefined)?.url);
+    case "input_image":
+      return isInlineData(block.image_url);
+    case "file":
+      return typeof (block.file as { file_data?: unknown } | undefined)?.file_data === "string";
+    case "input_file":
+      return typeof block.file_data === "string";
+    case "input_audio":
+      return true;
+    default:
+      return false;
+  }
+}
+
+function withheldImage(format: Format): Record<string, unknown> {
+  return { type: format === "responses" ? "input_text" : "text", text: IMAGE_NOTICE };
+}
+
+function replaceImages(value: unknown, format: Format, count: { hits: number }): unknown {
+  if (Array.isArray(value)) {
+    let changed = false;
+    const out = value.map((item) => {
+      const next = replaceImages(item, format, count);
+      if (next !== item) changed = true;
+      return next;
+    });
+    return changed ? out : value;
+  }
+  if (!value || typeof value !== "object") return value;
+  const record = value as Record<string, unknown>;
+  if (isOpaqueBlock(record)) {
+    count.hits++;
+    return withheldImage(format);
+  }
+  let changed = false;
+  const out: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(record)) {
+    out[key] = replaceImages(child, format, count);
+    if (out[key] !== child) changed = true;
+  }
+  return changed ? out : value;
+}
+
+// Tags are read from `tagged` (the body as the client sent it), images
+// replaced in `body` (the same body with its tags stripped).
+export function withholdImages(format: Format, body: Record<string, unknown>, tagged = body): { body: Record<string, unknown>; hits: number } {
+  const key = format === "responses" ? "input" : "messages";
+  const list = body[key];
+  const original = tagged[key];
+  if (!Array.isArray(list) || !Array.isArray(original)) return { body, hits: 0 };
+  const count = { hits: 0 };
+  let allowed = false;
+  const out = list.map((item, i) => {
+    if (!item || typeof item !== "object") return item;
+    const record = (original[i] ?? item) as { role?: unknown; content?: unknown };
+    // A tool-result turn is not a prompt, even with harness text beside it.
+    const results = Array.isArray(record.content) && record.content.some((block) => (block as { type?: unknown } | null)?.type === "tool_result");
+    if (record.role === "user" && !results) {
+      const typed = textBlocks(record.content);
+      if (typed.length > 0) allowed = typed.some((block) => IMAGE_TAG.test(block.text));
+    }
+    return allowed ? item : replaceImages(item, format, count);
+  });
+  return count.hits === 0 ? { body, hits: 0 } : { body: { ...body, [key]: out }, hits: count.hits };
+}
+
 // ── provider blindness ──────────────────────────────────────────────────────
 // The provider must not learn that values are swapped. The proxy adds nothing
 // that mentions redaction, and the allow tags the user types are removed from
 // the typed text it forwards; they still set this request's policy here. Tool
 // output keeps them: rewriting it would corrupt what a command printed.
 
-// Same tag set the engine parses (resolveTagPriority).
-const ALLOW_TAG = /\[(?:allow|mask)-(?:all|secrets?|pii)\][ \t]?/gi;
+// Same tag set the engine parses (resolveTagPriority), plus [allow-images].
+const ALLOW_TAG = /\[(?:(?:allow|mask)-(?:all|secrets?|pii)|allow-images?)\][ \t]?/gi;
 
 function stripTagText(content: unknown): unknown {
   if (typeof content === "string") return content.replace(ALLOW_TAG, "");

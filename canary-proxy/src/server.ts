@@ -12,13 +12,13 @@
 // Responses: tool-call arguments get stand-ins swapped back to real values
 // (see streams.ts), so tools run against real hosts and paths.
 //
-// It fails closed: an unknown route, an unreadable JSON body, or a compressed
-// request body is refused instead of forwarded raw.
+// It fails closed: an unknown route, an unreadable JSON body, a compressed
+// request body, or a WebSocket upgrade is refused instead of forwarded raw.
 
 import { readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { type Format, initEngine, redactRequest, saveScanCache } from "./canary.ts";
+import { type Format, initEngine, redactQuery, redactRequest, saveScanCache } from "./canary.ts";
 import { createRewriter, formatSse, parseSseBlock, swapResponseBody } from "./streams.ts";
 
 export interface Route {
@@ -63,7 +63,7 @@ export function upstreamUrl(route: Route, rest: string, search: string): string 
   return route.upstream.replace(/\/+$/, "") + tail + search;
 }
 
-const HOP_HEADERS = ["host", "connection", "content-length", "accept-encoding", "transfer-encoding", "keep-alive"];
+const HOP_HEADERS = ["host", "connection", "content-length", "accept-encoding", "transfer-encoding", "keep-alive", "upgrade", "te", "trailer", "proxy-connection", "proxy-authorization"];
 
 function log(line: string): void {
   process.stderr.write(`canary-proxy: ${line}\n`);
@@ -115,9 +115,10 @@ export function createHandler(routes: Record<string, Route>, fetchUpstream: type
     const match = /^\/([^/]+)(\/.*)?$/.exec(url.pathname);
     const route = match ? routes[match[1]!] : undefined;
     if (!match || !route) return refuse(404, `no route for ${url.pathname.split("/")[1] ?? ""}`);
+    // A socket's frames cannot be scanned one request at a time.
+    if (request.headers.get("upgrade")) return refuse(501, "WebSocket upgrades cannot be scanned");
     const rest = match[2] ?? "";
     const format = formatForPath(rest);
-    const target = upstreamUrl(route, rest, url.search);
 
     const headers = new Headers(request.headers);
     for (const name of HOP_HEADERS) headers.delete(name);
@@ -160,6 +161,15 @@ export function createHandler(routes: Record<string, Route>, fetchUpstream: type
         return refuse(415, `non-JSON request body (${type || "no content-type"}) cannot be scanned`);
       }
     }
+    let search: string;
+    try {
+      const query = redactQuery(url.search, tags);
+      search = query.search;
+      hits += query.hits;
+    } catch (error) {
+      return refuse(500, `query redaction failed (${(error as Error).name}), refusing to forward unscanned`);
+    }
+    const target = upstreamUrl(route, rest, search);
 
     let upstream: Response;
     try {

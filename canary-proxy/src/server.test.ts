@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { initEngine, redactRequest, requestCwd, stripAllowTags, swapText, WITHHELD_LINE, WITHHELD_NOTICE } from "./canary.ts";
+import { IMAGE_NOTICE, initEngine, redactRequest, requestCwd, stripAllowTags, swapText, WITHHELD_LINE, WITHHELD_NOTICE } from "./canary.ts";
 import { createHandler, DEFAULT_ROUTES, loadRoutes, upstreamUrl } from "./server.ts";
 
 const EMAIL = "jane.doe@acme-corp.com";
@@ -446,5 +446,82 @@ describe("routes", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("images", () => {
+  const PNG = { type: "base64", media_type: "image/png", data: "iVBORw0KGgo=" };
+  const withheld = { type: "text", text: IMAGE_NOTICE };
+
+  it("withholds inline images and documents unless their prompt allows them", () => {
+    const body = redactRequest("anthropic", { messages: [
+      { role: "user", content: [{ type: "text", text: "what is on screen" }, { type: "image", source: PNG }] },
+      { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "Read", input: { file_path: "/tmp/a.pdf" } }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: [{ type: "document", source: { ...PNG, media_type: "application/pdf" } }] }] },
+      { role: "user", content: [{ type: "text", text: "[allow-images] now this" }, { type: "image", source: PNG }] },
+      { role: "assistant", content: [{ type: "tool_use", id: "t2", name: "Read", input: { file_path: "/tmp/b.png" } }] },
+      // Harness text beside a tool result is not a new prompt.
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "t2", content: [{ type: "image", source: PNG }] }, { type: "text", text: "<system-reminder>x</system-reminder>" }] },
+      { role: "user", content: [{ type: "text", text: "and a link" }, { type: "image", source: { type: "url", url: "https://example.com/a.png" } }] },
+    ] });
+    const messages = body.body.messages as Array<{ content: Array<Record<string, unknown>> }>;
+    expect(messages[0]!.content[1]).toEqual(withheld);
+    expect((messages[2]!.content[0]!.content as unknown[])[0]).toEqual(withheld);
+    expect(messages[3]!.content[0]!.text).toBe("now this");
+    expect(messages[3]!.content[1]).toEqual({ type: "image", source: PNG });
+    expect((messages[5]!.content[0]!.content as unknown[])[0]).toEqual({ type: "image", source: PNG });
+    expect(messages[6]!.content[1]!.type).toBe("image");
+    expect(body.hits).toBe(2);
+  });
+
+  it("withholds chat and Responses inline parts", () => {
+    const data = "data:image/png;base64,iVBORw0KGgo=";
+    const chat = redactRequest("chat", { messages: [{ role: "user", content: [
+      { type: "text", text: "look" },
+      { type: "image_url", image_url: { url: data } },
+      { type: "image_url", image_url: { url: "https://example.com/a.png" } },
+      { type: "file", file: { file_data: "JVBERi0=" } },
+      { type: "input_audio", input_audio: { data: "UklGRg==", format: "wav" } },
+    ] }] }).body.messages as Array<{ content: Array<Record<string, unknown>> }>;
+    expect(chat[0]!.content.map((part) => part.type)).toEqual(["text", "text", "image_url", "text", "text"]);
+    const responses = redactRequest("responses", { input: [
+      { role: "user", content: [{ type: "input_text", text: "look" }, { type: "input_image", image_url: data }, { type: "input_file", file_data: "JVBERi0=" }] },
+      { type: "function_call_output", call_id: "c1", output: [{ type: "input_image", image_url: data }] },
+    ] }).body.input as Array<{ content?: unknown[]; output?: unknown[] }>;
+    const notice = { type: "input_text", text: IMAGE_NOTICE };
+    expect(responses[0]!.content!.slice(1)).toEqual([notice, notice]);
+    expect(responses[1]!.output).toEqual([notice]);
+  });
+
+  it("[allow-all] passes images too, and the tag is stripped", () => {
+    const body = redactRequest("anthropic", { messages: [{ role: "user", content: [{ type: "text", text: "[allow-all] see" }, { type: "image", source: PNG }] }] }).body;
+    expect(body.messages).toEqual([{ role: "user", content: [{ type: "text", text: "see" }, { type: "image", source: PNG }] }]);
+  });
+});
+
+describe("request edges", () => {
+  it("redacts query values and strips hop headers", async () => {
+    const up = fakeUpstream(() => Response.json({ content: [] }));
+    const handler = createHandler(DEFAULT_ROUTES, up.fetch);
+    const request = new Request(`http://127.0.0.1/anthropic/v1/messages?beta=true&who=${encodeURIComponent(EMAIL)}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", te: "trailers", "proxy-authorization": "Basic x" },
+      body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+    });
+    await handler(request);
+    const seen = up.seen[0]!;
+    const query = new URL(seen.url).searchParams;
+    expect(query.get("beta")).toBe("true");
+    expect(query.get("who")).toBe(standIn);
+    expect(seen.headers.get("te")).toBeNull();
+    expect(seen.headers.get("proxy-authorization")).toBeNull();
+  });
+
+  it("refuses WebSocket upgrades", async () => {
+    const up = fakeUpstream(() => Response.json({}));
+    const handler = createHandler(DEFAULT_ROUTES, up.fetch);
+    const request = new Request("http://127.0.0.1/openai-codex/responses", { headers: { upgrade: "websocket", connection: "Upgrade" } });
+    expect((await handler(request)).status).toBe(501);
+    expect(up.seen.length).toBe(0);
   });
 });
