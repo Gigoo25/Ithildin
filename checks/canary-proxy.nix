@@ -5,8 +5,8 @@
 {
   pkgs,
   root,
-  src ? root + "/pkgs/canary-proxy",
-  engine ? root + "/pkgs/sensitive-canary",
+  src ? root + "/canary-proxy",
+  engine ? root + "/sensitive-canary",
 }:
 
 pkgs.runCommand "check-canary-proxy"

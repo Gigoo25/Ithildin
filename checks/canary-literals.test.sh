@@ -4,7 +4,7 @@ checker=$(realpath "${1:?checker path required}")
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 src="$work/source with spaces"
-allowed="$src/pkgs/sensitive-canary"
+allowed="$src/sensitive-canary"
 mkdir -p "$allowed"
 printf 'clean\n' > "$src/clean.ts"
 bash "$checker" "$src"

@@ -2,7 +2,7 @@
 // with no agent attached. Two front ends share it:
 //   - Pi's extension (config/pi/extensions/sensitive-canary), which hooks
 //     each point of Pi's event bus.
-//   - canary-proxy (pkgs/canary-proxy), which redacts provider request
+//   - canary-proxy (../canary-proxy), which redacts provider request
 //     bodies for any agent whose base URL points at it.
 //
 // lib/{rules,inspector}.ts are vendored from upstream coo-quack/sensitive-canary

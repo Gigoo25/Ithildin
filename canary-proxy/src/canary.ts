@@ -1,7 +1,7 @@
 // Canary engine as the proxy uses it: redact a provider request body, and
 // swap stand-ins in the model's tool calls back to real values.
 //
-// The engine is pkgs/sensitive-canary (core.ts + lib/), and this proxy is
+// The engine is ../sensitive-canary (core.ts + lib/), and this proxy is
 // the only place it runs: every agent (Claude, Pi, local models) points its
 // provider base URL here. The proxy is a single long-lived process for every agent and session, so its stand-ins come from
 // one persistent key (proxy-alias-key): a restart keeps them stable, and so

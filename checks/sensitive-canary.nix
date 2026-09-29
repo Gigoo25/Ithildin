@@ -2,7 +2,7 @@
 {
   pkgs,
   root,
-  src ? root + "/pkgs/sensitive-canary",
+  src ? root + "/sensitive-canary",
 }:
 
 pkgs.runCommand "check-sensitive-canary"
