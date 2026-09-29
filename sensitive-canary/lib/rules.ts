@@ -381,28 +381,24 @@ function loadDefaultConfig(): CanaryConfig {
   return readJsonFile(DEFAULT_CONFIG_PATH) as CanaryConfig;
 }
 
-// Load user config if it exists. Returns null when the file is absent (the
-// common case). JSON parse errors and permission issues are reported on stderr
-// so that a broken config file is not silently ignored.
-function loadUserConfig(): CanaryConfig | null {
+// A config file's parsed JSON, or undefined when the file is absent (the
+// common case) or unreadable. JSON parse errors and permission issues are
+// reported on stderr so that a broken config file is not silently ignored.
+export function readConfigFile(filePath: string, name: string): unknown {
   try {
     // A FIFO or a device here would block the read until something wrote to
     // it, and a hook that never returns stalls the turn. The transcript reader
     // and the file scanner already check this. This path did not.
-    if (!statSync(USER_CONFIG_PATH).isFile()) {
-      process.stderr.write(
-        "sensitive-canary: user config is not a regular file, ignoring\n",
-      );
-      return null;
+    if (!statSync(filePath).isFile()) {
+      process.stderr.write(`sensitive-canary: ${name} is not a regular file, ignoring\n`);
+      return undefined;
     }
-    return readJsonFile(USER_CONFIG_PATH) as CanaryConfig;
+    return readJsonFile(filePath);
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== "ENOENT") {
-      process.stderr.write(
-        "sensitive-canary: could not read user config (details withheld)\n",
-      );
+      process.stderr.write(`sensitive-canary: could not read ${name} (details withheld)\n`);
     }
-    return null;
+    return undefined;
   }
 }
 
@@ -429,6 +425,47 @@ function parseScanBudget(value: unknown): number | null {
     : null;
 }
 
+export interface UserSettings {
+  contextWindow: number | null;
+  ruleConfigs: RuleConfig[];
+  inventory: unknown[];
+  generalize: unknown[];
+  aliasKey: "session" | "shared";
+  aliases: "stand-ins" | "tokens";
+  scanBudgetMs: number | null;
+}
+
+// The settings a user config asks for, each invalid one ignored with a
+// warning. `envBudget`: SENSITIVE_CANARY_SCAN_BUDGET_MS, which wins over the
+// file as the per-invocation override.
+export function readUserSettings(userConfig: unknown, envBudget: number | null): UserSettings {
+  const config = (userConfig && typeof userConfig === "object" ? userConfig : {}) as Partial<Record<keyof CanaryConfig, unknown>>;
+  const warn = (message: string) => process.stderr.write(`sensitive-canary: ${message}, ignoring\n`);
+  const settings: UserSettings = {
+    contextWindow: null, ruleConfigs: [], inventory: [], generalize: [],
+    aliasKey: "session", aliases: "stand-ins", scanBudgetMs: envBudget,
+  };
+  const { contextWindow, rules, inventory, generalize, aliasKey, aliases, scanBudgetMs } = config;
+  if (typeof contextWindow === "number" && Number.isInteger(contextWindow) && contextWindow >= 1) {
+    settings.contextWindow = contextWindow;
+  } else if (contextWindow != null) warn("invalid contextWindow in user config");
+  if (Array.isArray(rules)) settings.ruleConfigs = rules as RuleConfig[];
+  else if (rules != null) warn('"rules" in user config must be an array');
+  if (Array.isArray(inventory)) settings.inventory = inventory;
+  else if (inventory != null) warn('"inventory" in user config must be an array');
+  if (Array.isArray(generalize)) settings.generalize = generalize;
+  else if (generalize != null) warn('"generalize" in user config must be an array');
+  if (aliasKey === "session" || aliasKey === "shared") settings.aliasKey = aliasKey;
+  else if (aliasKey != null) warn('aliasKey in user config must be "session" or "shared"');
+  if (aliases === "tokens" || aliases === "stand-ins") settings.aliases = aliases;
+  else if (aliases != null) warn('aliases in user config must be "stand-ins" or "tokens"');
+  if (envBudget === null) {
+    settings.scanBudgetMs = parseScanBudget(scanBudgetMs);
+    if (settings.scanBudgetMs === null && scanBudgetMs != null) warn("invalid scanBudgetMs in user config");
+  }
+  return settings;
+}
+
 // Build the default rule list and record user configs for the later override
 // pass. buildRules skips invalid built-ins with a warning. applyUserOverrides
 // and compileInventoryEntry validate user entries later.
@@ -447,66 +484,18 @@ function buildRules(): Rule[] {
     }
   }
 
-  const userConfig = loadUserConfig();
-  const envBudget = parseScanBudget(process.env.SENSITIVE_CANARY_SCAN_BUDGET_MS);
-  if (userConfig) {
-    if (
-      typeof userConfig.contextWindow === "number" &&
-      Number.isInteger(userConfig.contextWindow) &&
-      userConfig.contextWindow >= 1
-    ) {
-      effectiveContextWindow = userConfig.contextWindow;
-    } else if (userConfig.contextWindow != null) {
-      process.stderr.write(
-        `sensitive-canary: invalid contextWindow in user config, ignoring\n`,
-      );
-    }
-    if (userConfig.rules != null && !Array.isArray(userConfig.rules)) {
-      process.stderr.write(
-        `sensitive-canary: "rules" in user config must be an array, ignoring\n`,
-      );
-    }
-    if (Array.isArray(userConfig.rules) && userConfig.rules.length) {
-      for (const rc of userConfig.rules) pendingUserRuleConfigs.push(rc as RuleConfig);
-    }
-    if (userConfig.inventory != null) {
-      if (!Array.isArray(userConfig.inventory)) {
-        process.stderr.write(`sensitive-canary: "inventory" in user config must be an array, ignoring\n`);
-      } else {
-        for (const entry of userConfig.inventory) pendingInventoryEntries.push(entry);
-      }
-    }
-    if (userConfig.generalize != null) {
-      if (!Array.isArray(userConfig.generalize)) {
-        process.stderr.write(`sensitive-canary: "generalize" in user config must be an array, ignoring\n`);
-      } else {
-        for (const entry of userConfig.generalize) pendingGeneralizeEntries.push(entry);
-      }
-    }
-    if (userConfig.aliasKey === "session" || userConfig.aliasKey === "shared") {
-      configuredAliasKey = userConfig.aliasKey;
-    } else if (userConfig.aliasKey != null) {
-      process.stderr.write("sensitive-canary: aliasKey in user config must be \"session\" or \"shared\", ignoring\n");
-    }
-    if (userConfig.aliases === "tokens" || userConfig.aliases === "stand-ins") {
-      configuredAliases = userConfig.aliases;
-    } else if (userConfig.aliases != null) {
-      process.stderr.write("sensitive-canary: aliases in user config must be \"stand-ins\" or \"tokens\", ignoring\n");
-    }
-    if (envBudget === null) {
-      const configBudget = parseScanBudget(userConfig.scanBudgetMs);
-      if (configBudget !== null) {
-        configuredScanBudgetMs = configBudget;
-      } else if (userConfig.scanBudgetMs != null) {
-        process.stderr.write(
-          "sensitive-canary: invalid scanBudgetMs in user config, ignoring\n",
-        );
-      }
-    }
-  }
-  // Env wins over the file: it is the per-invocation override.
-  if (envBudget !== null) configuredScanBudgetMs = envBudget;
-
+  const settings = readUserSettings(
+    readConfigFile(USER_CONFIG_PATH, "user config"),
+    parseScanBudget(process.env.SENSITIVE_CANARY_SCAN_BUDGET_MS),
+  );
+  if (settings.contextWindow !== null) effectiveContextWindow = settings.contextWindow;
+  // Loops, not push(...spread): a long list would overflow the argument stack.
+  for (const rc of settings.ruleConfigs) pendingUserRuleConfigs.push(rc);
+  for (const entry of settings.inventory) pendingInventoryEntries.push(entry);
+  for (const entry of settings.generalize) pendingGeneralizeEntries.push(entry);
+  configuredAliasKey = settings.aliasKey;
+  configuredAliases = settings.aliases;
+  configuredScanBudgetMs = settings.scanBudgetMs;
   return defaultRules;
 }
 
@@ -558,21 +547,12 @@ export function compileGeneralizeEntry(entry: unknown): Rule {
 }
 
 // generalize.json: either a bare array of entries or { "generalize": [...] }.
-function loadGeneralizeFile(): unknown[] {
-  try {
-    if (!statSync(GENERALIZE_PATH).isFile()) {
-      process.stderr.write("sensitive-canary: generalize file is not a regular file, ignoring\n");
-      return [];
-    }
-    const parsed = readJsonFile(GENERALIZE_PATH) as unknown;
-    const list = Array.isArray(parsed) ? parsed : (parsed as { generalize?: unknown })?.generalize;
-    if (Array.isArray(list)) return list;
-    process.stderr.write("sensitive-canary: generalize file must hold an array, ignoring\n");
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== "ENOENT") {
-      process.stderr.write("sensitive-canary: could not read generalize file (details withheld)\n");
-    }
-  }
+// `parsed`: the file's JSON, undefined when there is no file.
+export function generalizeList(parsed: unknown): unknown[] {
+  if (parsed === undefined) return [];
+  const list = Array.isArray(parsed) ? parsed : (parsed as { generalize?: unknown } | null)?.generalize;
+  if (Array.isArray(list)) return list;
+  process.stderr.write("sensitive-canary: generalize file must hold an array, ignoring\n");
   return [];
 }
 
@@ -1172,7 +1152,10 @@ function dedupeByIdLastWins(rules: Rule[]): Rule[] {
 const __defaultRules = buildRules();
 const __userRuleConfigs: RuleConfig[] = [...pendingUserRuleConfigs];
 const __inventoryRules: Rule[] = compileInventoryList([...pendingInventoryEntries]);
-const __generalizeRules: Rule[] = compileGeneralizeList([...pendingGeneralizeEntries, ...loadGeneralizeFile()]);
+const __generalizeRules: Rule[] = compileGeneralizeList([
+  ...pendingGeneralizeEntries,
+  ...generalizeList(readConfigFile(GENERALIZE_PATH, "generalize file")),
+]);
 // A local rule with the same id as a default replaces it (previously both
 // ran and reported the same occurrence twice).
 export const RULES: Rule[] = applyUserOverrides(

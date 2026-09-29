@@ -145,17 +145,3 @@ export function planSwapBack(toolName: string, input: unknown, book: AliasBook, 
   });
   return out;
 }
-
-// Mutates `target` in place to match `source` (Pi reads the same object).
-export function assignInPlace(target: unknown, source: unknown): void {
-  if (!target || typeof target !== "object" || !source || typeof source !== "object") return;
-  for (const [key, value] of Object.entries(source)) {
-    const current = (target as Record<string, unknown>)[key];
-    if (current && typeof current === "object" && value && typeof value === "object" && Array.isArray(current) === Array.isArray(value)) {
-      if (Array.isArray(current)) current.splice(0, current.length, ...(value as unknown[]));
-      else assignInPlace(current, value);
-    } else {
-      (target as Record<string, unknown>)[key] = value;
-    }
-  }
-}
