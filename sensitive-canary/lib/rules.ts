@@ -96,7 +96,7 @@ export interface CanaryConfig {
   // for multi-megabyte sessions, and SENSITIVE_CANARY_SCAN_BUDGET_MS wins.
   scanBudgetMs?: number;
   // "stand-ins" (default): meaningful, stable replacements for PII.
-  // "tokens": the older __CANARY_HOST_1__ placeholders.
+  // "tokens": the older __CANARY_<TYPE>_<N>__ placeholders.
   aliases?: "stand-ins" | "tokens";
   // "session" (default): a new stand-in key per session, so stand-ins cannot
   // be linked across sessions. "shared": one key for every session.

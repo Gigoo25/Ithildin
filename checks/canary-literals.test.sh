@@ -4,14 +4,13 @@ checker=$(realpath "${1:?checker path required}")
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 src="$work/source with spaces"
-allowed="$src/home-manager/config/pi/extensions/sensitive-canary"
+allowed="$src/home-manager/packages/sensitive-canary"
 mkdir -p "$allowed"
 printf 'clean\n' > "$src/clean.ts"
 bash "$checker" "$src"
 
 # Construct a fixture, not a literal that would fail the repository check.
-printf '__CANARY_%s_%s__\n' HOST 9999 > "$allowed/index.ts"
-cp "$allowed/index.ts" "$allowed/index.test.ts"
+printf '__CANARY_%s_%s__\n' HOST 9999 > "$allowed/core.ts"
 bash "$checker" "$src"
 
 expect_failure() {
@@ -20,13 +19,13 @@ expect_failure() {
         exit 1
     fi
 }
-cp "$allowed/index.ts" "$src/disallowed.ts"
+cp "$allowed/core.ts" "$src/disallowed.ts"
 expect_failure "$src"
 grep -q 'disallowed.ts:' "$work/output"
 rm "$src/disallowed.ts"
-cp "$allowed/index.ts" "$allowed/index.ts.backup"
+cp "$allowed/core.ts" "$allowed/core.ts.backup"
 expect_failure "$src"
-rm "$allowed/index.ts.backup"
+rm "$allowed/core.ts.backup"
 expect_failure "$work/missing"
 
 # A grep operational error must not be treated as an empty result.

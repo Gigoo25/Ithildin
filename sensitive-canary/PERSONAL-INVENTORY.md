@@ -31,7 +31,7 @@ PII findings become stable, meaningful stand-ins instead of numbered tokens. Sec
 - Everything else becomes `<label>-<hex>`. Built-in rules pick a label (`person`, `phone`, `ssid`, `id`, …). Set `"label"` (one lowercase word) on your own rules and inventory entries, otherwise they use `pii`.
 - Stand-ins are an HMAC of the value under a random key. The key is the only thing written; there is no table of real values on disk. By default each session has its own key, `<session>.jsonl.canary-alias-key` beside the transcript (mode 0600). A new session gets new stand-ins, so a provider cannot join them across sessions into a profile. Resuming a session reuses its key, and a fork inherits its parent's. `/purge-sessions` deletes the key with its transcript.
 - `"aliasKey": "shared"` (or `SENSITIVE_CANARY_ALIAS_KEY_SCOPE=shared`) uses one key for every session instead: `${XDG_STATE_HOME:-~/.local/state}/sensitive-canary/alias-key`, overridable with `SENSITIVE_CANARY_ALIAS_KEY_FILE`. Stand-ins then stay the same across sessions, and so become linkable. The engine refuses file-tool and Bash reads of either key, like the inventory.
-- `"aliases": "tokens"` in this config, or `SENSITIVE_CANARY_ALIASES=tokens`, restores the `__CANARY_HOST_1__` placeholders.
+- `"aliases": "tokens"` in this config, or `SENSITIVE_CANARY_ALIASES=tokens`, restores the `__CANARY_<TYPE>_<N>__` placeholders.
 
 ## Infrastructure inventory
 
