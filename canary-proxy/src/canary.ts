@@ -421,6 +421,10 @@ export function redactBody(format: Format, body: Record<string, unknown>, tags: 
 // the harness's real arguments, before redaction rewrites them.
 
 export const WITHHELD_NOTICE = "Output withheld: this call read a protected file (.env, private keys, credentials), so its contents are not shown. Work with such files through commands that do not print their values, or ask the user to include [allow-secrets] in their prompt.";
+// The canary's own config and inventory hold personal values, so [allow-pii]
+// opens them, not [allow-secrets]. One notice for both sent the user around
+// in circles typing a tag that could never work.
+export const INVENTORY_NOTICE = "Output withheld: this call read a file of personal values, so its contents are not shown. Ask the user to include [allow-pii] in their prompt if you need to see it.";
 
 // The agent's working directory, from its system prompt (Claude: "Primary
 // working directory:", Pi: "Current working directory:"). The latest mention
@@ -450,13 +454,15 @@ export function requestCwd(format: Format, body: Record<string, unknown>): strin
   return process.env.HOME ?? process.cwd();
 }
 
-function readsSecret(name: string, input: unknown, tags: Set<string>, cwd: string): boolean {
-  if (!input || typeof input !== "object" || Array.isArray(input)) return false;
+// The notice for a call that read something protected, or undefined.
+function readsSecret(name: string, input: unknown, tags: Set<string>, cwd: string): string | undefined {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return;
   const record = input as Record<string, unknown>;
   const tool = BASH_TOOLS.has(name) ? "bash" : name;
   const command = String(record.command ?? "");
   const targets = candidatePaths(record);
-  return blocksSecretAccess(tool, command, targets, tags, cwd) || blocksInventoryAccess(tool, command, targets, tags, cwd);
+  if (blocksSecretAccess(tool, command, targets, tags, cwd)) return WITHHELD_NOTICE;
+  if (blocksInventoryAccess(tool, command, targets, tags, cwd)) return INVENTORY_NOTICE;
 }
 
 function parseArgs(json: unknown): unknown {
@@ -475,30 +481,32 @@ function withholdSecretReads(format: Format, body: Record<string, unknown>, tags
   if (!Array.isArray(list)) return { body, hits: 0, files: 0 };
   const cwd = requestCwd(format, body);
   const listed = secretListing(cwd);
-  const secret = new Set<string>();
+  const secret = new Map<string, string>();
+  const withhold = (id: unknown, notice: string | undefined) => { if (notice) secret.set(String(id), notice); };
   for (const item of list) {
     if (!item || typeof item !== "object") continue;
     const record = item as Record<string, unknown>;
     if (format === "anthropic" && Array.isArray(record.content)) {
       for (const block of record.content as Array<Record<string, unknown>>) {
-        if (block?.type === "tool_use" && readsSecret(String(block.name), block.input, tags, cwd)) secret.add(String(block.id));
+        if (block?.type === "tool_use") withhold(block.id, readsSecret(String(block.name), block.input, tags, cwd));
       }
     } else if (format === "chat" && Array.isArray(record.tool_calls)) {
       for (const call of record.tool_calls as Array<{ id?: unknown; function?: { name?: unknown; arguments?: unknown } }>) {
-        if (readsSecret(String(call?.function?.name), parseArgs(call?.function?.arguments), tags, cwd)) secret.add(String(call.id));
+        withhold(call.id, readsSecret(String(call?.function?.name), parseArgs(call?.function?.arguments), tags, cwd));
       }
     } else if (format === "responses" && (record.type === "function_call" || record.type === "custom_tool_call")) {
-      if (readsSecret(String(record.name), parseArgs(record.arguments ?? record.input), tags, cwd)) secret.add(String(record.call_id));
+      withhold(record.call_id, readsSecret(String(record.name), parseArgs(record.arguments ?? record.input), tags, cwd));
     }
   }
   let hits = 0;
   let files = 0;
   // A result is withheld whole, or has its secret-file search lines withheld.
   const result = (id: unknown, content: unknown): unknown => {
-    if (secret.has(String(id))) {
+    const notice = secret.get(String(id));
+    if (notice) {
       hits++;
       files++;
-      return WITHHELD_NOTICE;
+      return notice;
     }
     const lines = withholdSecretLines(content, listed);
     hits += lines.hits;

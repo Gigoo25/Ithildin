@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { IMAGE_NOTICE, initEngine, redactRequest, requestCwd, standInBlocked, stripAllowTags, swapText, WITHHELD_LINE, WITHHELD_NOTICE } from "./canary.ts";
+import { IMAGE_NOTICE, INVENTORY_NOTICE, initEngine, redactRequest, requestCwd, standInBlocked, stripAllowTags, swapText, WITHHELD_LINE, WITHHELD_NOTICE } from "./canary.ts";
 import { createHandler, DEFAULT_ROUTES, loadRoutes, upstreamUrl } from "./server.ts";
 import { looksLikeAlias } from "../engine/lib/aliases.ts";
 
@@ -354,6 +354,18 @@ describe("secret reads", () => {
     expect(blocked.messages.find((m) => m.role === "tool")!.content).toBe(WITHHELD_NOTICE);
     const allowed = redactRequest("chat", { messages: messages("[allow-secrets] show it") }).body as { messages: Array<{ role: string; content: unknown }> };
     expect(allowed.messages.find((m) => m.role === "tool")!.content).toBe(VALUE);
+  });
+
+  it("names [allow-pii] for the canary's own config, and opens it with that tag", () => {
+    const messages = (prompt: string) => [
+      { role: "user", content: prompt },
+      { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "bash", input: { command: "cat ~/.config/sensitive-canary/config.json" } }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "{}" }] },
+    ];
+    const result = (prompt: string) => ((redactRequest("anthropic", { messages: messages(prompt) }).body.messages as Array<{ content: unknown }>)[2]!.content as Array<{ content: unknown }>)[0]!.content;
+    expect(result("show it")).toBe(INVENTORY_NOTICE);
+    expect(result("[allow-secrets] show it")).toBe(INVENTORY_NOTICE);
+    expect(result("[allow-pii] show it")).toBe("{}");
   });
 
   it("an Anthropic prompt's [allow-secrets] outlives the tool results after it", () => {
