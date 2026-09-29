@@ -13,7 +13,7 @@
 import { existsSync, statSync } from "node:fs";
 import path from "node:path";
 import { aliases, asUserText, collectValues, blocksInventoryAccess, blocksSecretAccess, candidatePaths, flushScanCache, isSecretPath, latestAllowTags, loadScanCache, redactValue, rememberSwapped, setAliasBook } from "../engine/core.ts";
-import { AliasBook, aliasKeyPath, loadAliasKey, registerAliasLabels } from "../engine/lib/aliases.ts";
+import { AliasBook, aliasKeyPath, aliasMatches, loadAliasKey, registerAliasLabels } from "../engine/lib/aliases.ts";
 import type { Message } from "../engine/lib/inspector.ts";
 import { aliasLabels, aliasStyle, inventoryLiterals, setRuntimeInventory, withScanBudget } from "../engine/lib/rules.ts";
 import { collectRuntimeIdentity, identityFromGit, identityFromOs, identityFromSsh } from "../engine/lib/runtime-inventory.ts";
@@ -192,13 +192,93 @@ export interface Counts {
 
 export function redactRequest(format: Format, body: Record<string, unknown>): { body: Record<string, unknown>; hits: number; counts: Counts; tags: Set<string> } {
   const tags = requestAllowTags(format, body);
+  rememberLiterals(format, body);
   // Each prompt's own tag decides its images, read before tags are stripped;
   // the notice goes in after, so its own tag mention survives.
   const images = withholdImages(format, stripAllowTags(format, body), body);
-  if (tags.has("all")) return { body: images.body, hits: images.hits, counts: { masked: 0, files: 0, lines: 0, images: images.hits }, tags };
+  if (tags.has("all")) return { body: explainBlocked(format, images.body), hits: images.hits, counts: { masked: 0, files: 0, lines: 0, images: images.hits }, tags };
   const stripped = images.body;
   const result = redactBody(format, stripped, tags);
-  return { body: result.body, hits: result.hits + images.hits, counts: { ...result.counts, images: images.hits }, tags };
+  return { body: explainBlocked(format, result.body), hits: result.hits + images.hits, counts: { ...result.counts, images: images.hits }, tags };
+}
+
+// ── invented stand-ins ──────────────────────────────────────────────────────
+// A model that does not know what stand-ins are can take them for corruption.
+// A local model rewrote a Jira report five times to "repair" its ticket
+// stand-ins, then wrote a made-up stand-in as the whole file: nothing to swap
+// back, so 13 bytes of stand-in replaced the report on disk.
+//
+// A file write or edit naming a stand-in the book cannot resolve, one that
+// never appeared in real input either (a stand-in-shaped literal in a file or
+// test is fine), does not run: its arguments are dropped, so the tool fails
+// validation, and every later request shows that failure as standInBlocked.
+// The notice says nothing about redaction (provider blindness, below).
+
+const WRITE_TOOLS = new Set(["write", "edit", "Write", "Edit", "MultiEdit", "NotebookEdit"]);
+
+// Stand-in-shaped text seen in real input: system prompts, typed prompts and
+// tool results. The model's own turns do not count: they hold what it made up.
+const seenLiterals = new Set<string>();
+// Blocked call id -> the stand-ins that blocked it. Kept, not consumed: every
+// later request carries the same failed result and must read the same.
+const blockedCalls = new Map<string, string[]>();
+const MAX_REMEMBERED = 50_000;
+
+function rememberLiterals(format: Format, body: Record<string, unknown>): void {
+  const list = format === "responses" ? body.input : body.messages;
+  const real = [format === "anthropic" ? body.system : format === "responses" ? body.instructions : undefined];
+  if (Array.isArray(list)) {
+    for (const item of list) {
+      if (!item || typeof item !== "object") continue;
+      const record = item as Record<string, unknown>;
+      if (record.role === "assistant" || record.type === "function_call" || record.type === "custom_tool_call" || record.type === "reasoning") continue;
+      real.push(record);
+    }
+  } else {
+    real.push(list);
+  }
+  if (seenLiterals.size > MAX_REMEMBERED) seenLiterals.clear();
+  for (const value of real) {
+    if (value === undefined) continue;
+    for (const match of aliasMatches(typeof value === "string" ? value : JSON.stringify(value))) seenLiterals.add(match.text);
+  }
+}
+
+export function standInBlocked(tokens: string[]): string {
+  return `Not run: ${tokens.join(", ")} ${tokens.length === 1 ? "does" : "do"} not appear anywhere in this conversation, so nothing was written. Use values exactly as they appear in files and tool output; do not make up identifiers.`;
+}
+
+function explainBlocked(format: Format, body: Record<string, unknown>): Record<string, unknown> {
+  const key = format === "responses" ? "input" : "messages";
+  const list = body[key];
+  if (!Array.isArray(list)) return body;
+  if (blockedCalls.size === 0) return body;
+  let hits = 0;
+  const notice = (id: unknown): string | undefined => {
+    const tokens = blockedCalls.get(String(id));
+    if (tokens) hits++;
+    return tokens && standInBlocked(tokens);
+  };
+  const replaced = list.map((item) => {
+    if (!item || typeof item !== "object") return item;
+    const record = item as Record<string, unknown>;
+    if (format === "anthropic" && Array.isArray(record.content)) {
+      return { ...record, content: (record.content as Array<Record<string, unknown>>).map((block) => {
+        const text = block?.type === "tool_result" ? notice(block.tool_use_id) : undefined;
+        return text === undefined ? block : { ...block, content: text, is_error: true };
+      }) };
+    }
+    if (format === "chat" && record.role === "tool") {
+      const text = notice(record.tool_call_id);
+      return text === undefined ? item : { ...record, content: text };
+    }
+    if (format === "responses" && (record.type === "function_call_output" || record.type === "custom_tool_call_output")) {
+      const text = notice(record.call_id);
+      return text === undefined ? item : { ...record, output: text };
+    }
+    return item;
+  });
+  return hits === 0 ? body : { ...body, [key]: replaced };
 }
 
 // Query parameter values, scanned like body strings. API query strings are
@@ -564,9 +644,17 @@ function swapToolName(name: string): string {
   return "web_fetch";
 }
 
-export function swapToolArguments(toolName: string, args: unknown, tags: Set<string>): { args: unknown; swapped: number } {
+export function swapToolArguments(toolName: string, args: unknown, tags: Set<string>, callId?: string): { args: unknown; swapped: number; blocked?: boolean } {
   if (aliasStyle() !== "stand-ins") return { args, swapped: 0 };
   const swap = planSwapBack(swapToolName(toolName), args, aliases(), tags.has("pii") || tags.has("all"));
+  const invented = WRITE_TOOLS.has(toolName) ? [...new Set(swap.unresolved)].filter((token) => !seenLiterals.has(token)) : [];
+  if (invented.length > 0) {
+    if (callId) {
+      if (blockedCalls.size > MAX_REMEMBERED) blockedCalls.clear();
+      blockedCalls.set(callId, invented);
+    }
+    return { args: {}, swapped: 0, blocked: true };
+  }
   // Swap per span. A stand-in the book cannot resolve (often a stand-in-shaped
   // literal in source or docs), or one bound off the machine, stays a stand-in
   // in swap.input: that span fails on a name that does not exist rather than
@@ -590,14 +678,15 @@ export function swapText(text: string, tags: Set<string>): { text: string; swapp
 }
 
 // Arguments as a JSON string (OpenAI shapes, Anthropic streaming).
-export function swapToolJson(toolName: string, json: string, tags: Set<string>): { json: string; swapped: number } {
+export function swapToolJson(toolName: string, json: string, tags: Set<string>, callId?: string): { json: string; swapped: number; blocked?: boolean } {
   let args: unknown;
   try {
     args = json.trim() === "" ? {} : JSON.parse(json);
   } catch {
     return { json, swapped: 0 };
   }
-  const result = swapToolArguments(toolName, args, tags);
+  const result = swapToolArguments(toolName, args, tags, callId);
+  if (result.blocked) return { json: "{}", swapped: 0, blocked: true };
   return result.swapped === 0 ? { json, swapped: 0 } : { json: JSON.stringify(result.args), swapped: result.swapped };
 }
 

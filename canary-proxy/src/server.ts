@@ -212,7 +212,8 @@ export function createHandler(routes: Record<string, Route>, fetchUpstream: type
       try {
         const parsed = JSON.parse(text) as Record<string, unknown>;
         swapped = swapResponseBody(format, parsed, tags);
-        if (swapped > 0) out = JSON.stringify(parsed);
+        // Always re-serialized: a blocked call changes arguments without a swap.
+        out = JSON.stringify(parsed);
       } catch {
         // Not JSON after all: pass it on as is.
       }

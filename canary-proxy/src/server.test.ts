@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { IMAGE_NOTICE, initEngine, redactRequest, requestCwd, stripAllowTags, swapText, WITHHELD_LINE, WITHHELD_NOTICE } from "./canary.ts";
+import { IMAGE_NOTICE, initEngine, redactRequest, requestCwd, standInBlocked, stripAllowTags, swapText, WITHHELD_LINE, WITHHELD_NOTICE } from "./canary.ts";
 import { createHandler, DEFAULT_ROUTES, loadRoutes, upstreamUrl } from "./server.ts";
 
 const EMAIL = "jane.doe@acme-corp.com";
@@ -551,5 +551,61 @@ describe("request edges", () => {
     const request = new Request("http://127.0.0.1/openai-codex/responses", { headers: { upgrade: "websocket", connection: "Upgrade" } });
     expect((await handler(request)).status).toBe(501);
     expect(up.seen.length).toBe(0);
+  });
+});
+
+describe("invented stand-ins", () => {
+  // Stand-in shaped, never minted, never in real input.
+  const INVENTED = "user-0a1b2c";
+  const toolUse = (id: string, name: string, input: unknown) => sse([
+    { data: { type: "content_block_start", index: 0, content_block: { type: "tool_use", id, name, input: {} } } },
+    { data: { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: JSON.stringify(input) } } },
+    { data: { type: "content_block_stop", index: 0 } },
+  ]);
+  const args = async (res: Response) => JSON.parse(events(await res.text())
+    .filter((e) => e.type === "content_block_delta")
+    .map((e) => (e.delta as { partial_json: string }).partial_json).join(""));
+
+  it("drops a write naming one, and explains it in place of the tool's error", async () => {
+    const up = fakeUpstream(() => toolUse("toolu_w1", "write", { path: "report.md", content: `| 1 | ${INVENTED} |` }));
+    const handler = createHandler(DEFAULT_ROUTES, up.fetch);
+    const first = [{ role: "user", content: "rewrite report.md" }];
+    expect(await args(await handler(post("anthropic/v1/messages", { stream: true, messages: first })))).toEqual({});
+    await handler(post("anthropic/v1/messages", { stream: true, messages: [
+      ...first,
+      { role: "assistant", content: [{ type: "tool_use", id: "toolu_w1", name: "write", input: {} }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_w1", content: "Validation failed: path, content required" }] },
+    ] }));
+    const result = (up.seen[1]!.body as { messages: Array<{ content: Array<{ content?: unknown; is_error?: boolean }> }> }).messages[2]!.content[0]!;
+    expect(result.content).toBe(standInBlocked([INVENTED]));
+    expect(result.is_error).toBe(true);
+    expect(String(result.content)).not.toMatch(/redact|stand-in|canary/i);
+  });
+
+  it("drops Chat Completions and non-streaming writes too", async () => {
+    const chat = createHandler(DEFAULT_ROUTES, fakeUpstream(() => sse([
+      { data: { id: "c", choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "call_1", function: { name: "edit", arguments: JSON.stringify({ path: "a.md", newText: INVENTED }) } }] }, finish_reason: null }] } },
+      { data: { id: "c", choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] } },
+      { data: "[DONE]" },
+    ])).fetch);
+    const out = events(await (await chat(post("opencode-go/chat/completions", { stream: true, messages: [{ role: "user", content: "fix a.md" }] }))).text()) as Array<{ choices: Array<{ delta: { tool_calls?: Array<{ function: { arguments: string } }> } }> }>;
+    expect(out.flatMap((e) => e.choices[0]!.delta.tool_calls ?? []).map((c) => c.function.arguments).join("")).toBe("{}");
+    const plain = createHandler(DEFAULT_ROUTES, fakeUpstream(() => Response.json({ content: [{ type: "tool_use", id: "toolu_w2", name: "Write", input: { file_path: "b.md", content: INVENTED } }] })).fetch);
+    const body = (await (await plain(post("anthropic/v1/messages", { messages: [{ role: "user", content: "hi" }] }))).json()) as { content: Array<{ input: unknown }> };
+    expect(body.content[0]!.input).toEqual({});
+  });
+
+  it("lets through one the model read in a file, and any in non-write tools", async () => {
+    const literal = "user-3d4e5f";
+    const input = { path: "fixture.test.ts", content: `const fake = "${literal}";` };
+    const handler = createHandler(DEFAULT_ROUTES, fakeUpstream(() => toolUse("toolu_w3", "write", input)).fetch);
+    expect(await args(await handler(post("anthropic/v1/messages", { stream: true, messages: [
+      { role: "user", content: "copy the fixture" },
+      { role: "assistant", content: [{ type: "tool_use", id: "toolu_r", name: "read", input: { path: "old.test.ts" } }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_r", content: `const fake = "${literal}";` }] },
+    ] })))).toEqual(input);
+    const bash = { command: `grep -r ${INVENTED} .` };
+    const other = createHandler(DEFAULT_ROUTES, fakeUpstream(() => toolUse("toolu_b", "bash", bash)).fetch);
+    expect(await args(await other(post("anthropic/v1/messages", { stream: true, messages: [{ role: "user", content: "hi" }] })))).toEqual(bash);
   });
 });

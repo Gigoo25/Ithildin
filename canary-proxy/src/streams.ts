@@ -82,7 +82,7 @@ class TextHold {
 
 class AnthropicRewriter implements Rewriter {
   swapped = 0;
-  private readonly calls = new Map<number, { name: string; json: string }>();
+  private readonly calls = new Map<number, { name: string; id?: string; json: string }>();
   private readonly texts = new Map<number, TextHold>();
   constructor(private readonly tags: Set<string>) {}
 
@@ -91,8 +91,8 @@ class AnthropicRewriter implements Rewriter {
     if (!data) return [event];
     const index = typeof data.index === "number" ? data.index : -1;
     if (data.type === "content_block_start") {
-      const block = data.content_block as { type?: string; name?: string } | undefined;
-      if (block?.type === "tool_use") this.calls.set(index, { name: String(block.name ?? ""), json: "" });
+      const block = data.content_block as { type?: string; name?: string; id?: string } | undefined;
+      if (block?.type === "tool_use") this.calls.set(index, { name: String(block.name ?? ""), id: block.id, json: "" });
       if (block?.type === "text") this.texts.set(index, new TextHold(this.tags, (n) => { this.swapped += n; }));
       return [event];
     }
@@ -110,7 +110,7 @@ class AnthropicRewriter implements Rewriter {
     }
     if (data.type === "content_block_stop") {
       this.calls.delete(index);
-      const result = swapToolJson(call.name, call.json, this.tags);
+      const result = swapToolJson(call.name, call.json, this.tags, call.id);
       this.swapped += result.swapped;
       if (result.json === "") return [event];
       const delta: SseEvent = {
@@ -150,7 +150,7 @@ type ChatChoice = { index?: number; delta?: { content?: unknown; tool_calls?: Ch
 class ChatRewriter implements Rewriter {
   swapped = 0;
   // choice index -> tool index -> call
-  private readonly calls = new Map<number, Map<number, { name: string; args: string }>>();
+  private readonly calls = new Map<number, Map<number, { name: string; id?: string; args: string }>>();
   private readonly texts = new Map<number, TextHold>();
   private base: Record<string, unknown> = {};
   constructor(private readonly tags: Set<string>) {}
@@ -160,7 +160,7 @@ class ChatRewriter implements Rewriter {
     this.calls.delete(choice);
     if (!calls) return [];
     const toolCalls = [...calls].map(([index, call]) => {
-      const result = swapToolJson(call.name, call.args, this.tags);
+      const result = swapToolJson(call.name, call.args, this.tags, call.id);
       this.swapped += result.swapped;
       return { index, function: { arguments: result.json } };
     });
@@ -188,6 +188,7 @@ class ChatRewriter implements Rewriter {
         const slot = calls.get(call.index ?? 0) ?? { name: "", args: "" };
         calls.set(call.index ?? 0, slot);
         if (call.function?.name) slot.name = call.function.name;
+        if (call.id) slot.id = call.id;
         if (typeof call.function?.arguments === "string") {
           slot.args += call.function.arguments;
           call.function.arguments = "";
@@ -222,11 +223,12 @@ class ChatRewriter implements Rewriter {
 
 // ── OpenAI Responses (incl. Codex) ──────────────────────────────────────────
 
-type ResponseItem = { type?: string; id?: string; name?: string; arguments?: string; content?: Array<{ type?: string; text?: unknown }> };
+type ResponseItem = { type?: string; id?: string; call_id?: string; name?: string; arguments?: string; content?: Array<{ type?: string; text?: unknown }> };
 
 class ResponsesRewriter implements Rewriter {
   swapped = 0;
   private readonly names = new Map<string, string>();
+  private readonly callIds = new Map<string, string>();
   private readonly done = new Map<string, string>();
   private readonly texts = new Map<string, TextHold>();
   constructor(private readonly tags: Set<string>) {}
@@ -248,7 +250,7 @@ class ResponsesRewriter implements Rewriter {
       item.arguments = known;
       return;
     }
-    const result = swapToolJson(item.name ?? "", item.arguments, this.tags);
+    const result = swapToolJson(item.name ?? "", item.arguments, this.tags, item.call_id ?? (item.id === undefined ? undefined : this.callIds.get(item.id)));
     this.swapped += result.swapped;
     item.arguments = result.json;
     if (item.id !== undefined) this.done.set(item.id, result.json);
@@ -260,7 +262,10 @@ class ResponsesRewriter implements Rewriter {
     const type = data.type;
     if (type === "response.output_item.added") {
       const item = data.item as ResponseItem | undefined;
-      if (item?.type === "function_call" && item.id) this.names.set(item.id, item.name ?? "");
+      if (item?.type === "function_call" && item.id) {
+        this.names.set(item.id, item.name ?? "");
+        if (item.call_id) this.callIds.set(item.id, item.call_id);
+      }
       return [event];
     }
     const itemId = typeof data.item_id === "string" ? data.item_id : undefined;
@@ -326,14 +331,14 @@ export function createRewriter(format: Format, tags: Set<string>): Rewriter {
 export function swapResponseBody(format: Format, body: Record<string, unknown>, tags: Set<string>): number {
   let swapped = 0;
   if (format === "anthropic" && Array.isArray(body.content)) {
-    for (const block of body.content as Array<{ type?: string; name?: string; input?: unknown; text?: unknown }>) {
+    for (const block of body.content as Array<{ type?: string; id?: string; name?: string; input?: unknown; text?: unknown }>) {
       if (block?.type === "text" && typeof block.text === "string") {
         const result = swapText(block.text, tags);
         block.text = result.text;
         swapped += result.swapped;
       }
       if (block?.type !== "tool_use") continue;
-      const result = swapToolArguments(block.name ?? "", block.input, tags);
+      const result = swapToolArguments(block.name ?? "", block.input, tags, block.id);
       block.input = result.args;
       swapped += result.swapped;
     }
@@ -346,7 +351,7 @@ export function swapResponseBody(format: Format, body: Record<string, unknown>, 
       }
       for (const call of choice.message?.tool_calls ?? []) {
         if (typeof call.function?.arguments !== "string") continue;
-        const result = swapToolJson(call.function.name ?? "", call.function.arguments, tags);
+        const result = swapToolJson(call.function.name ?? "", call.function.arguments, tags, call.id);
         call.function.arguments = result.json;
         swapped += result.swapped;
       }
@@ -362,7 +367,7 @@ export function swapResponseBody(format: Format, body: Record<string, unknown>, 
         }
       }
       if (item?.type !== "function_call" || typeof item.arguments !== "string") continue;
-      const result = swapToolJson(item.name ?? "", item.arguments, tags);
+      const result = swapToolJson(item.name ?? "", item.arguments, tags, item.call_id);
       item.arguments = result.json;
       swapped += result.swapped;
     }
