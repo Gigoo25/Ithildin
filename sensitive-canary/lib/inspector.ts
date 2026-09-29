@@ -1,11 +1,5 @@
 import type { Finding } from "./rules.ts";
 
-const BIRD_EMOJIS = ["🐦", "🐧", "🐤", "🐔"];
-
-export function randomBird(): string {
-  return BIRD_EMOJIS[Math.floor(Math.random() * BIRD_EMOJIS.length)] ?? "🐦";
-}
-
 export type { Finding };
 
 type TextBlock = { type: "text"; text: string };
@@ -88,26 +82,6 @@ export function userTypedText(msg: Message): string {
     .replace(UNCLOSED_FENCE, " ");
 }
 
-// The same rules over a bare string, for the prompt, which is not a message.
-export function typedTextOf(text: string): string {
-  return userTypedText({ role: "user", content: text });
-}
-
-// Anything that reaches a terminal or reaches Claude, with the characters that
-// would let it pretend to be something else taken out. A path is attacker-chosen
-// — a repository, an archive, a dependency can all put one on disk — and POSIX
-// allows a newline in it, so a file could be named such that the block message
-// grew extra lines saying the block was a false positive. Escape sequences got
-// through the same way and can clear the screen before printing whatever they
-// like.
-export function forOutput(text: string): string {
-  return text.replace(
-    // biome-ignore lint/suspicious/noControlCharactersInRegex: that is the point
-    /[\u0000-\u001f\u007f-\u009f]/g,
-    (ch) => `\\x${ch.charCodeAt(0).toString(16).padStart(2, "0")}`,
-  );
-}
-
 // The last tag in the text is the one that applies. Earlier ones are discarded
 // whole, not merged with it.
 //
@@ -171,40 +145,4 @@ export function dedupeFindings(findings: Finding[]): Finding[] {
     seen.add(key);
     return true;
   });
-}
-
-// Which tags a block should suggest, given what it found.
-//
-// Three places write these lines — the tool hook's hint builder, and the prompt
-// hook's mask and block paths — with only the indentation differing. Written
-// out three times, a change to the wording reaches whichever copy the author
-// happened to be looking at, and the tag a user is told to add is the one thing
-// in the message that has to be right.
-export function allowTagLines(
-  findings: Finding[],
-  options: { indent?: string; showAll?: boolean } = {},
-): string[] {
-  const indent = options.indent ?? "  ";
-  const showAll = options.showAll ?? false;
-  const lines: string[] = [];
-  if (showAll || findings.some((f) => f.category === "secret"))
-    lines.push(`${indent}[allow-secrets] — allow secrets`);
-  if (showAll || findings.some((f) => f.category === "pii"))
-    lines.push(`${indent}[allow-pii]     — allow PII`);
-  lines.push(`${indent}[allow-all]     — bypass all sensitive-canary checks`);
-  return lines;
-}
-
-// One line per finding, capped. A rule that matches everywhere produced forty
-// thousand lines of stderr, which buries the block it is trying to explain.
-export const MAX_FINDING_LINES = 50;
-
-export function findingsToLines(findings: Finding[]): string[] {
-  const lines = findings.slice(0, MAX_FINDING_LINES).map((f) => {
-    const tag = f.category === "pii" ? "PII" : "Secret";
-    return `  [${tag}] ${forOutput(f.description)} (${forOutput(f.ruleId)}): ${forOutput(f.matchRedacted)}`;
-  });
-  if (findings.length > lines.length)
-    lines.push(`  … and ${findings.length - lines.length} more`);
-  return lines;
 }

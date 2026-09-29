@@ -423,11 +423,6 @@ const VALIDATORS: Readonly<Record<string, (str: string) => boolean>> = {
   "public-ipv6": (ip: string) => !isReservedIpv6(ip),
 };
 
-// The names a config file may put in `validate`. Exported so the documents can
-// be held to the same list: `phone-jp` was added to the registry and named in
-// neither document, so a user writing a rule could not know it existed.
-export const VALIDATOR_NAMES: readonly string[] = Object.keys(VALIDATORS);
-
 export function getValidator(
   name: string,
 ): ((str: string) => boolean) | undefined {

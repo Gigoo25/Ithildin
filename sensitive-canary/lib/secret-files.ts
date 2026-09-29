@@ -43,36 +43,6 @@ export function isDotenvFile(filePath: string): boolean {
   );
 }
 
-// Ripgrep --iglob values applied after the user glob so they cannot be
-// re-included. !.env.* is added separately when the search root is not an
-// .env.example path.
-export const SECRET_RG_IGLOBS = [
-  "!.env",
-  "!*.env",
-  "!id_rsa",
-  "!id_ed25519",
-  "!id_ecdsa",
-  "!id_dsa",
-  "!id_*_sk",
-  "!*.pem",
-  "!*.p12",
-  "!*.pfx",
-  "!*.key",
-  "!*.keystore",
-  "!.netrc",
-  "!.npmrc",
-  "!.pypirc",
-  "!credentials.json",
-  "!kubeconfig",
-  "!**/.kube/config",
-  "!**/kube/config",
-  "!**/gh/hosts.yml",
-  "!**/gh/hosts.yaml",
-  "!**/application_default_credentials.json",
-  "!**/.docker/config.json",
-  "!**/docker/config.json",
-];
-
 export function isSecretFile(filePath: string): boolean {
   if (!filePath) return false;
   return candidates(filePath).some((candidate) => {

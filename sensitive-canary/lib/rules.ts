@@ -190,35 +190,10 @@ export function compileInventoryEntry(entry: unknown): Rule {
 
 const ALL_CATEGORIES: ReadonlySet<Category> = new Set(["secret", "pii"]);
 
-// Parse the SENSITIVE_CANARY_CATEGORIES env var: a comma-separated list of
-// "secret", "pii", or "all" (e.g. "secret" or "secret,pii"). Unset, empty, or
-// containing no valid token means all categories are enabled.
-export function parseCategories(value: string | undefined): Set<Category> {
-  const categories = new Set<Category>();
-  for (const token of (value ?? "").split(",")) {
-    const normalized = token.trim().toLowerCase();
-    if (normalized === "all") return new Set(ALL_CATEGORIES);
-    if (normalized === "secret" || normalized === "pii")
-      categories.add(normalized);
-  }
-  return categories.size > 0 ? categories : new Set(ALL_CATEGORIES);
-}
-
-// Rule categories enabled for this process, from SENSITIVE_CANARY_CATEGORIES
-// ("secret", "pii", "secret,pii", or "all", with "all" as default).
-export function enabledCategoriesFromEnv(): Set<Category> {
-  const { SENSITIVE_CANARY_CATEGORIES } = process.env;
-  return parseCategories(SENSITIVE_CANARY_CATEGORIES);
-}
-
 // ── Context enhancement ──────────────────────────────────────────────────────
 
 // Set from the default config during module initialisation (see buildRules).
 let effectiveContextWindow = 3;
-
-export function getDefaultContextWindow(): number {
-  return effectiveContextWindow;
-}
 
 // Words as they were written, with only the punctuation around them removed.
 // Splitting on punctuation made `extract-zip` supply "zip" and
@@ -452,10 +427,6 @@ function parseScanBudget(value: unknown): number | null {
   return typeof parsed === "number" && Number.isInteger(parsed) && parsed >= 1
     ? parsed
     : null;
-}
-
-export function pendingUserConfigsForTest(): { rules: RuleConfig[]; inventory: unknown[] } {
-  return { rules: [...pendingUserRuleConfigs], inventory: [...pendingInventoryEntries] };
 }
 
 // Build the default rule list and record user configs for the later override
@@ -1288,13 +1259,6 @@ export function aliasLabels(): string[] {
 
 function activeRules(): Rule[] {
   return runtimeInventoryRules.length === 0 ? RULES : RULES.concat(runtimeInventoryRules);
-}
-
-// User rules collected during buildRules so LOCAL_RULES share the same
-// override pass. Stored aside because module init order defines LOCAL_RULES
-// after buildRules runs.
-function pendingUserRules(): RuleConfig[] {
-  return [...pendingUserRuleConfigs];
 }
 
 // Enough of a value to say which one was found, and no more.

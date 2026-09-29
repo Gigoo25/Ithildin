@@ -19,8 +19,8 @@
 import { randomBytes } from "node:crypto";
 import { readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { type Finding, type LocatedFinding, mergeRanges, scanWindows, SCAN_WINDOW_OVERLAP, assertScanBudget, ScanBudgetExceeded, clearWindowCache, exportWindowCache, importWindowCache, windowCacheRevision, aliasStyle, aliasKeyScope, ruleAliasLabel, ruleGeneralization, inventoryStandInValue, isPromptOnlyRule, GENERALIZE_PATH } from "./lib/rules.ts";
-import { AliasBook, aliasKeyPath, aliasSpans, isAliasValue, loadAliasKey, SESSION_KEY_SUFFIX } from "./lib/aliases.ts";
+import { type Finding, type LocatedFinding, mergeRanges, scanWindows, SCAN_WINDOW_OVERLAP, assertScanBudget, clearWindowCache, exportWindowCache, importWindowCache, windowCacheRevision, aliasStyle, aliasKeyScope, ruleAliasLabel, ruleGeneralization, inventoryStandInValue, isPromptOnlyRule, GENERALIZE_PATH } from "./lib/rules.ts";
+import { AliasBook, aliasKeyPath, isAliasValue, loadAliasKey, SESSION_KEY_SUFFIX } from "./lib/aliases.ts";
 import { planRedaction } from "./lib/redaction-spans.ts";
 import { redactEncoded } from "./lib/encoded.ts";
 import { reportRedaction } from "./lib/redaction-audit.ts";
@@ -33,36 +33,14 @@ import { isSecretFile } from "./lib/secret-files.ts";
 // Larger strings skip regex scanning and are synthesized in full.
 export const MAX_SCAN_BYTES = 2_000_000;
 
-const FILE_READ_COMMANDS: Record<string, true> = {
-  cat: true,
-  head: true,
-  tail: true,
-  less: true,
-  more: true,
-  bat: true,
-  nl: true,
-};
-
 interface TextChunk {
   type: "text";
   text: string;
 }
 
-export function isTextChunk(value: unknown): value is TextChunk {
-  if (typeof value !== "object" || value === null) return false;
-  if (!("type" in value) || value.type !== "text") return false;
-  return "text" in value && typeof value.text === "string";
-}
-
 interface ThinkingChunk {
   type: "thinking";
   thinking: string;
-}
-
-function isThinkingChunk(value: unknown): value is ThinkingChunk {
-  if (typeof value !== "object" || value === null) return false;
-  if (!("type" in value) || value.type !== "thinking") return false;
-  return "thinking" in value && typeof value.thinking === "string";
 }
 
 // Bounded memo so the context handler does not re-scan the whole transcript on
@@ -247,12 +225,6 @@ export function clearCaches(): void {
   SWAPPED.clear();
 }
 
-// Value-free audit ledger: rule IDs and counts only, never values. Every
-// finding that survives allow-tag filtering passes through redactText, so
-// this one hook records context, provider-payload, tool-result, and
-// persistence redactions with the same per-stage semantics as the warnings.
-export const LEDGER = new Map<string, { category: string; count: number }>();
-
 // Distinct values found while collectValues runs, for canary-proxy's badge
 // counts. In memory for one call only; the values never leave it.
 let valueSink: Set<string> | undefined;
@@ -273,31 +245,6 @@ export function collectValues<T>(work: () => T): { result: T; values: number } {
 function collectSpans(text: string, findings: Array<{ start: number; end: number }>): void {
   if (!valueSink) return;
   for (const range of mergeRanges(findings.map(({ start, end }) => ({ start, end })))) valueSink.add(text.slice(range.start, range.end));
-}
-
-function recordLedger(findings: Finding[]): void {
-  for (const finding of findings) {
-    const entry = LEDGER.get(finding.ruleId) ?? { category: finding.category, count: 0 };
-    entry.count++;
-    LEDGER.set(finding.ruleId, entry);
-  }
-}
-
-export function flushLedger(sessionFile: string | undefined): void {
-  if (LEDGER.size === 0) return;
-  const byRule: Record<string, { category: string; count: number }> = {};
-  let totalHits = 0;
-  for (const [id, entry] of LEDGER) {
-    byRule[id] = { ...entry };
-    totalHits += entry.count;
-  }
-  LEDGER.clear();
-  if (!sessionFile) return;
-  try {
-    writeFileSync(`${sessionFile}.canary-ledger.json`, `${JSON.stringify({ updatedAt: new Date().toISOString(), totalHits, byRule })}\n`, { mode: 0o600 });
-  } catch {
-    // Audit must never break the agent.
-  }
 }
 
 // Completed scan windows next to the session, value-free by construction (see
@@ -326,24 +273,6 @@ export function flushScanCache(sessionFile: string | undefined): void {
   } catch {
     // A cache loss must not break the agent.
   }
-}
-
-// Tripped scan windows become explicit markers, never silent passthrough.
-// Ranges expand by the window overlap first so a value straddling the edge
-// is swallowed whole instead of leaking its outside fragment.
-function applyTripMarkers(text: string, trips: Array<{ start: number; end: number }>): string {
-  const merged = mergeRanges(
-    trips.map((trip) => ({
-      start: Math.max(0, trip.start - SCAN_WINDOW_OVERLAP),
-      end: Math.min(text.length, trip.end + SCAN_WINDOW_OVERLAP),
-    })),
-  );
-  let out = text;
-  for (let i = merged.length - 1; i >= 0; i--) {
-    const span = merged[i];
-    out = `${out.slice(0, span.start)}[sensitive-canary: omitted ${span.end - span.start} chars (scan budget exceeded)]${out.slice(span.end)}`;
-  }
-  return out;
 }
 
 // Set while user-typed text is scanned (context ingress, persisting a user
@@ -420,7 +349,6 @@ export function redactText(text: string, allowTags: Set<string> = new Set()): { 
     .filter((finding) => !insideBoilerplate(finding))
     .filter((finding) => scanningUserText || !isPromptOnlyRule(finding.ruleId));
   const uniqueFindings = dedupeFindings(findings);
-  recordLedger(uniqueFindings);
   collectSpans(text, findings);
   const expandedTrips = mergeRanges(
     trips.map((trip) => ({
@@ -459,187 +387,6 @@ function structuredReplacement(finding: LocatedFinding): string {
   if (kind === "json-string") return JSON.stringify(synthetic);
   if (kind === "json-number") return JSON.stringify(synthetic);
   return synthetic;
-}
-
-// Applies redactText to every text and thinking chunk. The ingress (context),
-// egress (tool_result), and persistence/summarization handlers share it. The
-// function leaves tool-call chunks alone unless redactToolArgs is set. Tools
-// execute their arguments after message_end, so the caller decides when a
-// rewrite cannot break a pending call.
-export function redactChunks(
-  content: readonly unknown[],
-  allowTags: Set<string> = new Set(),
-  redactToolArgs = false,
-): {
-  content: unknown[];
-  hits: number;
-} {
-  let hits = 0;
-  const out = content.map((chunk) => {
-    if (isTextChunk(chunk)) {
-      if (chunk.text.length > MAX_SCAN_BYTES) {
-        hits++;
-        return { ...chunk, text: syntheticValue(chunk.text) };
-      }
-      const { text, hits: n } = redactText(chunk.text, allowTags);
-      if (n === 0) return chunk;
-      hits += n;
-      return { ...chunk, text };
-    }
-    if (isThinkingChunk(chunk)) {
-      if (chunk.thinking.length > MAX_SCAN_BYTES) {
-        hits++;
-        return { ...chunk, thinking: syntheticValue(chunk.thinking) };
-      }
-      const { text, hits: n } = redactText(chunk.thinking, allowTags);
-      if (n === 0) return chunk;
-      hits += n;
-      return { ...chunk, thinking: text };
-    }
-    if (redactToolArgs && typeof chunk === "object" && chunk !== null &&
-        (chunk as { type?: unknown }).type === "toolCall") {
-      const args = (chunk as { arguments?: unknown }).arguments;
-      if (args === undefined) return chunk;
-      const redacted = redactValue(args, allowTags);
-      if (redacted.hits === 0) return chunk;
-      hits += redacted.hits;
-      return { ...(chunk as Record<string, unknown>), arguments: redacted.value };
-    }
-    return chunk;
-  });
-  return { content: out, hits };
-}
-
-// Returns a redacted copy of a message. The message_end handler and the
-// summarization hooks use it, and the caller chooses whether tool-call
-// arguments are in scope. Nothing here mutates the input.
-export function redactStoredMessage(
-  message: Record<string, unknown>,
-  allowTags: Set<string>,
-  redactToolArgs: boolean,
-): { message: Record<string, unknown>; hits: number } {
-  let hits = 0;
-  let out = message;
-  const replaceField = (field: string, value: unknown): void => {
-    if (typeof value !== "string" || value.length === 0) return;
-    if (value.length > MAX_SCAN_BYTES) {
-      out = { ...out, [field]: syntheticValue(value) };
-      hits++;
-      return;
-    }
-    if (field === "content" && value.includes(SYNTHESIS_NOTICE)) return;
-    const redacted = redactText(value, allowTags);
-    if (redacted.hits === 0) return;
-    out = { ...out, [field]: redacted.text };
-    hits += redacted.hits;
-  };
-  if (message.role === "user" || message.role === "assistant" || message.role === "custom") {
-    if (typeof message.content === "string") {
-      replaceField("content", message.content);
-    } else if (Array.isArray(message.content)) {
-      const redacted = redactChunks(message.content, allowTags, redactToolArgs);
-      if (redacted.hits > 0) {
-        out = { ...out, content: redacted.content };
-        hits += redacted.hits;
-      }
-    }
-  } else if (message.role === "toolResult") {
-    if (Array.isArray(message.content)) {
-      const redacted = redactChunks(message.content, allowTags, false);
-      if (redacted.hits > 0) {
-        out = { ...out, content: redacted.content };
-        hits += redacted.hits;
-      }
-    }
-  } else if (message.role === "bashExecution") {
-    replaceField("command", message.command);
-    replaceField("output", message.output);
-  } else if (message.role === "branchSummary" || message.role === "compactionSummary") {
-    replaceField("summary", message.summary);
-  }
-  if (message.details !== undefined) {
-    const redacted = redactValue(message.details, allowTags);
-    if (redacted.hits > 0) {
-      out = { ...out, details: redacted.value };
-      hits += redacted.hits;
-    }
-  }
-  return { message: out, hits };
-}
-
-// Redacts the preparation arrays in place. The core reads
-// preparation.messagesToSummarize / turnPrefixMessages after the event.
-// Replacing them here changes only the summarization copy. It never changes
-// the transcript or the messages that tools already executed against.
-export function redactCompactionPreparation(preparation: Record<string, unknown>, allowTags: Set<string>): number {
-  let hits = 0;
-  for (const key of ["messagesToSummarize", "turnPrefixMessages"] as const) {
-    const list = preparation[key];
-    if (!Array.isArray(list)) continue;
-    preparation[key] = list.map((message) => {
-      if (!message || typeof message !== "object") return message;
-      const redacted = redactStoredMessage(message as Record<string, unknown>, allowTags, true);
-      hits += redacted.hits;
-      return redacted.message;
-    });
-  }
-  if (typeof preparation.previousSummary === "string") {
-    const redacted = redactText(preparation.previousSummary, allowTags);
-    if (redacted.hits > 0) {
-      preparation.previousSummary = redacted.text;
-      hits += redacted.hits;
-    }
-  }
-  // The core extracts the file lists before this event and appends them to the
-  // summary. Without this step, a path that was just redacted inside a tool
-  // call would travel to the provider through the file list.
-  const fileOps = preparation.fileOps as
-    | { read?: unknown; written?: unknown; edited?: unknown }
-    | undefined;
-  if (fileOps && typeof fileOps === "object") {
-    for (const key of ["read", "written", "edited"] as const) {
-      const paths = fileOps[key];
-      if (!(paths instanceof Set)) continue;
-      const redactedPaths = new Set<string>();
-      for (const path of paths) {
-        const redacted = redactText(String(path), allowTags);
-        hits += redacted.hits;
-        redactedPaths.add(redacted.text);
-      }
-      fileOps[key] = redactedPaths;
-    }
-  }
-  return hits;
-}
-
-// Branch summaries read session entries, not messages. The core keeps the
-// array reference it collected, so the handler replaces entries in place.
-// Each original entry must stay untouched for the transcript and the TUI.
-export function redactStoredEntry(entry: Record<string, unknown>, allowTags: Set<string>): { entry: Record<string, unknown>; hits: number } {
-  if (entry.type === "message" && entry.message && typeof entry.message === "object") {
-    const redacted = redactStoredMessage(entry.message as Record<string, unknown>, allowTags, true);
-    if (redacted.hits === 0) return { entry, hits: 0 };
-    return { entry: { ...entry, message: redacted.message }, hits: redacted.hits };
-  }
-  if (entry.type === "custom_message") {
-    const redacted = redactStoredMessage(
-      { role: "custom", content: entry.content, details: entry.details },
-      allowTags,
-      true,
-    );
-    if (redacted.hits === 0) return { entry, hits: 0 };
-    return {
-      entry: { ...entry, content: redacted.message.content, details: redacted.message.details },
-      hits: redacted.hits,
-    };
-  }
-  if (entry.type === "branch_summary" || entry.type === "compaction") {
-    if (typeof entry.summary !== "string") return { entry, hits: 0 };
-    const redacted = redactText(entry.summary, allowTags);
-    if (redacted.hits === 0) return { entry, hits: 0 };
-    return { entry: { ...entry, summary: redacted.text }, hits: redacted.hits };
-  }
-  return { entry, hits: 0 };
 }
 
 function redactCookieField(
@@ -772,31 +519,6 @@ export function redactValue(
 
 // Secret-path files may contain low-entropy passwords that pattern matching
 // cannot detect. Their values are always synthesized while keys remain useful.
-
-export function extractFilePathsFromCommand(command: string): string[] {
-  const paths: string[] = [];
-  for (const segment of command.split(/\s*[|;&]+\s*/)) {
-    const tokens = segment.trim().split(/\s+/).filter(Boolean);
-    if (tokens.length < 2) continue;
-    if (FILE_READ_COMMANDS[path.basename(tokens[0] ?? "")] !== true) continue;
-
-    let skipNext = false;
-    for (let i = 1; i < tokens.length; i++) {
-      if (skipNext) {
-        skipNext = false;
-        continue;
-      }
-      const token = tokens[i];
-      if (!token || token.startsWith("-")) continue;
-      if (token === ">" || token === ">>" || token === "<") {
-        skipNext = true;
-        continue;
-      }
-      paths.push(token.replace(/^["']+|["']+$/g, ""));
-    }
-  }
-  return [...new Set(paths)];
-}
 
 // Shell tokens, keeping quoted spans (and the spaces inside them) whole.
 function shellWords(command: string): string[] {
@@ -975,74 +697,6 @@ export function candidatePaths(input: Record<string, unknown>): string[] {
   return out;
 }
 
-const FILE_PATH_TOOLS = new Set(["read", "write", "edit", "grep", "find", "ls", "search_files"]);
-
-// Home-directory paths carry the username, which the canary redacts, so the
-// model would be typing a path it can only half see. Absolute paths elsewhere
-// (/etc, /nix/store) are fine unless they themselves contain a sensitive
-// value. Windows drive and UNC paths stay blocked. Scan-budget trips block.
-export function blocksPrivatePath(toolName: string, targets: string[], cwd: string): boolean {
-  if (!FILE_PATH_TOOLS.has(toolName)) return false;
-  const home = process.env.HOME ? canonicalPath(process.env.HOME, cwd) : "";
-  return targets.some((target) => {
-    const value = target.replace(/^@/, "");
-    if (/^~|^\$(?:HOME|\{HOME\})(?:[\\/]|$)/.test(value)) return true;
-    if (path.win32.isAbsolute(value) && !path.isAbsolute(value)) return true;
-    if (value.startsWith("\\\\")) return true;
-    if (!path.isAbsolute(value)) return false;
-    const resolved = canonicalPath(value, cwd);
-    if (home && home !== "/" && (resolved === home || resolved.startsWith(`${home}/`))) return true;
-    if (home && home !== "/" && (value === process.env.HOME || value.startsWith(`${process.env.HOME}/`))) return true;
-    try {
-      const { findings, trips } = cachedScan(value);
-      return trips.length > 0 || findings.length > 0;
-    } catch (error) {
-      if (error instanceof ScanBudgetExceeded) return true;
-      throw error;
-    }
-  });
-}
-
-export function synthesizeEnvChunks(content: readonly unknown[]): {
-  content: unknown[];
-  hits: number;
-} {
-  let hits = 0;
-  const out = content.map((chunk) => {
-    if (!isTextChunk(chunk)) return chunk;
-    if (chunk.text.length > MAX_SCAN_BYTES) {
-      hits++;
-      return { ...chunk, text: syntheticValue(chunk.text) };
-    }
-    const text = chunk.text
-      .split("\n")
-      .map((line) => {
-        const equals = line.indexOf("=");
-        if (equals < 0 || line.slice(equals + 1).trim().length === 0) {
-          return line;
-        }
-        hits++;
-        return `${line.slice(0, equals + 1)}${syntheticValue(line.slice(equals + 1))}`;
-      })
-      .join("\n");
-    return { ...chunk, text };
-  });
-  return { content: out, hits };
-}
-
-export function synthesizeWholeChunks(content: readonly unknown[]): {
-  content: unknown[];
-  hits: number;
-} {
-  let hits = 0;
-  const out = content.map((chunk) => {
-    if (!isTextChunk(chunk)) return chunk;
-    hits++;
-    return { ...chunk, text: syntheticValue(chunk.text) };
-  });
-  return { content: out, hits };
-}
-
 export const SYNTHESIS_NOTICE =
   "[sensitive-canary] Synthesized placeholders above are not real data — use only as labels. Never pass to tools, use as paths/commands/identifiers, or reverse.";
 
@@ -1096,79 +750,6 @@ export function latestAllowTags(messages: Message[]): Set<string> {
   return resolveTagPriority(latestUser ? userTypedText(latestUser) : "").effectiveAllow;
 }
 
-function allowGrantLabel(tags: Set<string>): string {
-  if (tags.has("all")) return "all sensitive-canary checks (PII and secrets)";
-  const parts: string[] = [];
-  if (tags.has("secret")) parts.push("secrets");
-  if (tags.has("pii")) parts.push("PII");
-  return parts.join(" and ") || "sensitive values";
-}
-
-type AllowGrantCtx = {
-  hasUI?: boolean;
-  mode?: string;
-  signal?: AbortSignal;
-  ui?: {
-    select?: (prompt: string, choices: string[], opts?: { signal?: AbortSignal }) => Promise<string>;
-  };
-};
-
-export async function resolveAllowGrant(
-  tags: Set<string>,
-  ctx: AllowGrantCtx | undefined,
-  prior: boolean | undefined,
-): Promise<{ tags: Set<string>; grant: boolean | undefined }> {
-  if (tags.size === 0) return { tags, grant: prior };
-  if (prior === true) return { tags, grant: true };
-  if (prior === false) return { tags: new Set(), grant: false };
-  const interactive = Boolean(
-    ctx?.hasUI && ctx.ui?.select && ctx.mode && ["tui", "rpc"].includes(ctx.mode),
-  );
-  if (!interactive) return { tags, grant: true };
-  try {
-    const choice = await ctx!.ui!.select!(
-      `sensitive-canary: this prompt asks to allow ${allowGrantLabel(tags)} this turn. Permit?`,
-      ["Yes", "No"],
-      { signal: ctx?.signal },
-    );
-    const grant = choice === "Yes";
-    return { tags: grant ? tags : new Set(), grant };
-  } catch {
-    return { tags: new Set(), grant: false };
-  }
-}
-
-// Placeholders are fake by design, so executing them always fails confusingly
-// (no such path, user, or host). Fail fast with recovery guidance instead.
-// The tag maps back to the allow-tag category, exactly like tokenTagFor.
-const PLACEHOLDER_RE = /__CANARY_([A-Z]+)_\d+__/g;
-
-export function placeholderViolations(input: unknown, allowTags: Set<string>): string | undefined {
-  if (allowTags.has("all")) return;
-  let serialized: string;
-  try {
-    serialized = JSON.stringify(input ?? {});
-  } catch {
-    return;
-  }
-  for (const match of serialized.matchAll(PLACEHOLDER_RE)) {
-    const category = match[1] === "SECRET" ? "secret" : "pii";
-    if (!allowTags.has(category)) return match[0];
-  }
-  // Generalized wording stands for several possible originals, so it can
-  // never be swapped back: written into a file or command it would replace
-  // the real text.
-  if (!allowTags.has("pii")) {
-    const general = serialized.match(GENERALIZED)?.[0];
-    if (general !== undefined) return general;
-  }
-  // Stand-ins are swapped back to real values instead (see tool_call). With
-  // the older numbered tokens nothing is swapped, so a stand-in left over
-  // from a stand-ins session would reach the wrong host: block it.
-  if (allowTags.has("pii") || aliasStyle() === "stand-ins") return;
-  return aliasSpans(serialized)[0];
-}
-
 // Real values swapped into tool calls this session, by the rule id that
 // re-detects them. Output that echoes one is aliased again even when no
 // scanning rule would have caught it (a host composed from known parts).
@@ -1205,25 +786,6 @@ export function blocksSecretAccess(toolName: string, command: string, targets: s
     (toolName === "bash" && (commandReadsSecretFile(command, cwd) || commandSendsCookies(command))) ||
     targets.some((target) => isSecretPath(target, cwd))
   );
-}
-
-// Secrets only: host/user/email in commands are normal (ssh, git, $HOME).
-// Block, do not redact-and-run. Scan-budget trips fail closed.
-export function toolInputHasSecret(input: unknown, allowTags: Set<string>): boolean {
-  if (allowTags.has("secret") || allowTags.has("all")) return false;
-  let serialized: string;
-  try {
-    serialized = JSON.stringify(input ?? {});
-  } catch {
-    return true;
-  }
-  try {
-    const { findings, trips } = cachedScan(serialized);
-    return trips.length > 0 || findings.some((finding) => finding.category === "secret");
-  } catch (error) {
-    if (error instanceof ScanBudgetExceeded) return true;
-    throw error;
-  }
 }
 
 // Inventory reads are PII-gated rather than secret-gated: the file holds
