@@ -15,7 +15,7 @@
 // It fails closed: an unknown route, an unreadable JSON body, a compressed
 // request body, or a WebSocket upgrade is refused instead of forwarded raw.
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { type Counts, type Format, initEngine, redactQuery, redactRequest, saveScanCache, typedPromptCount } from "./canary.ts";
@@ -70,6 +70,30 @@ const SESSION_HEADER = "x-canary-session";
 
 const HOP_HEADERS = ["host", "connection", "content-length", "accept-encoding", "transfer-encoding", "keep-alive", "upgrade", "te", "trailer", "proxy-connection", "proxy-authorization"];
 
+// Largest request body scanned. Anthropic's own limit is 32 MB; a bigger one
+// would be refused upstream anyway, and holding it would cost that much memory
+// per request here.
+export const REQUEST_BYTES_MAX = 32 * 1024 * 1024;
+
+// Deepest JSON nesting scanned. Provider requests nest about 20 deep (tool
+// schemas included); redaction recurses, and 20,000 levels overflowed the
+// stack. Refused up front, so no scan starts that cannot finish.
+export const JSON_DEPTH_MAX = 256;
+
+// Nesting depth of a parsed value, without recursion; stops past `limit`.
+export function jsonDepth(value: unknown, limit: number): number {
+  let deepest = 0;
+  const stack: Array<[unknown, number]> = [[value, 1]];
+  while (stack.length > 0) {
+    const [item, depth] = stack.pop()!;
+    if (!item || typeof item !== "object") continue;
+    if (depth > deepest) deepest = depth;
+    if (deepest > limit) return deepest;
+    for (const child of Object.values(item)) stack.push([child, depth + 1]);
+  }
+  return deepest;
+}
+
 function log(line: string): void {
   process.stderr.write(`canary-proxy: ${line}\n`);
 }
@@ -107,7 +131,12 @@ function rewriteSse(body: ReadableStream<Uint8Array>, format: Format, tags: Set<
   }));
 }
 
-export function createHandler(routes: Record<string, Route>, fetchUpstream: typeof fetch = fetch) {
+// The scanners the handler calls; tests pass ones that fail, to show a
+// failed scan refuses the request instead of forwarding it.
+export type Redactors = { request: typeof redactRequest; query: typeof redactQuery };
+const REDACTORS: Redactors = { request: redactRequest, query: redactQuery };
+
+export function createHandler(routes: Record<string, Route>, fetchUpstream: typeof fetch = fetch, redact: Redactors = REDACTORS) {
   // What redaction did per conversation, for the status badges (status.ts):
   // only this machine learns that swapping happens.
   const book = createStatusBook();
@@ -140,7 +169,10 @@ export function createHandler(routes: Record<string, Route>, fetchUpstream: type
     if (request.method !== "GET" && request.method !== "HEAD") {
       const encoding = request.headers.get("content-encoding");
       if (encoding && encoding !== "identity") return refuse(415, `compressed request bodies (${encoding}) cannot be scanned`);
+      const declared = Number(request.headers.get("content-length") ?? 0);
+      if (declared > REQUEST_BYTES_MAX) return refuse(413, `request body over ${REQUEST_BYTES_MAX} bytes`);
       const raw = await request.text();
+      if (Buffer.byteLength(raw) > REQUEST_BYTES_MAX) return refuse(413, `request body over ${REQUEST_BYTES_MAX} bytes`);
       const type = request.headers.get("content-type") ?? "";
       if (type.includes("json") || (format !== undefined && raw.trimStart().startsWith("{"))) {
         let parsed: unknown;
@@ -149,10 +181,14 @@ export function createHandler(routes: Record<string, Route>, fetchUpstream: type
         } catch {
           return refuse(400, "request body is not valid JSON, refusing to forward it unscanned");
         }
-        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        // Every provider API takes an object; anything else was forwarded
+        // unscanned before.
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return refuse(400, "request body is not a JSON object, refusing to forward it unscanned");
+        if (jsonDepth(parsed, JSON_DEPTH_MAX) > JSON_DEPTH_MAX) return refuse(400, `request body nests deeper than ${JSON_DEPTH_MAX} levels`);
+        {
           try {
             const started = performance.now();
-            const redacted = redactRequest(format ?? "chat", parsed as Record<string, unknown>);
+            const redacted = redact.request(format ?? "chat", parsed as Record<string, unknown>);
             scanMs = Math.round(performance.now() - started);
             tags = redacted.tags;
             hits = redacted.hits;
@@ -168,8 +204,6 @@ export function createHandler(routes: Record<string, Route>, fetchUpstream: type
           } catch (error) {
             return refuse(500, `redaction failed (${(error as Error).name}), refusing to forward unscanned`);
           }
-        } else {
-          body = raw;
         }
       } else if (raw.length > 0) {
         return refuse(415, `non-JSON request body (${type || "no content-type"}) cannot be scanned`);
@@ -177,7 +211,7 @@ export function createHandler(routes: Record<string, Route>, fetchUpstream: type
     }
     let search: string;
     try {
-      const query = redactQuery(url.search, tags);
+      const query = redact.query(url.search, tags);
       search = query.search;
       hits += query.hits;
       if (counts) counts.masked += query.values;
@@ -207,18 +241,29 @@ export function createHandler(routes: Record<string, Route>, fetchUpstream: type
     }
     if (format && contentType.includes("json") && upstream.ok) {
       const text = await upstream.text();
-      let swapped = 0;
-      let out = text;
+      let parsed: unknown;
       try {
-        const parsed = JSON.parse(text) as Record<string, unknown>;
-        swapped = swapResponseBody(format, parsed, tags);
-        // Always re-serialized: a blocked call changes arguments without a swap.
-        out = JSON.stringify(parsed);
+        parsed = JSON.parse(text);
       } catch {
-        // Not JSON after all: pass it on as is.
+        return refuse(502, "upstream reply is not valid JSON, refusing to pass unchecked tool calls");
+      }
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return refuse(502, "upstream reply is not a JSON object, refusing to pass it unchecked");
+      let swapped: number;
+      try {
+        swapped = swapResponseBody(format, parsed as Record<string, unknown>, tags);
+      } catch (error) {
+        // Half-swapped, with blocked calls maybe still intact: never pass on.
+        return refuse(502, `reply rewriting failed (${(error as Error).name}), refusing to pass unchecked tool calls`);
       }
       log(`${tag} redacted=${hits} swapped=${swapped}`);
-      return new Response(out, { status: upstream.status, headers: outHeaders });
+      // Always re-serialized: a blocked call changes arguments without a swap.
+      return new Response(JSON.stringify(parsed), { status: upstream.status, headers: outHeaders });
+    }
+    // A successful model reply in a shape not read here could carry tool
+    // calls no guard saw. Errors and non-model routes pass as they are.
+    if (format && upstream.ok && upstream.body) {
+      await upstream.body.cancel();
+      return refuse(502, `upstream reply type ${contentType.split(";")[0]} cannot be checked`);
     }
     log(`${tag} redacted=${hits}`);
     return new Response(upstream.body, { status: upstream.status, headers: outHeaders });
@@ -229,34 +274,50 @@ export function createHandler(routes: Record<string, Route>, fetchUpstream: type
 // TimeoutStopSec above it.
 const DRAIN_MS = 300_000;
 
-function arg(name: string): string | undefined {
-  const index = process.argv.indexOf(`--${name}`);
-  return index >= 0 ? process.argv[index + 1] : undefined;
+export type Options = { port: number; routesFile: string | undefined };
+
+// Settings from flags, then environment, then defaults. A port that is not
+// a whole number in range stops startup: listening somewhere unexpected
+// would leave agents pointed at nothing, or at something else.
+export function readOptions(argv: string[], env: Record<string, string | undefined>, exists: (file: string) => boolean): Options {
+  const arg = (name: string): string | undefined => {
+    const index = argv.indexOf(`--${name}`);
+    return index >= 0 ? argv[index + 1] : undefined;
+  };
+  const text = arg("port") ?? env.CANARY_PROXY_PORT ?? "18733";
+  const port = Number(text);
+  if (!/^\d+$/.test(text) || port < 1 || port > 65_535) throw new Error(`canary-proxy: invalid port ${JSON.stringify(text)}`);
+  const home = env.HOME ?? os.homedir();
+  const defaultRoutes = path.join(env.XDG_CONFIG_HOME || path.join(home, ".config"), "canary-proxy", "routes.json");
+  const routesFile = arg("routes") ?? env.CANARY_PROXY_ROUTES ?? (exists(defaultRoutes) ? defaultRoutes : undefined);
+  return { port, routesFile };
+}
+
+// Port 0 picks a free port (tests); the bound one is on the server.
+export function start(options: Options, fetchUpstream: typeof fetch = fetch): { server: ReturnType<typeof Bun.serve>; drain: () => Promise<void> } {
+  const routes = loadRoutes(options.routesFile);
+  initEngine();
+  const saving = setInterval(saveScanCache, 30_000);
+  saving.unref();
+  const server = Bun.serve({ hostname: "127.0.0.1", port: options.port, idleTimeout: 255, fetch: createHandler(routes, fetchUpstream) });
+  log(`listening on http://127.0.0.1:${server.port} (routes: ${Object.keys(routes).join(", ")})`);
+  // A rules edit restarts the proxy. Stop taking requests but let streaming
+  // replies finish, so the edit does not cut a response off mid-turn; agents
+  // retry the refused connections.
+  const drain = async (): Promise<void> => {
+    clearInterval(saving);
+    saveScanCache();
+    log("draining in-flight requests");
+    await server.stop(false);
+  };
+  return { server, drain };
 }
 
 if (import.meta.main) {
-  const port = Number(arg("port") ?? process.env.CANARY_PROXY_PORT ?? 18733);
-  const defaultRoutes = path.join(process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), ".config"), "canary-proxy", "routes.json");
-  const routesFile = arg("routes") ?? process.env.CANARY_PROXY_ROUTES ?? (() => {
-    try {
-      readFileSync(defaultRoutes);
-      return defaultRoutes;
-    } catch {
-      return undefined;
-    }
-  })();
-  const routes = loadRoutes(routesFile);
-  initEngine();
-  setInterval(saveScanCache, 30_000).unref();
-  const server = Bun.serve({ hostname: "127.0.0.1", port, idleTimeout: 255, fetch: createHandler(routes) });
-  // A rules edit restarts the proxy. Stop taking requests but let streaming
-  // replies finish, so the edit does not cut a response off mid-turn; agents
-  // retry the refused connections. systemd's TimeoutStopSec is the backstop.
+  const { drain } = start(readOptions(process.argv, process.env, existsSync));
+  // systemd's TimeoutStopSec is the backstop past DRAIN_MS.
   process.on("SIGTERM", () => {
-    saveScanCache();
-    log("draining in-flight requests");
-    void server.stop(false).then(() => process.exit(0));
-    setTimeout(() => process.exit(0), DRAIN_MS);
+    void drain().then(() => process.exit(0));
+    setTimeout(() => process.exit(0), DRAIN_MS).unref();
   });
-  log(`listening on http://127.0.0.1:${port} (routes: ${Object.keys(routes).join(", ")})`);
 }
