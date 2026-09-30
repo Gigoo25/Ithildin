@@ -90,9 +90,9 @@ describe("requests", () => {
     expect((await health()).badge).toBe("CANARY ON");
     // One value, however often it appears.
     await handler(post("anthropic/v1/messages", { messages: [{ role: "user", content: `mail ${EMAIL}` }, { role: "assistant", content: "ok" }, { role: "user", content: `and ${EMAIL}` }] }));
-    expect((await health()).badge).toBe("CANARY ON · 1m (+1)");
+    expect((await health()).badge).toBe("CANARY ON · 1m (+1) · 1 req");
     await handler(post("anthropic/v1/messages", { messages: [{ role: "user", content: "title this" }] }));
-    expect((await health()).badge).toBe("CANARY ON · 1m (+1)");
+    expect((await health()).badge).toBe("CANARY ON · 1m (+1) · 1 req");
   });
 
   it("keeps one badge per session and never forwards the proxy's session header", async () => {
@@ -111,16 +111,16 @@ describe("requests", () => {
     const first = [{ role: "user", content: `mail ${EMAIL}` }];
     await send({ "x-canary-session": "pi-1" }, [...first, ...call("t1", "nothing here")]);
     await send({ "x-Claude-Code-Session-Id": "claude-1" }, [{ role: "user", content: "hi" }, { role: "assistant", content: "hello" }]);
-    expect(await badge("pi-1")).toBe("CANARY ON · 1m (+1)");
-    expect(await badge("claude-1")).toBe("CANARY ON · 0");
+    expect(await badge("pi-1")).toBe("CANARY ON · 1m (+1) · 1 req");
+    expect(await badge("claude-1")).toBe("CANARY ON · 0 · 1 req");
     expect(up.seen[0]!.headers.get("x-canary-session")).toBeNull();
     // A tool result in the same turn adds to the turn; a new prompt starts
     // the count again.
     const second = [...first, ...call("t1", "nothing here"), ...call("t2", "from user-a0ea33@acme-corp.com")];
     await send({ "x-canary-session": "pi-1" }, second);
-    expect(await badge("pi-1")).toBe("CANARY ON · 2m (+2)");
+    expect(await badge("pi-1")).toBe("CANARY ON · 2m (+2) · 2 req");
     await send({ "x-canary-session": "pi-1" }, [...second, { role: "assistant", content: "done" }, { role: "user", content: "thanks" }]);
-    expect(await badge("pi-1")).toBe("CANARY ON · 2m");
+    expect(await badge("pi-1")).toBe("CANARY ON · 2m · 3 req");
   });
 
   it("refuses unknown routes and compressed bodies", async () => {

@@ -9,6 +9,8 @@
 //   l  search lines withheld: they came from a protected file
 //   i  inline images withheld
 //   +N added since the user's latest prompt (all kinds)
+//   N req  requests scanned in this conversation: it ticks every turn, so
+//          a badge reading "0" still shows the proxy is in the path
 //
 // Counts cover the whole conversation, since every request carries all of
 // it. Zero kinds are left out; nothing hidden reads "CANARY ON · 0".
@@ -25,6 +27,8 @@ export interface Status extends Counts {
   route: string;
   // Hits since the latest typed prompt.
   turn: number;
+  // Requests scanned for this conversation since the proxy started.
+  requests: number;
   badge: string;
 }
 
@@ -39,15 +43,16 @@ interface Entry {
 // Bounds memory across many short sessions; the oldest are dropped first.
 const MAX_SESSIONS = 256;
 
-export function badgeText(counts: Counts, turn: number): string {
+export function badgeText(counts: Counts, turn: number, requests = 0): string {
+  const scanned = requests > 0 ? ` · ${requests} req` : "";
   const parts = [
     counts.masked && `${counts.masked}m`,
     counts.files && `${counts.files}f`,
     counts.lines && `${counts.lines}l`,
     counts.images && `${counts.images}i`,
   ].filter(Boolean);
-  if (parts.length === 0) return "CANARY ON · 0";
-  return `CANARY ON · ${parts.join(" ")}${turn > 0 ? ` (+${turn})` : ""}`;
+  if (parts.length === 0) return `CANARY ON · 0${scanned}`;
+  return `CANARY ON · ${parts.join(" ")}${turn > 0 ? ` (+${turn})` : ""}${scanned}`;
 }
 
 export function createStatusBook() {
@@ -64,7 +69,8 @@ export function createStatusBook() {
       const baseline = !previous ? 0 : prompts > previous.prompts ? previous.total : previous.baseline;
       // Compaction can shrink the total below the baseline.
       const turn = Math.max(0, total - baseline);
-      const status = { ...counts, route, turn, badge: badgeText(counts, turn) };
+      const requests = (previous?.status.requests ?? 0) + 1;
+      const status = { ...counts, route, turn, requests, badge: badgeText(counts, turn, requests) };
       sessions.delete(key);
       sessions.set(key, { status, prompts, total, baseline });
       if (sessions.size > MAX_SESSIONS) sessions.delete(sessions.keys().next().value!);
