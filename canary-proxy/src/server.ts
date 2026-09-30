@@ -20,6 +20,7 @@ import os from "node:os";
 import path from "node:path";
 import { type Counts, type Format, initEngine, redactQuery, redactRequest, saveScanCache, typedPromptCount } from "./canary.ts";
 import { createStatusBook } from "./status.ts";
+import { type SelfTest, selfTest } from "./selftest.ts";
 import { createRewriter, formatSse, parseSseBlock, swapResponseBody } from "./streams.ts";
 
 export interface Route {
@@ -136,15 +137,28 @@ function rewriteSse(body: ReadableStream<Uint8Array>, format: Format, tags: Set<
 export type Redactors = { request: typeof redactRequest; query: typeof redactQuery };
 const REDACTORS: Redactors = { request: redactRequest, query: redactQuery };
 
-export function createHandler(routes: Record<string, Route>, fetchUpstream: typeof fetch = fetch, redact: Redactors = REDACTORS) {
+// `gated`: refuse model requests until a self-test passes (selftest.ts). The
+// server's handler is gated; the self-test's own and the tests' are not.
+export function createHandler(routes: Record<string, Route>, fetchUpstream: typeof fetch = fetch, redact: Redactors = REDACTORS, gated = false) {
   // What redaction did per conversation, for the status badges (status.ts):
   // only this machine learns that swapping happens.
   const book = createStatusBook();
+  let proof: SelfTest | undefined;
   return async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
+    if (url.pathname === "/_canary/selftest") {
+      proof = await selfTest((upstream) => createHandler(routes, upstream, redact));
+      log(proof.ok ? `self-test passed (${proof.ms}ms)` : `self-test FAILED: ${proof.failures.join("; ")}`);
+      return Response.json(proof, { status: proof.ok ? 200 : 503 });
+    }
     if (url.pathname === "/_canary/health") {
+      // A failed self-test reads as down: both badges turn red on a non-200.
+      if (proof && !proof.ok) return Response.json({ ok: false, selftest: proof }, { status: 503 });
       const status = book.lookup(url.searchParams.get("session") ?? undefined, url.searchParams.get("route") ?? undefined);
-      return Response.json({ ok: true, routes: Object.keys(routes), badge: status?.badge ?? "CANARY ON", status });
+      return Response.json({ ok: true, routes: Object.keys(routes), badge: status?.badge ?? "CANARY ON", status, selftest: proof });
+    }
+    if (gated && !proof?.ok) {
+      return refuse(503, proof ? `self-test failed (${proof.failures.join("; ")}), refusing to forward` : "self-test has not run yet");
     }
     const match = /^\/([^/]+)(\/.*)?$/.exec(url.pathname);
     const route = match ? routes[match[1]!] : undefined;
@@ -232,8 +246,11 @@ export function createHandler(routes: Record<string, Route>, fetchUpstream: type
     outHeaders.delete("content-encoding");
     outHeaders.delete("content-length");
     const contentType = upstream.headers.get("content-type") ?? "";
-    // scan= is the redaction time this proxy adds to each request.
-    const tag = `${match[1]}${rest} ${upstream.status} scan=${scanMs}ms`;
+    // scan= is the redaction time this proxy adds to each request; allow=
+    // names the tags the user's latest prompt carried ([allow-pii] → pii), so
+    // the journal shows when masking or a guard was lifted.
+    const allowed = tags.size > 0 ? ` allow=${[...tags].sort().join(",")}` : "";
+    const tag = `${match[1]}${rest} ${upstream.status} scan=${scanMs}ms${allowed}`;
 
     if (format && upstream.body && contentType.includes("text/event-stream")) {
       const stream = rewriteSse(upstream.body, format, tags, (swapped) => log(`${tag} redacted=${hits} swapped=${swapped} (stream)`));
@@ -294,13 +311,16 @@ export function readOptions(argv: string[], env: Record<string, string | undefin
 }
 
 // Port 0 picks a free port (tests); the bound one is on the server.
-export function start(options: Options, fetchUpstream: typeof fetch = fetch): { server: ReturnType<typeof Bun.serve>; drain: () => Promise<void> } {
+export function start(options: Options, fetchUpstream: typeof fetch = fetch): { server: ReturnType<typeof Bun.serve>; drain: () => Promise<void>; proven: Promise<void> } {
   const routes = loadRoutes(options.routesFile);
   initEngine();
   const saving = setInterval(saveScanCache, 30_000);
   saving.unref();
-  const server = Bun.serve({ hostname: "127.0.0.1", port: options.port, idleTimeout: 255, fetch: createHandler(routes, fetchUpstream) });
+  const handler = createHandler(routes, fetchUpstream, REDACTORS, true);
+  const server = Bun.serve({ hostname: "127.0.0.1", port: options.port, idleTimeout: 255, fetch: handler });
   log(`listening on http://127.0.0.1:${server.port} (routes: ${Object.keys(routes).join(", ")})`);
+  // Requests are refused until this passes; agents retry refused requests.
+  const proven = handler(new Request("http://127.0.0.1/_canary/selftest")).then(() => undefined);
   // A rules edit restarts the proxy. Stop taking requests but let streaming
   // replies finish, so the edit does not cut a response off mid-turn; agents
   // retry the refused connections.
@@ -310,10 +330,28 @@ export function start(options: Options, fetchUpstream: typeof fetch = fetch): { 
     log("draining in-flight requests");
     await server.stop(false);
   };
-  return { server, drain };
+  return { server, drain, proven };
 }
 
-if (import.meta.main) {
+// `canary-proxy selftest`: runs the self-test inside the proxy that is
+// running now, so a pass means that process masks, not a fresh copy.
+export async function selfTestCli(port: number, fetchProxy: typeof fetch = fetch): Promise<number> {
+  let report: SelfTest;
+  try {
+    report = (await (await fetchProxy(`http://127.0.0.1:${port}/_canary/selftest`)).json()) as SelfTest;
+  } catch (error) {
+    process.stdout.write(`canary-proxy is not answering on port ${port} (${(error as Error).message})\n`);
+    return 1;
+  }
+  process.stdout.write(report.ok
+    ? `ok: an AWS key, a GitHub token and an email were masked before the provider, and a tool call got the real email back (${report.ms}ms)\n`
+    : `FAILED: ${report.failures.join("; ")}\n`);
+  return report.ok ? 0 : 1;
+}
+
+if (import.meta.main && process.argv[2] === "selftest") {
+  process.exit(await selfTestCli(readOptions(process.argv, process.env, existsSync).port));
+} else if (import.meta.main) {
   const { drain } = start(readOptions(process.argv, process.env, existsSync));
   // systemd's TimeoutStopSec is the backstop past DRAIN_MS.
   process.on("SIGTERM", () => {
