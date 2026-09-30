@@ -664,17 +664,14 @@ function parseArgs(json: unknown): unknown {
   }
 }
 
-// hits counts withheld results and withheld lines together; files, the
-// results alone.
-function withholdSecretReads(
+// Notices for the tool calls in a conversation that read something
+// protected, by call id.
+function secretCalls(
   format: Format,
-  body: Record<string, unknown>,
+  list: unknown[],
   tags: Set<string>,
-): { body: Record<string, unknown>; hits: number; files: number } {
-  const list = format === "responses" ? body.input : body.messages;
-  if (!Array.isArray(list)) return { body, hits: 0, files: 0 };
-  const cwd = requestCwd(format, body);
-  const listed = secretListing(cwd);
+  cwd: string,
+): Map<string, string> {
   const secret = new Map<string, string>();
   const withhold = (id: unknown, notice: string | undefined) => {
     if (notice) secret.set(String(id), notice);
@@ -712,47 +709,71 @@ function withholdSecretReads(
       );
     }
   }
-  let hits = 0;
-  let files = 0;
-  // A result is withheld whole, or has its secret-file search lines withheld.
-  const result = (id: unknown, content: unknown): unknown => {
-    const notice = secret.get(String(id));
-    if (notice) {
-      hits++;
-      files++;
-      return notice;
-    }
-    const lines = withholdSecretLines(content, listed);
-    hits += lines.hits;
-    return lines.content;
-  };
-  const replaced = list.map((item) => {
+  return secret;
+}
+
+// The conversation with every tool result passed through `result`, which
+// counts what it changed in `counter.hits`. Unchanged items stay as they were.
+function mapToolResults(
+  format: Format,
+  list: unknown[],
+  counter: { hits: number },
+  result: (id: unknown, content: unknown) => unknown,
+): unknown[] {
+  return list.map((item) => {
     if (!item || typeof item !== "object") return item;
     const record = item as Record<string, unknown>;
+    const before = counter.hits;
     if (format === "anthropic" && Array.isArray(record.content)) {
-      const before = hits;
       const content = (record.content as Array<Record<string, unknown>>).map((block) =>
         block?.type === "tool_result"
           ? { ...block, content: result(block.tool_use_id, block.content) }
           : block,
       );
-      return hits > before ? { ...record, content } : item;
+      return counter.hits > before ? { ...record, content } : item;
     }
     if (format === "chat" && record.role === "tool") {
-      const before = hits;
       const content = result(record.tool_call_id, record.content);
-      return hits > before ? { ...record, content } : item;
+      return counter.hits > before ? { ...record, content } : item;
     }
     if (
       format === "responses" &&
       (record.type === "function_call_output" || record.type === "custom_tool_call_output")
     ) {
-      const before = hits;
       const output = result(record.call_id, record.output);
-      return hits > before ? { ...record, output } : item;
+      return counter.hits > before ? { ...record, output } : item;
     }
     return item;
   });
+}
+
+// hits counts withheld results and withheld lines together; files, the
+// results alone.
+function withholdSecretReads(
+  format: Format,
+  body: Record<string, unknown>,
+  tags: Set<string>,
+): { body: Record<string, unknown>; hits: number; files: number } {
+  const list = format === "responses" ? body.input : body.messages;
+  if (!Array.isArray(list)) return { body, hits: 0, files: 0 };
+  const cwd = requestCwd(format, body);
+  const listed = secretListing(cwd);
+  const secret = secretCalls(format, list, tags, cwd);
+  const counter = { hits: 0, files: 0 };
+  // A result is withheld whole, or has its secret-file search lines withheld.
+  const result = (id: unknown, content: unknown): unknown => {
+    const notice = secret.get(String(id));
+    if (notice) {
+      counter.hits++;
+      counter.files++;
+      return notice;
+    }
+    const lines = withholdSecretLines(content, listed);
+    counter.hits += lines.hits;
+    return lines.content;
+  };
+  const replaced = mapToolResults(format, list, counter, result);
+  const { hits, files } = counter;
   return hits === 0
     ? { body, hits, files }
     : { body: { ...body, [format === "responses" ? "input" : "messages"]: replaced }, hits, files };
