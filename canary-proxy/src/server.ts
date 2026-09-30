@@ -382,7 +382,9 @@ export function createHandler(
     // names the tags the user's latest prompt carried ([allow-pii] → pii), so
     // the journal shows when masking or a guard was lifted.
     const allowed = tags.size > 0 ? ` allow=${[...tags].sort().join(",")}` : "";
-    const line = `${match[1]}${rest} ${upstream.status} scan=${scanMs}ms${allowed} redacted=${scanned.hits}`;
+    const line =
+      `${match[1]}${rest} ${upstream.status} scan=${scanMs}ms${allowed}` +
+      ` redacted=${scanned.hits}`;
     return relayReply(upstream, format, tags, line);
   };
 }
