@@ -19,6 +19,17 @@ it("compiles whole-word, longest-first, case-insensitive term lists", () => {
   ]);
 });
 
+it("skips a term that opens a hyphenated standard code", () => {
+  const rule = compileGeneralizeEntry({
+    id: "acronyms",
+    terms: ["XYZ"],
+    replace: "a condition",
+    caseSensitive: true,
+  });
+  const text = "XYZ-STE100, XYZ-2, XYZ-related, XYZ-, XYZ";
+  expect([...text.matchAll(rule.regex)].map((match) => match.index)).toEqual([12, 19, 32, 38]);
+});
+
 it("rejects malformed entries", () => {
   for (const entry of [
     { id: "x y", terms: ["a"], replace: "b" },

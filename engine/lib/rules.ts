@@ -584,7 +584,10 @@ export function compileGeneralizeEntry(entry: unknown): Rule {
     description: `Generalized wording "${id}"`,
     regex: ensureIndices(
       new RegExp(
-        `(?<![\\p{L}\\p{N}_])(?:${body})(?![\\p{L}\\p{N}_])`,
+        // An acronym that opens a hyphenated code of letters then digits
+        // ("XYZ-STE100") names a standard, not the topic. "COVID-19" and
+        // "XYZ-related" still match.
+        `(?<![\\p{L}\\p{N}_])(?:${body})(?![\\p{L}\\p{N}_])(?!-\\p{L}+\\p{N})`,
         caseSensitive === true ? "gu" : "giu",
       ),
     ),
