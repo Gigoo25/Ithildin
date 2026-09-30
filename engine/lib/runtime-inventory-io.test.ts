@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { identityFromGitRemotes, identityFromSsh } from "./runtime-inventory.ts";
+import { identityFromGitRemotes, identityFromRepos, identityFromSsh } from "./runtime-inventory.ts";
 
 // The default readers, against a made-up home and repo on disk.
 const root = mkdtempSync(path.join(tmpdir(), "ithildin-inventory-io-"));
@@ -51,5 +51,21 @@ describe("identityFromGitRemotes on disk", () => {
     const plain = path.join(root, "plain");
     mkdirSync(plain);
     expect(identityFromGitRemotes(plain).gitHosts).toEqual([]);
+  });
+});
+
+describe("identityFromRepos on disk", () => {
+  it("finds remote hosts of repositories below a root, not in hidden trees", () => {
+    const projects = path.join(root, "projects");
+    for (const [dir, host] of [
+      ["team/app", "zqxgit.example.test"],
+      [".stash/old", "hidden.example.test"],
+    ] as const) {
+      const git = path.join(projects, dir, ".git");
+      mkdirSync(git, { recursive: true });
+      writeFileSync(path.join(git, "config"), `[remote "origin"]\n\turl = git@${host}:x/y.git\n`);
+    }
+    expect(identityFromRepos([projects]).gitHosts).toEqual(["zqxgit.example.test"]);
+    expect(identityFromRepos([path.join(root, "absent")]).gitHosts).toEqual([]);
   });
 });

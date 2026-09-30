@@ -1,11 +1,12 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import path from "node:path";
-import type { InventoryEntry } from "../engine/lib/rules.ts";
+import { type InventoryEntry, scan } from "../engine/lib/rules.ts";
 import {
   IDENTITY_ENTRIES_MAX,
   initEngine,
   mergeIdentity,
   redactRequest,
+  refreshIdentity,
   swapToolJson,
   WITHHELD_NOTICE,
 } from "./redact.ts";
@@ -156,5 +157,15 @@ describe("identity refresh", () => {
     );
     mergeIdentity(known, many);
     expect(known.size).toBe(IDENTITY_ENTRIES_MAX);
+  });
+
+  it("installs what joined on a refresh, and keeps it when it is gone", () => {
+    const found = () => scan("joined ZqxRefreshNet").some((f) => f.secretValue === "ZqxRefreshNet");
+    expect(found()).toBe(false);
+    expect(refreshIdentity(() => [entry("runtime-ssid-1", "ZqxRefreshNet")])).toBe(true);
+    expect(found()).toBe(true);
+    expect(refreshIdentity(() => [entry("runtime-ssid-1", "ZqxRefreshNet")])).toBe(false);
+    expect(refreshIdentity(() => [])).toBe(false);
+    expect(found()).toBe(true);
   });
 });
