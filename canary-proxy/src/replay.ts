@@ -17,6 +17,7 @@
 
 import { createHmac } from "node:crypto";
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
+import { assert } from "../engine/lib/assert.ts";
 
 export type ReplayKind = "text" | "args";
 
@@ -62,6 +63,7 @@ function put(id: string, original: string | null): void {
     originals.delete(oldest);
     bytes -= value?.length ?? 0;
   }
+  assert(bytes >= 0 && bytes <= MAX_BYTES && originals.size <= MAX_ENTRIES, "replay within bounds");
   dirty = true;
 }
 

@@ -16,6 +16,7 @@
 // its reach.
 
 import type { AliasBook, Resolved } from "./aliases.ts";
+import { assert } from "./assert.ts";
 
 export interface Swap {
   // Arguments with every stand-in replaced (same shape as the input).
@@ -169,6 +170,8 @@ function swapString(
   let result = "";
   let last = 0;
   for (const span of standInSpans(text, book)) {
+    // Overlapping spans would copy text twice around the swapped value.
+    assert(last <= span.start && span.end <= text.length, "stand-in spans ordered, in text");
     const resolved = book.resolve(span.text);
     if (!resolved) {
       out.unresolved.push(span.text);

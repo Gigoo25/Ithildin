@@ -13,6 +13,7 @@ import {
 import { getValidator, isReservedIpv4 } from "./validators.ts";
 import { FIRST_NAMES } from "./first-names.ts";
 import { ALIAS_LABEL } from "./aliases.ts";
+import { assert } from "./assert.ts";
 
 export type Category = "secret" | "pii";
 
@@ -1299,17 +1300,13 @@ export function applyUserOverrides(base: Rule[], userConfigs: RuleConfig[]): Rul
     }
     byId.set(rule.id, rule);
   }
-  // An invalid override must not silently disable validation: if the custom
-  // rule dropped a validator the built-in had, keep the built-in instead.
-  const effective = new Map<string, Rule>(byId);
+  // An override that dropped a validator was rejected above: validation is
+  // never silently disabled.
   for (const original of base) {
-    const override = effective.get(original.id);
-    if (override && original.validate && !override.validate) {
-      process.stderr.write("sensitive-canary: user override drops validator — keeping built-in\n");
-      effective.delete(original.id);
-    }
+    const override = byId.get(original.id);
+    assert(!override || !original.validate || override.validate, "override keeps validator");
   }
-  return base.filter((r) => !effective.has(r.id)).concat(Array.from(effective.values()));
+  return base.filter((r) => !byId.has(r.id)).concat(Array.from(byId.values()));
 }
 
 function dedupeByIdLastWins(rules: Rule[]): Rule[] {
@@ -1861,6 +1858,7 @@ function windowCacheStore(digest: string, size: number, findings: LocatedFinding
   }
   WINDOW_CACHE.set(digest, entry);
   windowCacheBytes += cost;
+  assert(windowCacheBytes <= WINDOW_CACHE_MAX_BYTES, "window cache within its bound");
   windowCacheSerial++;
 }
 
@@ -1976,6 +1974,11 @@ function windowSlices(length: number): WindowTrip[] {
     slices.push({ start, end });
     if (end === length) break;
   }
+  // Windows cover the text from its first character to its last, and each
+  // overlaps the next: a gap would pass text through unscanned.
+  assert(slices[0]?.start === 0 && slices.at(-1)?.end === length, "windows span the text");
+  for (const [i, slice] of slices.entries())
+    assert(i === 0 || slice.start < slices[i - 1]!.end, "windows overlap");
   return slices;
 }
 

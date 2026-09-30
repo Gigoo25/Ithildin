@@ -44,6 +44,7 @@ import {
   loadAliasKey,
   SESSION_KEY_SUFFIX,
 } from "./lib/aliases.ts";
+import { assert } from "./lib/assert.ts";
 import { planRedaction } from "./lib/redaction-spans.ts";
 import { redactEncoded } from "./lib/encoded.ts";
 import { reportRedaction } from "./lib/redaction-audit.ts";
@@ -338,10 +339,12 @@ function projectThrough(edits: PassEdit[], at: number, end: boolean): number {
 // Each pass records edits in the coordinates of its own input; ranges map
 // back through the passes in reverse (`passes` is latest first).
 function toOriginal(passes: PassEdit[][], range: Range): Range {
-  return {
-    start: passes.reduce((at, edits) => projectThrough(edits, at, false), range.start),
-    end: passes.reduce((at, edits) => projectThrough(edits, at, true), range.end),
-  };
+  assert(0 <= range.start && range.start <= range.end, "range ordered");
+  const start = passes.reduce((at, edits) => projectThrough(edits, at, false), range.start);
+  const end = passes.reduce((at, edits) => projectThrough(edits, at, true), range.end);
+  // Projection is monotone: an ordered range stays ordered.
+  assert(0 <= start && start <= end, "projected range ordered");
+  return { start, end };
 }
 
 type PrePassed = { text: string; hits: number; encoded: PassEdit[]; cookies: PassEdit[] };

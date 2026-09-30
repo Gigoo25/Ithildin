@@ -1,4 +1,5 @@
 // All direct and propagated occurrences share one coordinate system and union.
+import { assert } from "./assert.ts";
 import type { LocatedFinding } from "./rules.ts";
 
 export interface SpanEdit {
@@ -178,6 +179,10 @@ export function planRedaction(input: PlanInput): { text: string; edits: SpanEdit
       cursor = 0;
     for (const e of edits) {
       check();
+      assert(
+        cursor <= e.start && e.start < e.end && e.end <= text.length,
+        "edits ordered, in text",
+      );
       out += text.slice(cursor, e.start) + e.replacement;
       cursor = e.end;
     }
