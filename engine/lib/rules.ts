@@ -1020,9 +1020,17 @@ const LOCAL_RULES: Rule[] = [
     category: "pii",
   },
   {
+    // The shape alone is any uppercase pair around a comma, which code is
+    // full of: nmcli -f NAME,TYPE, SELECT ID,EMAIL, GET,POST. The given name
+    // has to be a known first name, as in pii-gazetteer-name; a customer
+    // with a given name off that list is the accepted residual.
     id: "pii-customer-name",
     description: "Customer name LAST,FIRST in exported uppercase (NULL excluded)",
     regex: /\b(?![A-Z]*NULL[A-Z]*)(?:[A-Z][A-Z.'-]+,[A-Z][A-Z. -]*)\b/g,
+    validate: (value: string) => {
+      const given = value.slice(value.indexOf(",") + 1).split(/[ .-]/)[0] ?? "";
+      return FIRST_NAMES.has(given.toLowerCase());
+    },
     category: "pii",
   },
   {
