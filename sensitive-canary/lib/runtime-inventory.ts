@@ -162,6 +162,29 @@ function usableLiteral(value: string | undefined): string | undefined {
   return v;
 }
 
+// Up to MAX_PER_SOURCE non-public hosts from one source, numbered by kind.
+function addInfraHosts(
+  prefix: string,
+  hosts: string[] | undefined,
+  addCaseless: (id: string, literal: string) => void,
+): void {
+  let n = 0;
+  for (const raw of hosts ?? []) {
+    if (n >= MAX_PER_SOURCE) break;
+    const host = raw.trim().replace(/\.$/, "");
+    if (!host || PUBLIC_HOSTS.has(host.toLowerCase()) || !usableLiteral(host)) continue;
+    n++;
+    const kind = /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host)
+      ? "ip"
+      : host.includes(":")
+        ? "ipv6"
+        : "host";
+    addCaseless(`${prefix}-${kind}-${n}`, host);
+    if (kind === "host" && host.includes("."))
+      addCaseless(`${prefix}-host-short-${n}`, host.slice(0, host.indexOf(".")));
+  }
+}
+
 export function collectRuntimeIdentity(identity: RuntimeIdentity): InventoryEntry[] {
   const out: InventoryEntry[] = [];
   const seen = new Set<string>();
@@ -200,23 +223,8 @@ export function collectRuntimeIdentity(identity: RuntimeIdentity): InventoryEntr
     add("runtime-git-email", gitEmail);
 
   // Infrastructure names. Hostnames match case-insensitively (DNS does).
-  const addHosts = (prefix: string, hosts: string[] | undefined) => {
-    let n = 0;
-    for (const raw of hosts ?? []) {
-      if (n >= MAX_PER_SOURCE) break;
-      const host = raw.trim().replace(/\.$/, "");
-      if (!host || PUBLIC_HOSTS.has(host.toLowerCase()) || !usableLiteral(host)) continue;
-      n++;
-      const kind = /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host)
-        ? "ip"
-        : host.includes(":")
-          ? "ipv6"
-          : "host";
-      addCaseless(`${prefix}-${kind}-${n}`, host);
-      if (kind === "host" && host.includes("."))
-        addCaseless(`${prefix}-host-short-${n}`, host.slice(0, host.indexOf(".")));
-    }
-  };
+  const addHosts = (prefix: string, hosts: string[] | undefined) =>
+    addInfraHosts(prefix, hosts, addCaseless);
   const addCaseless = (id: string, literal: string) => {
     const v = usableLiteral(literal);
     if (!v || seen.has(v.toLowerCase())) return;
