@@ -1,6 +1,14 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import path from "node:path";
-import { initEngine, redactRequest, swapToolJson, WITHHELD_NOTICE } from "./redact.ts";
+import type { InventoryEntry } from "../engine/lib/rules.ts";
+import {
+  IDENTITY_ENTRIES_MAX,
+  initEngine,
+  mergeIdentity,
+  redactRequest,
+  swapToolJson,
+  WITHHELD_NOTICE,
+} from "./redact.ts";
 import { argsKey, recordOriginal, replayOriginal } from "./replay.ts";
 
 beforeAll(() => initEngine());
@@ -99,5 +107,54 @@ describe("replay store", () => {
 
   it("has no key for arguments that are not JSON", () => {
     expect(argsKey("{not json")).toBeUndefined();
+  });
+});
+
+describe("identity refresh", () => {
+  const entry = (id: string, literal: string, caseSensitive = true): InventoryEntry => ({
+    id,
+    literal,
+    match: "token",
+    caseSensitive,
+  });
+
+  it("keeps every value it has seen, and reports only growth", () => {
+    const known = new Map<string, InventoryEntry>();
+    expect(mergeIdentity(known, [entry("runtime-ssid-1", "ZqxHome")])).toBe(true);
+    expect(mergeIdentity(known, [entry("runtime-ssid-1", "ZqxHome")])).toBe(false);
+    // Out of range now, another network in: both stay.
+    expect(mergeIdentity(known, [entry("runtime-ssid-1", "ZqxCafe")])).toBe(true);
+    expect([...known.values()].map((e) => [e.id, e.literal])).toEqual([
+      ["runtime-ssid-1", "ZqxHome"],
+      ["runtime-ssid-2", "ZqxCafe"],
+    ]);
+  });
+
+  it("numbers a taken id without changing its kind, and folds caseless names", () => {
+    const known = new Map<string, InventoryEntry>();
+    mergeIdentity(known, [
+      entry("runtime-host", "zqxbox"),
+      entry("runtime-ssh-ip-1", "10.9.8.7", false),
+    ]);
+    mergeIdentity(known, [
+      entry("runtime-host", "zqxnew"),
+      entry("runtime-ssh-ip-1", "10.9.8.6", false),
+      entry("runtime-ssh-host-1", "ZQXBOX", false),
+    ]);
+    expect([...known.values()].map((e) => e.id)).toEqual([
+      "runtime-host",
+      "runtime-ssh-ip-1",
+      "runtime-host-2",
+      "runtime-ssh-ip-2",
+    ]);
+  });
+
+  it("stops at its bound instead of growing without limit", () => {
+    const known = new Map<string, InventoryEntry>();
+    const many = Array.from({ length: IDENTITY_ENTRIES_MAX + 5 }, (_, n) =>
+      entry(`runtime-ssid-${n + 1}`, `zqxnet${n}`),
+    );
+    mergeIdentity(known, many);
+    expect(known.size).toBe(IDENTITY_ENTRIES_MAX);
   });
 });

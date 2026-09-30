@@ -36,6 +36,7 @@ import {
   loadAliasKey,
   registerAliasLabels,
 } from "../engine/lib/aliases.ts";
+import { assert } from "../engine/lib/assert.ts";
 import { type Message, userTypedText } from "../engine/lib/inspector.ts";
 import { setting } from "../engine/lib/names.ts";
 import {
@@ -48,9 +49,14 @@ import {
 import {
   collectRuntimeIdentity,
   identityFromGit,
+  identityFromNetworkFiles,
   identityFromOs,
+  identityFromRepos,
   identityFromSsh,
+  identityFromTailscale,
+  identityFromWifi,
 } from "../engine/lib/runtime-inventory.ts";
+import type { InventoryEntry } from "../engine/lib/rules.ts";
 import { planSwapBack } from "../engine/lib/swap-back.ts";
 import { protectedBlocked, protectedChange } from "./protect.ts";
 import { argsKey, initReplay, recordOriginal, replayOriginal, saveReplay } from "./replay.ts";
@@ -69,17 +75,85 @@ export function saveScanCache(): void {
   aliases().saveCounters();
 }
 
+// This machine's identity, as runtime inventory. The proxy serves every
+// project, so git remotes come from every repository under the roots
+// ($ITHILDIN_REPO_ROOTS, colon-separated; default: home).
+function collectIdentity(): InventoryEntry[] {
+  const infra = setting("INFRA_INVENTORY") !== "off";
+  const roots = setting("REPO_ROOTS")?.split(":").filter(Boolean);
+  return collectRuntimeIdentity({
+    ...identityFromOs(),
+    ...identityFromGit(),
+    ...(infra
+      ? {
+          ...identityFromSsh(),
+          ...identityFromRepos(roots),
+          ...identityFromWifi(),
+          ...identityFromNetworkFiles(),
+          ...identityFromTailscale(),
+        }
+      : {}),
+  });
+}
+
+// Every value ever collected, keyed by literal. A value only ever joins:
+// one that stops being collected (Wi-Fi out of range, a peer offline) is
+// still in earlier turns, and every request resends the whole conversation.
+// Bounded like every rule source: each entry is a regex on every scan.
+const knownIdentity = new Map<string, InventoryEntry>();
+export const IDENTITY_ENTRIES_MAX = 1000;
+
+// Merges fresh entries into the known ones and returns whether any joined.
+// A new literal whose id is taken gets the next free number on that id,
+// which keeps the id's kind (host, ip, ssid) for its stand-in.
+export function mergeIdentity(
+  known: Map<string, InventoryEntry>,
+  fresh: InventoryEntry[],
+): boolean {
+  const ids = new Set([...known.values()].map((entry) => entry.id));
+  assert(ids.size === known.size, "known identity ids are unique");
+  let joined = false;
+  for (const entry of fresh) {
+    const key = entry.caseSensitive === false ? entry.literal.toLowerCase() : entry.literal;
+    if (known.has(key)) continue;
+    if (known.size >= IDENTITY_ENTRIES_MAX) {
+      process.stderr.write(
+        `ithildin: identity inventory full at ${IDENTITY_ENTRIES_MAX}; ` +
+          "newer values are not covered\n",
+      );
+      break;
+    }
+    let id = entry.id;
+    const stem = id.replace(/-\d+$/, "");
+    // At most ids.size numbers are taken, so ids.size + 2 is always free.
+    for (let n = 2; ids.has(id) && n <= ids.size + 2; n++) id = `${stem}-${n}`;
+    assert(!ids.has(id), "a renumbered identity id is free");
+    ids.add(id);
+    known.set(key, { ...entry, id });
+    joined = true;
+  }
+  assert(known.size <= IDENTITY_ENTRIES_MAX, "known identity within its bound");
+  return joined;
+}
+
+// Collects again (a new network, a new clone) and installs the rules when
+// anything joined. Unchanged, the rules and every scan cache stay as they are.
+export function refreshIdentity(collect: () => InventoryEntry[] = collectIdentity): boolean {
+  if (!mergeIdentity(knownIdentity, collect())) return false;
+  setRuntimeInventory([...knownIdentity.values()]);
+  registerAliasLabels(aliasLabels());
+  if (aliasStyle() === "stand-ins") {
+    for (const entry of inventoryLiterals())
+      aliases().standIn(entry.ruleId, entry.literal, entry.label);
+  }
+  return true;
+}
+
 export function initEngine(
   keyFile = setting("PROXY_KEY_FILE") ?? path.join(path.dirname(aliasKeyPath()), "proxy-alias-key"),
 ): void {
-  setRuntimeInventory(
-    collectRuntimeIdentity({
-      ...identityFromOs(),
-      ...identityFromGit(),
-      // Git remotes are per project, and the proxy has no project.
-      ...(setting("INFRA_INVENTORY") === "off" ? {} : identityFromSsh()),
-    }),
-  );
+  mergeIdentity(knownIdentity, collectIdentity());
+  setRuntimeInventory([...knownIdentity.values()]);
   registerAliasLabels(aliasLabels());
   const aliasKey = loadAliasKey(keyFile);
   const book = new AliasBook(aliasKey);

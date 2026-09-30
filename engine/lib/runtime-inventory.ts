@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import type { InventoryEntry } from "./rules.ts";
 import { looksLikeAlias } from "./aliases.ts";
+import { assert } from "./assert.ts";
 
 // Single-label names that fire on ordinary prose or distro defaults.
 const GENERIC = new Set([
@@ -59,6 +60,12 @@ const GENERIC = new Set([
   "bitnami",
   "deploy",
   "runner",
+  // Search domains routers and distros hand out.
+  "lan",
+  "localdomain",
+  "home.arpa",
+  "internal",
+  "intranet",
 ]);
 
 // Public forges and SSH endpoints: naming them reveals nothing about you.
@@ -120,6 +127,14 @@ export interface RuntimeIdentity {
   sshUsers?: string[];
   // Hosts of the current repository's git remotes.
   gitHosts?: string[];
+  // Wi-Fi networks: saved and in range, from NetworkManager or iwgetid.
+  ssids?: string[];
+  // resolv.conf search and domain entries.
+  searchDomains?: string[];
+  // Names and addresses of /etc/hosts entries that are not loopback.
+  etcHosts?: string[];
+  // Tailscale MagicDNS names: this machine, its peers, the tailnet suffix.
+  tailnetNames?: string[];
 }
 
 export function identityFromOs(): RuntimeIdentity {
@@ -234,12 +249,23 @@ export function collectRuntimeIdentity(identity: RuntimeIdentity): InventoryEntr
   addHosts("runtime-ssh", identity.sshHosts);
   addHosts("runtime-ssh-hostname", identity.sshHostNames);
   addHosts("runtime-git", identity.gitHosts);
+  addHosts("runtime-etc-hosts", identity.etcHosts);
+  addHosts("runtime-search-domain", identity.searchDomains);
+  addHosts("runtime-tailnet", identity.tailnetNames);
   let users = 0;
   for (const user of identity.sshUsers ?? []) {
     if (users >= MAX_PER_SOURCE) break;
     if (!usableLiteral(user)) continue;
     users++;
     add(`runtime-ssh-user-${users}`, user);
+  }
+  // SSIDs are free text: exact case, and a token only where one starts.
+  let ssids = 0;
+  for (const ssid of identity.ssids ?? []) {
+    if (ssids >= MAX_PER_SOURCE) break;
+    if (!usableLiteral(ssid)) continue;
+    ssids++;
+    add(`runtime-ssid-${ssids}`, ssid);
   }
 
   return out;
@@ -252,15 +278,27 @@ export function identityFromGit(
 }
 
 function readGitConfig(key: string): string | undefined {
+  const value = runCommand("git", ["config", "--get", key])?.trim();
+  return value ? value : undefined;
+}
+
+// stdout of a short command, or undefined when it is missing, fails or hangs.
+export type RunCommand = (command: string, args: string[], cwd?: string) => string | undefined;
+
+// A command that hangs or floods is treated as missing, never waited out.
+const COMMAND_TIMEOUT_MS = 1500;
+const COMMAND_OUTPUT_BYTES_MAX = 1 << 20;
+
+function runCommand(command: string, args: string[], cwd?: string): string | undefined {
   try {
-    const result = spawnSync("git", ["config", "--get", key], {
+    const result = spawnSync(command, args, {
+      cwd,
       encoding: "utf8",
-      timeout: 1500,
+      timeout: COMMAND_TIMEOUT_MS,
+      maxBuffer: COMMAND_OUTPUT_BYTES_MAX,
       stdio: ["ignore", "pipe", "ignore"],
     });
-    if (result.status !== 0) return;
-    const value = result.stdout.trim();
-    return value.length > 0 ? value : undefined;
+    return result.status === 0 ? result.stdout : undefined;
   } catch {
     return;
   }
@@ -349,21 +387,162 @@ export function identityFromGitRemotes(
 }
 
 function readGitRemoteUrls(cwd: string): string[] {
-  try {
-    const result = spawnSync("git", ["config", "--get-regexp", "^remote\\..*\\.(push)?url$"], {
-      cwd,
-      encoding: "utf8",
-      timeout: 1500,
-      stdio: ["ignore", "pipe", "ignore"],
-    });
-    if (result.status !== 0) return [];
-    return result.stdout.split("\n").flatMap((line) => {
-      const url = line.split(/\s+/)[1];
-      return url ? [url] : [];
-    });
-  } catch {
-    return [];
+  const out = runCommand("git", ["config", "--get-regexp", "^remote\\..*\\.(push)?url$"], cwd);
+  return (out ?? "").split("\n").flatMap((line) => {
+    const url = line.split(/\s+/)[1];
+    return url ? [url] : [];
+  });
+}
+
+// Remote hosts of every repository under the roots (default: home), for a
+// process like the proxy that serves every project at once. Hidden
+// directories and dependency trees are skipped, and a repository is not
+// descended into. Depth and directory count are bounded so a huge home
+// cannot stall startup.
+const REPO_SCAN_DEPTH_MAX = 4;
+const REPO_SCAN_DIRS_MAX = 5000;
+const SKIP_DIRS = new Set(["node_modules", "vendor", "target", "dist", "build", "result"]);
+
+export function identityFromRepos(
+  roots: string[] = [os.homedir()],
+  list: (dir: string) => Array<{ name: string; dir: boolean }> = listEntries,
+  read: (file: string) => string | undefined = readTextFile,
+): Pick<RuntimeIdentity, "gitHosts"> {
+  const hosts = new Set<string>();
+  assert(roots.length > 0, "repo scan has a root");
+  let budget = REPO_SCAN_DIRS_MAX;
+  let level = roots.map((root) => path.resolve(root));
+  for (let depth = 0; depth <= REPO_SCAN_DEPTH_MAX && level.length > 0; depth++) {
+    const next: string[] = [];
+    for (const dir of level) {
+      if (budget-- <= 0 || hosts.size >= MAX_PER_SOURCE) return { gitHosts: [...hosts] };
+      const entries = list(dir);
+      if (entries.some((entry) => entry.name === ".git" && entry.dir)) {
+        for (const url of remoteUrls(read(path.join(dir, ".git", "config")) ?? "")) {
+          const host = gitRemoteHost(url);
+          if (host) hosts.add(host);
+        }
+        continue;
+      }
+      for (const entry of entries)
+        if (entry.dir && !entry.name.startsWith(".") && !SKIP_DIRS.has(entry.name))
+          next.push(path.join(dir, entry.name));
+    }
+    level = next;
   }
+  return { gitHosts: [...hosts] };
+}
+
+// url and pushurl values of [remote "…"] sections in a git config file.
+export function remoteUrls(config: string): string[] {
+  const urls: string[] = [];
+  let inRemote = false;
+  for (const raw of config.split(/\r?\n/)) {
+    const line = raw.replace(/(^|\s)[#;].*$/, "").trim();
+    if (line.startsWith("[")) inRemote = /^\[remote\s+"/i.test(line);
+    else if (inRemote) {
+      const match = /^(?:push)?url\s*=\s*"?([^"]+?)"?$/i.exec(line);
+      if (match?.[1]) urls.push(match[1]);
+    }
+  }
+  return urls;
+}
+
+// Wi-Fi networks this machine knows. NetworkManager lists saved connections
+// (named for their SSID unless renamed) and networks in range from its
+// cache, without a rescan; iwgetid names the one in use elsewhere.
+export function identityFromWifi(run: RunCommand = runCommand): Pick<RuntimeIdentity, "ssids"> {
+  const ssids = new Set<string>();
+  for (const line of (run("nmcli", ["-t", "-f", "NAME,TYPE", "connection", "show"]) ?? "").split(
+    "\n",
+  )) {
+    const [name, type] = nmcliFields(line);
+    if (ssids.size >= MAX_PER_SOURCE) break;
+    if (name && type === "802-11-wireless") ssids.add(name);
+  }
+  for (const line of (
+    run("nmcli", ["-t", "-f", "IN-USE,SSID", "device", "wifi", "list", "--rescan", "no"]) ?? ""
+  ).split("\n")) {
+    const [inUse, ssid] = nmcliFields(line);
+    if (ssids.size >= MAX_PER_SOURCE) break;
+    if (inUse === "*" && ssid) ssids.add(ssid);
+  }
+  const current = run("iwgetid", ["-r"])?.trim();
+  if (current) ssids.add(current);
+  return { ssids: [...ssids] };
+}
+
+// nmcli -t output: fields joined by ':', with ':' and '\\' in values escaped.
+export function nmcliFields(line: string): string[] {
+  const fields: string[] = [];
+  let field = "";
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i]!;
+    if (char === "\\" && i + 1 < line.length) field += line[++i];
+    else if (char === ":") {
+      fields.push(field);
+      field = "";
+    } else field += char;
+  }
+  fields.push(field);
+  assert(fields.length > 0, "an nmcli line has a field");
+  return fields;
+}
+
+// resolv.conf search domains, and /etc/hosts entries a user added: loopback,
+// blocklist (0.0.0.0) and IPv6 multicast lines are the distro's, not yours.
+export function identityFromNetworkFiles(
+  read: (file: string) => string | undefined = readTextFile,
+): Pick<RuntimeIdentity, "searchDomains" | "etcHosts"> {
+  const searchDomains: string[] = [];
+  for (const raw of (read("/etc/resolv.conf") ?? "").split(/\r?\n/)) {
+    const [keyword, ...values] = raw
+      .replace(/[#;].*$/, "")
+      .trim()
+      .split(/\s+/);
+    if (searchDomains.length >= MAX_PER_SOURCE) break;
+    if (keyword === "search" || keyword === "domain") searchDomains.push(...values);
+  }
+  const etcHosts: string[] = [];
+  for (const raw of (read("/etc/hosts") ?? "").split(/\r?\n/)) {
+    if (etcHosts.length >= MAX_PER_SOURCE) break;
+    const [address, ...names] = raw.replace(/#.*$/, "").trim().split(/\s+/);
+    if (!address || names.length === 0) continue;
+    if (/^(?:127\.|0\.0\.0\.0$|::1?$|f[ef][0-9a-f]{2}:)/i.test(address)) continue;
+    etcHosts.push(address);
+    for (const name of names) if (!/^(?:ip6-|localhost)/i.test(name)) etcHosts.push(name);
+  }
+  return { searchDomains, etcHosts };
+}
+
+// MagicDNS names from `tailscale status --json`: this machine, its peers,
+// and the tailnet suffix (tail1234.ts.net), which is as identifying as a host.
+export function identityFromTailscale(
+  run: RunCommand = runCommand,
+): Pick<RuntimeIdentity, "tailnetNames"> {
+  const names = new Set<string>();
+  let status: {
+    MagicDNSSuffix?: unknown;
+    Self?: { DNSName?: unknown };
+    Peer?: Record<string, { DNSName?: unknown }>;
+  };
+  try {
+    status = JSON.parse(run("tailscale", ["status", "--json"]) ?? "null") ?? {};
+  } catch {
+    return { tailnetNames: [] };
+  }
+  const add = (value: unknown) => {
+    if (typeof value !== "string") return;
+    const name = value.trim().replace(/\.$/, "");
+    if (name) names.add(name);
+  };
+  add(status.MagicDNSSuffix);
+  add(status.Self?.DNSName);
+  for (const peer of Object.values(status.Peer ?? {})) {
+    if (names.size >= MAX_PER_SOURCE) break;
+    add(peer?.DNSName);
+  }
+  return { tailnetNames: [...names] };
 }
 
 function readTextFile(file: string): string | undefined {
@@ -371,6 +550,17 @@ function readTextFile(file: string): string | undefined {
     return readFileSync(file, "utf8");
   } catch {
     return;
+  }
+}
+
+function listEntries(dir: string): Array<{ name: string; dir: boolean }> {
+  try {
+    return readdirSync(dir, { withFileTypes: true }).map((entry) => ({
+      name: entry.name,
+      dir: entry.isDirectory(),
+    }));
+  } catch {
+    return [];
   }
 }
 

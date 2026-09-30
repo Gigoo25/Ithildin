@@ -4,7 +4,13 @@ import {
   gitRemoteHost,
   identityFromGit,
   identityFromGitRemotes,
+  identityFromNetworkFiles,
+  identityFromRepos,
   identityFromSsh,
+  identityFromTailscale,
+  identityFromWifi,
+  nmcliFields,
+  remoteUrls,
 } from "./runtime-inventory.ts";
 import { RULES, scan, setRuntimeInventory } from "./rules.ts";
 import { aliases, redactText } from "../core.ts";
@@ -161,6 +167,136 @@ describe("infrastructure sources", () => {
         .map((finding) => finding.secretValue)
         .sort(),
     ).toEqual(["203.0.113.44", "ZQXBOX"]);
+  });
+});
+
+describe("network sources", () => {
+  it("reads saved and in-use Wi-Fi from nmcli, and iwgetid", () => {
+    const run = (command: string, args: string[]) => {
+      if (command === "iwgetid") return "ZqxCafe\n";
+      if (args.includes("connection"))
+        return [
+          "ZqxHome:802-11-wireless",
+          "Wired connection 1:802-3-ethernet",
+          "Zqx\\:Lab:802-11-wireless",
+        ].join("\n");
+      return "*:ZqxHome\n :NeighbourNet\n";
+    };
+    expect(identityFromWifi(run).ssids).toEqual(["ZqxHome", "Zqx:Lab", "ZqxCafe"]);
+    expect(identityFromWifi(() => undefined).ssids).toEqual([]);
+    expect(nmcliFields("a\\:b:c\\\\")).toEqual(["a:b", "c\\"]);
+  });
+
+  it("reads search domains and user entries in /etc/hosts", () => {
+    const files: Record<string, string> = {
+      "/etc/resolv.conf": "# stub\nnameserver 127.0.0.53\nsearch zqxcorp.test tail0zq.ts.net\n",
+      "/etc/hosts": [
+        "127.0.0.1 localhost",
+        "::1 localhost ip6-localhost",
+        "ff02::1 ip6-allnodes",
+        "0.0.0.0 ads.example.test",
+        "192.168.7.20 zqxnas zqxnas.lan # the NAS",
+      ].join("\n"),
+    };
+    expect(identityFromNetworkFiles((file) => files[file])).toEqual({
+      searchDomains: ["zqxcorp.test", "tail0zq.ts.net"],
+      etcHosts: ["192.168.7.20", "zqxnas", "zqxnas.lan"],
+    });
+  });
+
+  it("reads MagicDNS names from tailscale status", () => {
+    const status = JSON.stringify({
+      MagicDNSSuffix: "tail0zq.ts.net",
+      Self: { DNSName: "zqxlaptop.tail0zq.ts.net." },
+      Peer: { a: { DNSName: "zqxphone.tail0zq.ts.net." }, b: {} },
+    });
+    expect(identityFromTailscale(() => status).tailnetNames).toEqual([
+      "tail0zq.ts.net",
+      "zqxlaptop.tail0zq.ts.net",
+      "zqxphone.tail0zq.ts.net",
+    ]);
+    expect(identityFromTailscale(() => undefined).tailnetNames).toEqual([]);
+    expect(identityFromTailscale(() => "not json").tailnetNames).toEqual([]);
+  });
+
+  it("makes network names rules, skipping generic search domains", () => {
+    const entries = collectRuntimeIdentity({
+      ssids: ["ZqxHome"],
+      searchDomains: ["lan", "zqxcorp.test"],
+      etcHosts: ["zqxnas"],
+      tailnetNames: ["zqxlaptop.tail0zq.ts.net"],
+    });
+    const literals = entries.map((entry) => entry.literal);
+    expect(literals).toEqual(
+      expect.arrayContaining(["ZqxHome", "zqxcorp.test", "zqxnas", "zqxlaptop"]),
+    );
+    expect(literals).not.toContain("lan");
+    expect(entries.find((entry) => entry.literal === "ZqxHome")?.id).toBe("runtime-ssid-1");
+    setRuntimeInventory(entries);
+    expect(
+      scan("joined ZqxHome from zqxnas")
+        .map((finding) => finding.secretValue)
+        .sort(),
+    ).toEqual(["ZqxHome", "zqxnas"]);
+  });
+});
+
+describe("repository sources", () => {
+  const tree: Record<string, Array<{ name: string; dir: boolean }>> = {
+    "/h": [
+      { name: "Projects", dir: true },
+      { name: ".cache", dir: true },
+      { name: "notes.txt", dir: false },
+    ],
+    "/h/Projects": [
+      { name: "app", dir: true },
+      { name: "node_modules", dir: true },
+    ],
+    "/h/Projects/app": [
+      { name: ".git", dir: true },
+      { name: "sub", dir: true },
+    ],
+    "/h/.cache": [{ name: ".git", dir: true }],
+  };
+  const configs: Record<string, string> = {
+    "/h/Projects/app/.git/config": [
+      "[core]",
+      "  url = https://not-a-remote.test/x",
+      '[remote "origin"]',
+      "  url = git@zqxgit.internal:team/app.git",
+      "  pushurl = https://push.zqxgit.internal/team/app # mirror",
+      '[branch "main"]',
+    ].join("\n"),
+  };
+
+  it("reads remote urls from git config sections", () => {
+    expect(remoteUrls(configs["/h/Projects/app/.git/config"]!)).toEqual([
+      "git@zqxgit.internal:team/app.git",
+      "https://push.zqxgit.internal/team/app",
+    ]);
+  });
+
+  it("finds repositories under the roots, skipping hidden and dependency trees", () => {
+    const visited: string[] = [];
+    const list = (dir: string) => {
+      visited.push(dir);
+      return tree[dir] ?? [];
+    };
+    expect(identityFromRepos(["/h"], list, (file) => configs[file]).gitHosts).toEqual([
+      "zqxgit.internal",
+      "push.zqxgit.internal",
+    ]);
+    expect(visited).toEqual(["/h", "/h/Projects", "/h/Projects/app"]);
+  });
+
+  it("stops at the depth limit", () => {
+    let calls = 0;
+    const endless = () => {
+      calls++;
+      return [{ name: "d", dir: true }];
+    };
+    expect(identityFromRepos(["/deep"], endless, () => undefined).gitHosts).toEqual([]);
+    expect(calls).toBeLessThanOrEqual(5);
   });
 });
 
