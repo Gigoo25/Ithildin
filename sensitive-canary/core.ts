@@ -317,60 +317,139 @@ export function asUserText<T>(scan: () => T): T {
   }
 }
 
-export function redactText(
-  text: string,
-  allowTags: Set<string> = new Set(),
-): { text: string; hits: number } {
-  const sourceLength = text.length;
-  type Edit = { start: number; end: number; replacementLength: number };
-  // Each pass records edits in the coordinates of its own input; ranges map
-  // back through the passes in reverse.
-  const encodedEdits: Edit[] = [];
-  const cookieEdits: Edit[] = [];
-  const project = (edits: Edit[], at: number, end: boolean) => {
-    let delta = 0;
-    for (const edit of edits) {
-      const left = edit.start + delta,
-        right = left + edit.replacementLength;
-      if (at < left || (at === left && !end)) break;
-      if (at < right || (at === right && end)) return end ? edit.end : edit.start;
-      delta += edit.replacementLength - (edit.end - edit.start);
-    }
-    return at - delta;
+// An edit one pass made, in the coordinates of that pass's input.
+type PassEdit = { start: number; end: number; replacementLength: number };
+type Range = { start: number; end: number };
+
+// Maps an offset in a pass's output back to its input. An offset inside a
+// replacement lands on the replaced range's start (or its end, for `end`).
+function projectThrough(edits: PassEdit[], at: number, end: boolean): number {
+  let delta = 0;
+  for (const edit of edits) {
+    const left = edit.start + delta,
+      right = left + edit.replacementLength;
+    if (at < left || (at === left && !end)) break;
+    if (at < right || (at === right && end)) return end ? edit.end : edit.start;
+    delta += edit.replacementLength - (edit.end - edit.start);
+  }
+  return at - delta;
+}
+
+// Each pass records edits in the coordinates of its own input; ranges map
+// back through the passes in reverse (`passes` is latest first).
+function toOriginal(passes: PassEdit[][], range: Range): Range {
+  return {
+    start: passes.reduce((at, edits) => projectThrough(edits, at, false), range.start),
+    end: passes.reduce((at, edits) => projectThrough(edits, at, true), range.end),
   };
-  const toOriginal = (range: { start: number; end: number }) => {
-    const passes = [cookieEdits, encodedEdits];
-    return {
-      start: passes.reduce((at, edits) => project(edits, at, false), range.start),
-      end: passes.reduce((at, edits) => project(edits, at, true), range.end),
-    };
-  };
-  let encodedHits = 0;
+}
+
+type PrePassed = { text: string; hits: number; encoded: PassEdit[]; cookies: PassEdit[] };
+
+// Encoded payloads, then Cookie headers, redacted ahead of the main scan.
+function redactPrePasses(text: string, allowTags: Set<string>): PrePassed {
+  const out: PrePassed = { text, hits: 0, encoded: [], cookies: [] };
   if (!allowTags.has("all")) {
     const encoded = redactEncoded(
-      text,
+      out.text,
       (decoded) =>
         scanWindows(decoded).findings.filter(
           (f) =>
             !isSyntheticValue(f.secretValue) && (scanningUserText || !isPromptOnlyRule(f.ruleId)),
         ),
       (category) => allowTags.has(category),
-      (start, end, replacementLength) => encodedEdits.push({ start, end, replacementLength }),
+      (start, end, replacementLength) => out.encoded.push({ start, end, replacementLength }),
     );
-    text = encoded.text;
-    encodedHits = encoded.hits;
+    out.text = encoded.text;
+    out.hits += encoded.hits;
   }
-  let cookieHits = 0;
   if (!allowTags.has("secret")) {
-    const cookieResult = redactCookieHeaders(
-      text,
+    const cookies = redactCookieHeaders(
+      out.text,
       syntheticValue,
       isSyntheticValue,
-      (start, end, replacementLength) => cookieEdits.push({ start, end, replacementLength }),
+      (start, end, replacementLength) => out.cookies.push({ start, end, replacementLength }),
     );
-    text = cookieResult.text;
-    cookieHits = cookieResult.hits;
+    out.text = cookies.text;
+    out.hits += cookies.hits;
   }
+  return out;
+}
+
+// The whole text withheld, when a scan cannot vouch for any of it.
+function omittedText(text: string, sourceLength: number, hits: number) {
+  reportRedaction({
+    sourceLength,
+    detections: [],
+    replacements: [],
+    omissions: [{ start: 0, end: sourceLength }],
+    coordinateSystem: "original",
+  });
+  return {
+    text:
+      `[sensitive-canary: omitted ${text.length} chars (scan budget exceeded or incomplete ` +
+      `document inspection)]`,
+    hits: hits + 1,
+  };
+}
+
+// Structured document and assignment findings; throws on a JSON value that
+// does not parse, which the caller treats as an incomplete inspection.
+function documentFindings(
+  text: string,
+  document: ReturnType<typeof inspectDocument>,
+  allowTags: Set<string>,
+): LocatedFinding[] {
+  if (allowTags.has("all")) return [];
+  const found = [
+    ...document.findings,
+    ...(document.status === "json" ? [] : assignmentEdits(text)),
+  ];
+  return found.filter(
+    (f) =>
+      !isSyntheticValue(f.secretValue) &&
+      !isSyntheticValue(f.secretValue.startsWith('"') ? JSON.parse(f.secretValue) : f.secretValue),
+  );
+}
+
+function replacementFor(finding: LocatedFinding): string {
+  if ((finding as { jsonKind?: string }).jsonKind || finding.ruleId.startsWith("structured-"))
+    return structuredReplacement(finding);
+  if (finding.category === "pii") return piiReplacement(finding.ruleId, finding.secretValue);
+  return syntheticValue(finding.secretValue);
+}
+
+function reportPlanned(
+  sourceLength: number,
+  pre: PrePassed,
+  findings: Range[],
+  edits: Array<Range & { replacement: string }>,
+): void {
+  const passes = [pre.cookies, pre.encoded];
+  const passEdits = [
+    ...pre.encoded.map(({ start, end }) => ({ start, end })),
+    ...pre.cookies.map((edit) => toOriginal(passes, { start: edit.start, end: edit.end })),
+  ];
+  const omitted = (e: { replacement: string }) =>
+    e.replacement.startsWith("[sensitive-canary: omitted");
+  reportRedaction({
+    sourceLength,
+    detections: [...passEdits, ...findings.map((f) => toOriginal(passes, f))],
+    replacements: [
+      ...passEdits,
+      ...edits.filter((e) => !omitted(e)).map((e) => toOriginal(passes, e)),
+    ],
+    omissions: edits.filter(omitted).map((e) => toOriginal(passes, e)),
+    coordinateSystem: "original",
+  });
+}
+
+export function redactText(
+  source: string,
+  allowTags: Set<string> = new Set(),
+): { text: string; hits: number } {
+  const pre = redactPrePasses(source, allowTags);
+  const text = pre.text;
   const { findings: raw, trips } = cachedScan(text);
   const allowed = allowTags.has("all")
     ? []
@@ -378,39 +457,16 @@ export function redactText(
   // Structured document edits join the same renderer. Filter them by the
   // same allow-tags before planning so an allowed category cannot exempt an
   // overlapping forbidden secret.
-  const omitted = () => {
-    reportRedaction({
-      sourceLength,
-      detections: [],
-      replacements: [],
-      omissions: [{ start: 0, end: sourceLength }],
-      coordinateSystem: "original",
-    });
-    return {
-      text:
-        `[sensitive-canary: omitted ${text.length} chars (scan budget exceeded or incomplete ` +
-        `document inspection)]`,
-      hits: encodedHits + cookieHits + 1,
-    };
-  };
   const document = inspectDocument(text);
-  if (document.status === "incomplete") return omitted();
+  if (document.status === "incomplete") return omittedText(text, source.length, pre.hits);
   let extra: LocatedFinding[];
   try {
-    extra = allowTags.has("all")
-      ? []
-      : [...document.findings, ...(document.status === "json" ? [] : assignmentEdits(text))].filter(
-          (f) =>
-            !isSyntheticValue(f.secretValue) &&
-            !isSyntheticValue(
-              f.secretValue.startsWith('"') ? JSON.parse(f.secretValue) : f.secretValue,
-            ),
-        );
+    extra = documentFindings(text, document, allowTags);
   } catch {
-    return omitted();
+    return omittedText(text, source.length, pre.hits);
   }
   const boilerplate = boilerplateSpans(text);
-  const insideBoilerplate = (finding: { start: number; end: number }): boolean =>
+  const insideBoilerplate = (finding: Range): boolean =>
     boilerplate.some((span) => finding.start >= span.start && finding.end <= span.end);
   const findings = (applyAllowTags([...allowed, ...extra], allowTags) as LocatedFinding[])
     .filter((finding) => !insideBoilerplate(finding))
@@ -429,49 +485,19 @@ export function redactText(
     trips: expandedTrips,
     scalars: document.scalars,
     checkBudget: assertScanBudget,
-    replacementFor: (finding) =>
-      (finding as LocatedFinding & { jsonKind?: string }).jsonKind ||
-      finding.ruleId.startsWith("structured-")
-        ? structuredReplacement(finding)
-        : finding.category === "pii"
-          ? piiReplacement(finding.ruleId, finding.secretValue)
-          : syntheticValue(finding.secretValue),
+    replacementFor,
   });
   if (document.status === "json") {
     try {
       JSON.parse(planned.text);
       assertScanBudget();
     } catch {
-      return omitted();
+      return omittedText(text, source.length, pre.hits);
     }
   }
-  const passEdits = [
-    ...encodedEdits.map(({ start, end }) => ({ start, end })),
-    ...cookieEdits.map((edit) => toOriginal({ start: edit.start, end: edit.end })),
-  ];
-  reportRedaction({
-    sourceLength,
-    detections: [...passEdits, ...findings.map(toOriginal)],
-    replacements: [
-      ...passEdits,
-      ...planned.edits
-        .filter((e) => !e.replacement.startsWith("[sensitive-canary: omitted"))
-        .map(toOriginal),
-    ],
-    omissions: planned.edits
-      .filter((e) => e.replacement.startsWith("[sensitive-canary: omitted"))
-      .map(toOriginal),
-    coordinateSystem: "original",
-  });
-  return {
-    text: planned.text,
-    hits:
-      encodedHits +
-      cookieHits +
-      uniqueFindings.length +
-      trips.length +
-      (planned.text !== text && uniqueFindings.length === 0 && trips.length === 0 ? 1 : 0),
-  };
+  reportPlanned(source.length, pre, findings, planned.edits);
+  const found = uniqueFindings.length + trips.length;
+  return { text: planned.text, hits: pre.hits + found + (planned.text !== text && !found ? 1 : 0) };
 }
 
 function structuredReplacement(finding: LocatedFinding): string {
@@ -603,19 +629,38 @@ export function redactValue(
   if (typeof value === "string" && isChainReference(key, parent, location, providerPayload)) {
     return { value, hits: 0 };
   }
-  if (typeof value === "string") {
-    if (isImagePayload(value, key, parent)) return { value, hits: 0 };
-    if (value.length > MAX_SCAN_BYTES) {
-      return { value: syntheticValue(value), hits: 1 };
-    }
-    const cookieResult = redactCookieField(value, key, allowTags);
-    if (cookieResult) return cookieResult;
-    const { text, hits } = redactText(value, allowTags);
-    return { value: text, hits };
-  }
+  if (typeof value === "string") return redactString(value, allowTags, key, parent);
   if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return { value, hits: 0 };
+  if (typeof value === "object" && value !== null)
+    return redactChildren(value, allowTags, location, providerPayload);
+  return { value, hits: 0 };
+}
+
+function redactString(
+  value: string,
+  allowTags: Set<string>,
+  key: string | undefined,
+  parent: Record<string, unknown> | undefined,
+): { value: unknown; hits: number } {
+  if (isImagePayload(value, key, parent)) return { value, hits: 0 };
+  if (value.length > MAX_SCAN_BYTES) {
+    return { value: syntheticValue(value), hits: 1 };
+  }
+  const cookieResult = redactCookieField(value, key, allowTags);
+  if (cookieResult) return cookieResult;
+  const { text, hits } = redactText(value, allowTags);
+  return { value: text, hits };
+}
+
+// An array or object with every child redacted.
+function redactChildren(
+  value: object,
+  allowTags: Set<string>,
+  location: readonly (string | number)[],
+  providerPayload: boolean,
+): { value: unknown; hits: number } {
+  let hits = 0;
   if (Array.isArray(value)) {
-    let hits = 0;
     const out = value.map((item, index) => {
       const result = redactValue(
         item,
@@ -630,25 +675,21 @@ export function redactValue(
     });
     return { value: out, hits };
   }
-  if (typeof value === "object" && value !== null) {
-    let hits = 0;
-    const out = Object.fromEntries(
-      Object.entries(value).map(([childKey, item]) => {
-        const result = redactValue(
-          item,
-          allowTags,
-          childKey,
-          value as Record<string, unknown>,
-          [...location, childKey],
-          providerPayload,
-        );
-        hits += result.hits;
-        return [childKey, result.value];
-      }),
-    );
-    return { value: out, hits };
-  }
-  return { value, hits: 0 };
+  const out = Object.fromEntries(
+    Object.entries(value).map(([childKey, item]) => {
+      const result = redactValue(
+        item,
+        allowTags,
+        childKey,
+        value as Record<string, unknown>,
+        [...location, childKey],
+        providerPayload,
+      );
+      hits += result.hits;
+      return [childKey, result.value];
+    }),
+  );
+  return { value: out, hits };
 }
 
 // Secret-path files may contain low-entropy passwords that pattern matching
