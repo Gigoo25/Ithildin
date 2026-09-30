@@ -290,21 +290,14 @@ function validateRuleConfig(rc: unknown): asserts rc is RuleConfig {
   if (typeof rc !== "object" || rc === null) {
     throw new Error("rule must be an object");
   }
-  const {
-    id,
-    description,
-    regex: source,
-    category,
-    flags,
-    secretGroup,
-    entropyThreshold,
-    validate: validateName,
-    contextWords,
-    excludeContext,
-    requireContext,
-    contextWindow,
-  } = rc as Record<string, unknown>;
+  const fields = rc as Record<string, unknown>;
+  validateRequiredFields(fields);
+  validateMatchFields(fields);
+  validateContextFields(fields);
+}
 
+function validateRequiredFields(fields: Record<string, unknown>): void {
+  const { id, description, regex: source, category } = fields;
   if (typeof id !== "string" || id.length === 0) {
     throw new Error('missing or empty "id" field');
   }
@@ -317,6 +310,10 @@ function validateRuleConfig(rc: unknown): asserts rc is RuleConfig {
   if (category !== "secret" && category !== "pii") {
     throw new Error(`invalid "category" ${JSON.stringify(category)} (must be "secret" or "pii")`);
   }
+}
+
+function validateMatchFields(fields: Record<string, unknown>): void {
+  const { flags, secretGroup, entropyThreshold, validate: validateName } = fields;
   if (flags != null && typeof flags !== "string") {
     throw new Error('"flags" must be a string');
   }
@@ -332,20 +329,19 @@ function validateRuleConfig(rc: unknown): asserts rc is RuleConfig {
   if (validateName != null && typeof validateName !== "string") {
     throw new Error('"validate" must be a string');
   }
-  if (excludeContext != null) {
+}
+
+function validateContextFields(fields: Record<string, unknown>): void {
+  const { contextWords, excludeContext, requireContext, contextWindow } = fields;
+  for (const [name, words] of [
+    ["excludeContext", excludeContext],
+    ["contextWords", contextWords],
+  ] as const) {
     if (
-      !Array.isArray(excludeContext) ||
-      excludeContext.some((w) => typeof w !== "string" || w.length === 0)
+      words != null &&
+      (!Array.isArray(words) || words.some((w) => typeof w !== "string" || w.length === 0))
     ) {
-      throw new Error('"excludeContext" must be an array of non-empty strings');
-    }
-  }
-  if (contextWords != null) {
-    if (
-      !Array.isArray(contextWords) ||
-      contextWords.some((w) => typeof w !== "string" || w.length === 0)
-    ) {
-      throw new Error('"contextWords" must be an array of non-empty strings');
+      throw new Error(`"${name}" must be an array of non-empty strings`);
     }
   }
   if (requireContext != null && typeof requireContext !== "boolean") {
@@ -1573,73 +1569,16 @@ function scanRule(rule: Rule, text: string): LocatedFinding[] {
     const matchStart = match.index ?? 0;
     const matchEnd = matchStart + match[0].length;
     const following = text.slice(matchEnd, matchEnd + 64);
-    // The shape test applies only where the rule captured a free-form value.
-    // A rule that matches a fixed prefix has already said what the thing is —
-    // a Slack webhook is a URL and a secret, and asking whether it looks like
-    // a URL is asking the wrong question.
-    const capturesAValue = rule.secretGroup != null;
-    if (
-      rule.category === "secret" &&
-      (isPlaceholder(secretValue, following) ||
-        (capturesAValue &&
-          (isNotSecretShaped(secretValue) ||
-            isPlaceholder(match[0], following) ||
-            isNotSecretShaped(match[0]) ||
-            keyDescribesRatherThanHolds(match[0]))))
-    )
-      continue;
+    if (!secretShaped(rule, secretValue, match, following)) continue;
     if (rule.entropyThreshold != null && entropy(secretValue) < rule.entropyThreshold) continue;
     if (rule.validate != null && !rule.validate(secretValue)) continue;
 
-    const hasContext =
-      !rule.contextWords || rule.contextWords.length === 0
-        ? true
-        : hasNearbyContextWord(
-            text,
-            matchStart,
-            matchEnd,
-            rule.contextWords,
-            rule.contextWindow ?? effectiveContextWindow,
-          );
+    const score = contextScore(rule, text, matchStart, matchEnd);
+    if (score === undefined) continue;
 
-    // Rules that require context (e.g. bare postal codes) are dropped when
-    // no context label is nearby, to avoid flagging every 5-digit number.
-    if (rule.requireContext && !hasContext) continue;
-
-    // And the other way: a word nearby that says this is not what the rule is
-    // for. `git clone git@github.com:…` and `ssh deploy@host` are addresses by
-    // shape, and the command in front of them is what says they are not
-    // anyone's mail.
-    if (
-      rule.excludeContext &&
-      rule.excludeContext.length > 0 &&
-      hasNearbyContextWord(
-        text,
-        matchStart,
-        matchEnd,
-        rule.excludeContext,
-        rule.contextWindow ?? effectiveContextWindow,
-      )
-    ) {
-      continue;
-    }
-
-    // Use the d-flag indices for the exact source location. Never use indexOf on the value.
-    const indices = (match as unknown as { indices?: Array<[number, number] | undefined> }).indices;
-    let start = matchStart;
-    let end = matchEnd;
-    if (rule.secretGroup != null) {
-      const groupSpan = indices?.[rule.secretGroup];
-      if (!groupSpan) continue;
-      start = groupSpan[0];
-      end = groupSpan[1];
-    } else {
-      const whole = indices?.[0];
-      if (whole) {
-        start = whole[0];
-        end = whole[1];
-      }
-    }
+    const span = matchSpan(rule, match, matchStart, matchEnd);
+    if (!span) continue;
+    const { start, end } = span;
     if (text.slice(start, end) !== secretValue) continue;
     findings.push({
       ruleId: rule.id,
@@ -1647,12 +1586,104 @@ function scanRule(rule: Rule, text: string): LocatedFinding[] {
       category: rule.category,
       matchRedacted: redact(secretValue),
       secretValue,
-      score: hasContext ? 1.0 : 0.4,
+      score,
       start,
       end,
     });
   }
   return findings;
+}
+
+// False when the value reads as a placeholder, or a captured value is not
+// shaped like a secret.
+function secretShaped(
+  rule: Rule,
+  secretValue: string,
+  match: RegExpMatchArray,
+  following: string,
+): boolean {
+  // The shape test applies only where the rule captured a free-form value.
+  // A rule that matches a fixed prefix has already said what the thing is —
+  // a Slack webhook is a URL and a secret, and asking whether it looks like
+  // a URL is asking the wrong question.
+  const capturesAValue = rule.secretGroup != null;
+  return !(
+    rule.category === "secret" &&
+    (isPlaceholder(secretValue, following) ||
+      (capturesAValue &&
+        (isNotSecretShaped(secretValue) ||
+          isPlaceholder(match[0], following) ||
+          isNotSecretShaped(match[0]) ||
+          keyDescribesRatherThanHolds(match[0]))))
+  );
+}
+
+// The finding's score from context words near it, or undefined when the
+// context rules it out.
+function contextScore(
+  rule: Rule,
+  text: string,
+  matchStart: number,
+  matchEnd: number,
+): number | undefined {
+  const hasContext =
+    !rule.contextWords || rule.contextWords.length === 0
+      ? true
+      : hasNearbyContextWord(
+          text,
+          matchStart,
+          matchEnd,
+          rule.contextWords,
+          rule.contextWindow ?? effectiveContextWindow,
+        );
+
+  // Rules that require context (e.g. bare postal codes) are dropped when
+  // no context label is nearby, to avoid flagging every 5-digit number.
+  if (rule.requireContext && !hasContext) return undefined;
+
+  // And the other way: a word nearby that says this is not what the rule is
+  // for. `git clone git@github.com:…` and `ssh deploy@host` are addresses by
+  // shape, and the command in front of them is what says they are not
+  // anyone's mail.
+  if (
+    rule.excludeContext &&
+    rule.excludeContext.length > 0 &&
+    hasNearbyContextWord(
+      text,
+      matchStart,
+      matchEnd,
+      rule.excludeContext,
+      rule.contextWindow ?? effectiveContextWindow,
+    )
+  ) {
+    return undefined;
+  }
+  return hasContext ? 1.0 : 0.4;
+}
+
+function matchSpan(
+  rule: Rule,
+  match: RegExpMatchArray,
+  matchStart: number,
+  matchEnd: number,
+): { start: number; end: number } | undefined {
+  // Use the d-flag indices for the exact source location. Never use indexOf on the value.
+  const indices = (match as unknown as { indices?: Array<[number, number] | undefined> }).indices;
+  let start = matchStart;
+  let end = matchEnd;
+  if (rule.secretGroup != null) {
+    const groupSpan = indices?.[rule.secretGroup];
+    if (!groupSpan) return undefined;
+    start = groupSpan[0];
+    end = groupSpan[1];
+  } else {
+    const whole = indices?.[0];
+    if (whole) {
+      start = whole[0];
+      end = whole[1];
+    }
+  }
+  return { start, end };
 }
 
 function scanUninterrupted(
@@ -1936,6 +1967,77 @@ export function importWindowCache(snapshot: unknown): number {
   return accepted;
 }
 
+// Window bounds over a text, each overlapping the next by SCAN_WINDOW_OVERLAP.
+function windowSlices(length: number): WindowTrip[] {
+  const step = SCAN_WINDOW_CHARS - SCAN_WINDOW_OVERLAP;
+  const slices: WindowTrip[] = [];
+  for (let start = 0; start < length; start += step) {
+    const end = Math.min(start + SCAN_WINDOW_CHARS, length);
+    slices.push({ start, end });
+    if (end === length) break;
+  }
+  return slices;
+}
+
+function pushShifted(into: LocatedFinding[], found: LocatedFinding[], offset: number): void {
+  for (const finding of found) {
+    into.push({ ...finding, start: finding.start + offset, end: finding.end + offset });
+  }
+}
+
+// `spent`: the envelope ran out partway; findings so far stand and the rest
+// of the text is omitted. `tripped`: a rule timed out under its own cap.
+type SliceScan = { findings: LocatedFinding[]; tripped: boolean; spent: boolean };
+
+// One window through every rule. Per-rule isolation: a poisoned rule trips
+// alone and the slice keeps every other rule's findings (a tripped slice
+// previously discarded findings its completed rules had already earned).
+function scanSlice(
+  sliceText: string,
+  categories: ReadonlySet<Category>,
+  rules: readonly Rule[],
+  ruleCap: number,
+  remaining: () => number,
+): SliceScan {
+  const out: SliceScan = { findings: [], tripped: false, spent: false };
+  for (const rule of rules) {
+    if (!categories.has(rule.category)) continue;
+    const ruleRemaining = remaining();
+    if (ruleRemaining <= 0) return { ...out, spent: true };
+    try {
+      // The comfort floor never overrides the remaining envelope. V8 can
+      // overshoot, so also check between rules, not only between windows.
+      const located = runInterruptibly(
+        () => scanRule(rule, sliceText),
+        Math.min(ruleCap, ruleRemaining),
+      );
+      for (const f of located) out.findings.push(f);
+    } catch (error) {
+      if (!(error instanceof ScanBudgetExceeded)) throw error;
+      // A timeout allocated the entire remaining envelope. Millisecond
+      // rounding can leave a fraction on the wall clock. Do not start
+      // another rule with that apparent remainder.
+      if (ruleRemaining <= ruleCap) return { ...out, spent: true };
+      out.tripped = true;
+    }
+  }
+  // Include the final rule: a single-window scan has no next iteration in
+  // which to notice an overshoot. Unfinished coverage must stay explicit.
+  return { ...out, spent: remaining() <= 0 };
+}
+
+// Overlapping windows report the same occurrence twice. Collapse by
+// exact location so the renderer sees each occurrence once.
+function dedupeLocated(findings: LocatedFinding[]): LocatedFinding[] {
+  const seen = new Set<string>();
+  return findings.filter((f) => {
+    const key = `${f.ruleId}\u0000${f.category}\u0000${f.start}\u0000${f.end}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 export function scanWindows(
   text: string,
   categories: ReadonlySet<Category> = ALL_CATEGORIES,
@@ -1943,19 +2045,14 @@ export function scanWindows(
   const findings: LocatedFinding[] = [];
   const trips: WindowTrip[] = [];
   if (text.length === 0) return { findings, trips };
-  const step = SCAN_WINDOW_CHARS - SCAN_WINDOW_OVERLAP;
-  const slices: WindowTrip[] = [];
-  for (let start = 0; start < text.length; start += step) {
-    const end = Math.min(start + SCAN_WINDOW_CHARS, text.length);
-    slices.push({ start, end });
-    if (end === text.length) break;
-  }
+  const slices = windowSlices(text.length);
   // Envelope measured locally so spending accumulates: each slice shares
   // what is LEFT, never a fresh full budget. The V8 cap scales with the
   // share (a flat +2000ms slack would dominate small shares and defeat
   // the envelope for many-slice inputs).
   const startedAt = Date.now();
   const totalBudget = remainingBudget();
+  const remaining = () => totalBudget - (Date.now() - startedAt);
   let consecutiveTrips = 0;
   for (const [i, slice] of slices.entries()) {
     const sliceText = text.slice(slice.start, slice.end);
@@ -1964,82 +2061,27 @@ export function scanWindows(
     // omission.
     const cached = windowCacheGet(sliceText, categories);
     if (cached !== null) {
-      for (const finding of cached) {
-        findings.push({
-          ...finding,
-          start: finding.start + slice.start,
-          end: finding.end + slice.start,
-        });
-      }
+      pushShifted(findings, cached, slice.start);
       consecutiveTrips = 0;
       continue;
     }
-    const remaining = totalBudget - (Date.now() - startedAt);
     // Fail closed once the envelope is spent or poison repeats: everything
     // from here on becomes one omitted span instead of passing through.
-    if (remaining <= 0 || consecutiveTrips >= MAX_CONSECUTIVE_TRIPS) {
+    const left = remaining();
+    if (left <= 0 || consecutiveTrips >= MAX_CONSECUTIVE_TRIPS) {
       trips.push({ start: slice.start, end: text.length });
       break;
     }
-    const sliceBudget = remaining / (slices.length - i);
-    // Per-rule isolation: a poisoned rule trips alone and the slice keeps
-    // every other rule's findings (a tripped slice previously discarded
-    // findings its completed rules had already earned).
     const rules = activeRules();
-    const ruleShare = sliceBudget / Math.max(rules.length, 1);
+    const ruleShare = left / (slices.length - i) / Math.max(rules.length, 1);
     const ruleCap = Math.max(MIN_RULE_BUDGET_MS, ruleShare * 2);
-    let sliceTripped = false;
-    const sliceFindings: LocatedFinding[] = [];
-    const flushSlice = () => {
-      for (const finding of sliceFindings) {
-        findings.push({
-          ...finding,
-          start: finding.start + slice.start,
-          end: finding.end + slice.start,
-        });
-      }
-    };
-    for (const rule of rules) {
-      if (!categories.has(rule.category)) continue;
-      const ruleRemaining = totalBudget - (Date.now() - startedAt);
-      if (ruleRemaining <= 0) {
-        flushSlice();
-        trips.push({ start: slice.start, end: text.length });
-        return { findings, trips: mergeRanges(trips) };
-      }
-      try {
-        // The comfort floor never overrides the remaining envelope. V8 can
-        // overshoot, so also check between rules, not only between windows.
-        const located = runInterruptibly(
-          () => scanRule(rule, sliceText),
-          Math.min(ruleCap, ruleRemaining),
-        );
-        for (const f of located) sliceFindings.push(f);
-      } catch (error) {
-        if (error instanceof ScanBudgetExceeded) {
-          // A timeout allocated the entire remaining envelope. Millisecond
-          // rounding can leave a fraction on the wall clock. Do not start
-          // another rule with that apparent remainder.
-          if (ruleRemaining <= ruleCap) {
-            flushSlice();
-            trips.push({ start: slice.start, end: text.length });
-            return { findings, trips: mergeRanges(trips) };
-          }
-          sliceTripped = true;
-          continue;
-        }
-        throw error;
-      }
-    }
-    // Include the final rule: a single-window scan has no next iteration in
-    // which to notice an overshoot. Unfinished coverage must stay explicit.
-    if (totalBudget - (Date.now() - startedAt) <= 0) {
-      flushSlice();
+    const scanned = scanSlice(sliceText, categories, rules, ruleCap, remaining);
+    pushShifted(findings, scanned.findings, slice.start);
+    if (scanned.spent) {
       trips.push({ start: slice.start, end: text.length });
       return { findings, trips: mergeRanges(trips) };
     }
-    flushSlice();
-    if (sliceTripped) {
+    if (scanned.tripped) {
       // Not cached. A rule that timed out under this envelope may complete
       // under a fuller one. A second bounded V8 timeout is cheaper than a
       // frozen omission.
@@ -2047,17 +2089,8 @@ export function scanWindows(
       consecutiveTrips++;
     } else {
       consecutiveTrips = 0;
-      windowCacheStore(windowDigest(sliceText, categories), sliceText.length, sliceFindings);
+      windowCacheStore(windowDigest(sliceText, categories), sliceText.length, scanned.findings);
     }
   }
-  // Overlapping windows report the same occurrence twice. Collapse by
-  // exact location so the renderer sees each occurrence once.
-  const seen = new Set<string>();
-  const deduped = findings.filter((f) => {
-    const key = `${f.ruleId}\u0000${f.category}\u0000${f.start}\u0000${f.end}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-  return { findings: deduped, trips: mergeRanges(trips) };
+  return { findings: dedupeLocated(findings), trips: mergeRanges(trips) };
 }
