@@ -937,6 +937,15 @@ const LOCAL_RULES: Rule[] = [
     category: "pii",
   },
   {
+    // E.164 as configs, APIs and contact exports store it: no separators,
+    // so pii-phone-us misses it, and the country rules take a slice. The
+    // plus must start the token: "x + 100000000" and "1e+10000000" pass.
+    id: "pii-phone-e164",
+    description: "Phone number in compact international form: +, country code, up to 15 digits",
+    regex: /(?<![\w+])\+[1-9]\d{7,14}\b/g,
+    category: "pii",
+  },
+  {
     id: "pii-tailscale-ip",
     description: "CGNAT/Tailscale IPv4 Address (100.64/10)",
     // A trailing "/N" makes the value a documented range (100.64.0.0/10),
