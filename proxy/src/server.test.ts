@@ -145,7 +145,7 @@ describe("requests", () => {
       (await (await handler(new Request(`http://127.0.0.1/_ithildin/health?${query}`))).json()) as {
         badge: string;
       };
-    expect((await health()).badge).toBe("CANARY ON");
+    expect((await health()).badge).toBe("ITHILDIN ON");
     // One value, however often it appears.
     await handler(
       post("anthropic/v1/messages", {
@@ -156,11 +156,11 @@ describe("requests", () => {
         ],
       }),
     );
-    expect((await health()).badge).toBe("CANARY ON · 1m (+1) · 1 req");
+    expect((await health()).badge).toBe("ITHILDIN ON · 1m (+1) · 1 req");
     await handler(
       post("anthropic/v1/messages", { messages: [{ role: "user", content: "title this" }] }),
     );
-    expect((await health()).badge).toBe("CANARY ON · 1m (+1) · 1 req");
+    expect((await health()).badge).toBe("ITHILDIN ON · 1m (+1) · 1 req");
   });
 
   it("keeps one badge per session and never forwards the proxy's session header", async () => {
@@ -196,8 +196,8 @@ describe("requests", () => {
       { role: "user", content: "hi" },
       { role: "assistant", content: "hello" },
     ]);
-    expect(await badge("pi-1")).toBe("CANARY ON · 1m (+1) · 1 req");
-    expect(await badge("claude-1")).toBe("CANARY ON · 0 · 1 req");
+    expect(await badge("pi-1")).toBe("ITHILDIN ON · 1m (+1) · 1 req");
+    expect(await badge("claude-1")).toBe("ITHILDIN ON · 0 · 1 req");
     expect(up.seen[0]!.headers.get("x-canary-session")).toBeNull();
     expect(up.seen[0]!.headers.get("x-ithildin-session")).toBeNull();
     // A tool result in the same turn adds to the turn; a new prompt starts
@@ -208,13 +208,13 @@ describe("requests", () => {
       ...call("t2", "from user-a0ea33@acme-corp.com"),
     ];
     await send({ "x-ithildin-session": "pi-1" }, second);
-    expect(await badge("pi-1")).toBe("CANARY ON · 2m (+2) · 2 req");
+    expect(await badge("pi-1")).toBe("ITHILDIN ON · 2m (+2) · 2 req");
     await send({ "x-ithildin-session": "pi-1" }, [
       ...second,
       { role: "assistant", content: "done" },
       { role: "user", content: "thanks" },
     ]);
-    expect(await badge("pi-1")).toBe("CANARY ON · 2m · 3 req");
+    expect(await badge("pi-1")).toBe("ITHILDIN ON · 2m · 3 req");
     expect(up.seen.at(-1)!.headers.get("x-ithildin-session")).toBeNull();
   });
 

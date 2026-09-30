@@ -317,7 +317,7 @@ function health(
   return Response.json({
     ok: true,
     routes: Object.keys(routes),
-    badge: status?.badge ?? "CANARY ON",
+    badge: status?.badge ?? "ITHILDIN ON",
     status,
     selftest: proof,
   });

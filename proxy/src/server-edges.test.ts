@@ -213,7 +213,7 @@ describe("health and routing", () => {
     };
     expect(body.ok).toBe(true);
     expect(body.routes).toEqual(Object.keys(DEFAULT_ROUTES));
-    expect(body.badge).toBe("CANARY ON");
+    expect(body.badge).toBe("ITHILDIN ON");
   });
 
   it("maps paths to formats", () => {

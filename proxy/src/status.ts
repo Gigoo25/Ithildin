@@ -2,7 +2,7 @@
 // Claude's status line and Pi's footer render the same text, built here, so
 // the two cannot drift:
 //
-//   CANARY ON · 12m 1f 3l 2i (+2)
+//   ITHILDIN ON · 12m 1f 3l 2i (+2)
 //
 //   m  distinct values masked: swapped for stand-ins or generalized
 //   f  tool results withheld: the call read a protected file
@@ -13,7 +13,7 @@
 //          a badge reading "0" still shows the proxy is in the path
 //
 // Counts cover the whole conversation, since every request carries all of
-// it. Zero kinds are left out; nothing hidden reads "CANARY ON · 0".
+// it. Zero kinds are left out; nothing hidden reads "ITHILDIN ON · 0".
 //
 // Conversations are keyed by the agent's session id: Claude sends
 // X-Claude-Code-Session-Id, Pi's footer adds x-ithildin-session (stripped before
@@ -51,8 +51,8 @@ export function badgeText(counts: Counts, turn: number, requests = 0): string {
     counts.lines && `${counts.lines}l`,
     counts.images && `${counts.images}i`,
   ].filter(Boolean);
-  if (parts.length === 0) return `CANARY ON · 0${scanned}`;
-  return `CANARY ON · ${parts.join(" ")}${turn > 0 ? ` (+${turn})` : ""}${scanned}`;
+  if (parts.length === 0) return `ITHILDIN ON · 0${scanned}`;
+  return `ITHILDIN ON · ${parts.join(" ")}${turn > 0 ? ` (+${turn})` : ""}${scanned}`;
 }
 
 export function createStatusBook() {
