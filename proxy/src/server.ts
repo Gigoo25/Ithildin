@@ -23,6 +23,7 @@ import {
   initEngine,
   redactQuery,
   redactRequest,
+  refreshIdentity,
   saveScanCache,
   typedPromptCount,
 } from "./redact.ts";
@@ -481,6 +482,9 @@ export function readOptions(
   return { port, routesFile };
 }
 
+// Networks and clones change under a running proxy; values only join.
+const IDENTITY_REFRESH_MS = 300_000;
+
 // Port 0 picks a free port (tests); the bound one is on the server.
 export function start(
   options: Options,
@@ -490,6 +494,10 @@ export function start(
   initEngine();
   const saving = setInterval(saveScanCache, 30_000);
   saving.unref();
+  const refreshing = setInterval(() => {
+    if (refreshIdentity()) log("identity inventory grew");
+  }, IDENTITY_REFRESH_MS);
+  refreshing.unref();
   const handler = createHandler(routes, fetchUpstream, REDACTORS, true);
   const server = Bun.serve({
     hostname: "127.0.0.1",
@@ -505,6 +513,7 @@ export function start(
   // retry the refused connections.
   const drain = async (): Promise<void> => {
     clearInterval(saving);
+    clearInterval(refreshing);
     saveScanCache();
     log("draining in-flight requests");
     await server.stop(false);
