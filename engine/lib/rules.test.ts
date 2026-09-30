@@ -384,6 +384,8 @@ describe("local rule additions", () => {
     const email = "JOHN" + ".CFFERING" + "@" + "EXAMPLE" + ".COM";
     expect(scan(`mail ${email} sent`).some((f) => f.ruleId === "pii-customer-email")).toBe(true);
     expect(scan("name DOE,JOHN Q here").some((f) => f.ruleId === "pii-customer-name")).toBe(true);
+    for (const text of ["row ZQXOAKES,MARY done", "row O'ZQXNEIL-PARK,ANNA J done"])
+      expect(scan(text).some((f) => f.ruleId === "pii-customer-name")).toBe(true);
     expect(scan("home_phone: 5550149876 ok").some((f) => f.ruleId === "pii-customer-phone")).toBe(
       true,
     );
@@ -401,6 +403,15 @@ describe("local rule additions", () => {
     }
     expect(scan("Smith, John here").some((f) => f.ruleId === "pii-customer-name")).toBe(false);
     expect(scan("NULL, NULL here").some((f) => f.ruleId === "pii-customer-name")).toBe(false);
+    // Uppercase lists in code: the part after the comma is not a first name.
+    for (const text of [
+      "nmcli -t -f NAME,TYPE connection show",
+      'run("nmcli", ["-f", "IN-USE,SSID"])',
+      "SELECT ID,EMAIL FROM users",
+      "methods GET,POST allowed",
+      "KEY,VALUE pairs",
+    ])
+      expect(scan(text).some((f) => f.ruleId === "pii-customer-name")).toBe(false);
     expect(scan("ticket 5550149876 closed").some((f) => f.ruleId === "pii-customer-phone")).toBe(
       false,
     );
