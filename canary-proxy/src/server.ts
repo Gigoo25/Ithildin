@@ -178,6 +178,148 @@ function rewriteSse(
 export type Redactors = { request: typeof redactRequest; query: typeof redactQuery };
 const REDACTORS: Redactors = { request: redactRequest, query: redactQuery };
 
+// What scanning a request body gave: the body to forward and what it found.
+type Scanned = {
+  body: string | undefined;
+  tags: Set<string>;
+  hits: number;
+  counts: Counts | undefined;
+  prompts: number;
+  scanMs: number;
+};
+
+function unscanned(): Scanned {
+  return { body: undefined, tags: new Set(), hits: 0, counts: undefined, prompts: 0, scanMs: 0 };
+}
+
+// The request body redacted, or the refusal. Bodies not read as JSON pass
+// only when empty.
+async function scanRequest(
+  request: Request,
+  format: Format | undefined,
+  redact: Redactors,
+): Promise<Scanned | Response> {
+  if (request.method === "GET" || request.method === "HEAD") return unscanned();
+  const encoding = request.headers.get("content-encoding");
+  if (encoding && encoding !== "identity")
+    return refuse(415, `compressed request bodies (${encoding}) cannot be scanned`);
+  const declared = Number(request.headers.get("content-length") ?? 0);
+  if (declared > REQUEST_BYTES_MAX)
+    return refuse(413, `request body over ${REQUEST_BYTES_MAX} bytes`);
+  const raw = await request.text();
+  if (Buffer.byteLength(raw) > REQUEST_BYTES_MAX)
+    return refuse(413, `request body over ${REQUEST_BYTES_MAX} bytes`);
+  const type = request.headers.get("content-type") ?? "";
+  if (type.includes("json") || (format !== undefined && raw.trimStart().startsWith("{"))) {
+    const parsed = parseRequestObject(raw);
+    if (parsed instanceof Response) return parsed;
+    return redactBody(parsed, format ?? "chat", redact);
+  }
+  if (raw.length > 0)
+    return refuse(415, `non-JSON request body (${type || "no content-type"}) cannot be scanned`);
+  return unscanned();
+}
+
+function parseRequestObject(raw: string): Record<string, unknown> | Response {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return refuse(400, "request body is not valid JSON, refusing to forward it unscanned");
+  }
+  // Every provider API takes an object; anything else was forwarded
+  // unscanned before.
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+    return refuse(400, "request body is not a JSON object, refusing to forward it unscanned");
+  if (jsonDepth(parsed, JSON_DEPTH_MAX) > JSON_DEPTH_MAX)
+    return refuse(400, `request body nests deeper than ${JSON_DEPTH_MAX} levels`);
+  return parsed as Record<string, unknown>;
+}
+
+function redactBody(
+  parsed: Record<string, unknown>,
+  format: Format,
+  redact: Redactors,
+): Scanned | Response {
+  try {
+    const started = performance.now();
+    const redacted = redact.request(format, parsed);
+    const scanMs = Math.round(performance.now() - started);
+    // Single-message side requests (titles, quota probes) are not the
+    // conversation, so they do not set its badge.
+    const turns = Array.isArray(parsed.messages) ? parsed.messages : parsed.input;
+    const conversation = Array.isArray(turns) && turns.length > 1;
+    return {
+      body: JSON.stringify(redacted.body),
+      tags: redacted.tags,
+      hits: redacted.hits,
+      counts: conversation ? redacted.counts : undefined,
+      prompts: conversation ? typedPromptCount(format, parsed) : 0,
+      scanMs,
+    };
+  } catch (error) {
+    return refuse(
+      500,
+      `redaction failed (${(error as Error).name}), refusing to forward unscanned`,
+    );
+  }
+}
+
+// The query string redacted, its hits added to the body's; or the refusal.
+function redactSearch(search: string, scanned: Scanned, redact: Redactors): string | Response {
+  try {
+    const query = redact.query(search, scanned.tags);
+    scanned.hits += query.hits;
+    if (scanned.counts) scanned.counts.masked += query.values;
+    return query.search;
+  } catch (error) {
+    return refuse(
+      500,
+      `query redaction failed (${(error as Error).name}), refusing to forward unscanned`,
+    );
+  }
+}
+
+async function runSelfTest(routes: Record<string, Route>, redact: Redactors): Promise<SelfTest> {
+  const proof = await selfTest((upstream) => createHandler(routes, upstream, redact));
+  log(
+    proof.ok
+      ? `self-test passed (${proof.ms}ms)`
+      : `self-test FAILED: ${proof.failures.join("; ")}`,
+  );
+  return proof;
+}
+
+function refuseUnproven(proof: SelfTest | undefined): Response {
+  return refuse(
+    503,
+    proof
+      ? `self-test failed (${proof.failures.join("; ")}), refusing to forward`
+      : "self-test has not run yet",
+  );
+}
+
+function health(
+  url: URL,
+  routes: Record<string, Route>,
+  book: ReturnType<typeof createStatusBook>,
+  proof: SelfTest | undefined,
+): Response {
+  // A failed self-test reads as down: both badges turn red on a non-200.
+  if (proof && !proof.ok) return Response.json({ ok: false, selftest: proof }, { status: 503 });
+  const status = book.lookup(
+    url.searchParams.get("session") ?? undefined,
+    url.searchParams.get("route") ?? undefined,
+  );
+  return Response.json({
+    ok: true,
+    routes: Object.keys(routes),
+    badge: status?.badge ?? "CANARY ON",
+    status,
+    selftest: proof,
+  });
+}
+
 // `gated`: refuse model requests until a self-test passes (selftest.ts). The
 // server's handler is gated; the self-test's own and the tests' are not.
 export function createHandler(
@@ -193,37 +335,11 @@ export function createHandler(
   return async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
     if (url.pathname === "/_canary/selftest") {
-      proof = await selfTest((upstream) => createHandler(routes, upstream, redact));
-      log(
-        proof.ok
-          ? `self-test passed (${proof.ms}ms)`
-          : `self-test FAILED: ${proof.failures.join("; ")}`,
-      );
+      proof = await runSelfTest(routes, redact);
       return Response.json(proof, { status: proof.ok ? 200 : 503 });
     }
-    if (url.pathname === "/_canary/health") {
-      // A failed self-test reads as down: both badges turn red on a non-200.
-      if (proof && !proof.ok) return Response.json({ ok: false, selftest: proof }, { status: 503 });
-      const status = book.lookup(
-        url.searchParams.get("session") ?? undefined,
-        url.searchParams.get("route") ?? undefined,
-      );
-      return Response.json({
-        ok: true,
-        routes: Object.keys(routes),
-        badge: status?.badge ?? "CANARY ON",
-        status,
-        selftest: proof,
-      });
-    }
-    if (gated && !proof?.ok) {
-      return refuse(
-        503,
-        proof
-          ? `self-test failed (${proof.failures.join("; ")}), refusing to forward`
-          : "self-test has not run yet",
-      );
-    }
+    if (url.pathname === "/_canary/health") return health(url, routes, book, proof);
+    if (gated && !proof?.ok) return refuseUnproven(proof);
     const match = /^\/([^/]+)(\/.*)?$/.exec(url.pathname);
     const route = match ? routes[match[1]!] : undefined;
     if (!match || !route) return refuse(404, `no route for ${url.pathname.split("/")[1] ?? ""}`);
@@ -241,78 +357,11 @@ export function createHandler(
     headers.delete(SESSION_HEADER);
     headers.set("accept-encoding", "identity");
 
-    let body: RequestInit["body"];
-    let tags = new Set<string>();
-    let hits = 0;
-    let counts: Counts | undefined;
-    let prompts = 0;
-    let scanMs = 0;
-    if (request.method !== "GET" && request.method !== "HEAD") {
-      const encoding = request.headers.get("content-encoding");
-      if (encoding && encoding !== "identity")
-        return refuse(415, `compressed request bodies (${encoding}) cannot be scanned`);
-      const declared = Number(request.headers.get("content-length") ?? 0);
-      if (declared > REQUEST_BYTES_MAX)
-        return refuse(413, `request body over ${REQUEST_BYTES_MAX} bytes`);
-      const raw = await request.text();
-      if (Buffer.byteLength(raw) > REQUEST_BYTES_MAX)
-        return refuse(413, `request body over ${REQUEST_BYTES_MAX} bytes`);
-      const type = request.headers.get("content-type") ?? "";
-      if (type.includes("json") || (format !== undefined && raw.trimStart().startsWith("{"))) {
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(raw);
-        } catch {
-          return refuse(400, "request body is not valid JSON, refusing to forward it unscanned");
-        }
-        // Every provider API takes an object; anything else was forwarded
-        // unscanned before.
-        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-          return refuse(400, "request body is not a JSON object, refusing to forward it unscanned");
-        if (jsonDepth(parsed, JSON_DEPTH_MAX) > JSON_DEPTH_MAX)
-          return refuse(400, `request body nests deeper than ${JSON_DEPTH_MAX} levels`);
-        {
-          try {
-            const started = performance.now();
-            const redacted = redact.request(format ?? "chat", parsed as Record<string, unknown>);
-            scanMs = Math.round(performance.now() - started);
-            tags = redacted.tags;
-            hits = redacted.hits;
-            // Single-message side requests (titles, quota probes) are not the
-            // conversation, so they do not set its badge.
-            const record = parsed as { messages?: unknown; input?: unknown };
-            const turns = Array.isArray(record.messages) ? record.messages : record.input;
-            if (Array.isArray(turns) && turns.length > 1) {
-              counts = redacted.counts;
-              prompts = typedPromptCount(format ?? "chat", parsed as Record<string, unknown>);
-            }
-            body = JSON.stringify(redacted.body);
-          } catch (error) {
-            return refuse(
-              500,
-              `redaction failed (${(error as Error).name}), refusing to forward unscanned`,
-            );
-          }
-        }
-      } else if (raw.length > 0) {
-        return refuse(
-          415,
-          `non-JSON request body (${type || "no content-type"}) cannot be scanned`,
-        );
-      }
-    }
-    let search: string;
-    try {
-      const query = redact.query(url.search, tags);
-      search = query.search;
-      hits += query.hits;
-      if (counts) counts.masked += query.values;
-    } catch (error) {
-      return refuse(
-        500,
-        `query redaction failed (${(error as Error).name}), refusing to forward unscanned`,
-      );
-    }
+    const scanned = await scanRequest(request, format, redact);
+    if (scanned instanceof Response) return scanned;
+    const { body, tags, counts, prompts, scanMs } = scanned;
+    const search = redactSearch(url.search, scanned, redact);
+    if (typeof search !== "string") return search;
     const target = upstreamUrl(route, rest, search);
     if (counts) book.record(session, match[1]!, counts, prompts);
 
@@ -329,59 +378,75 @@ export function createHandler(
       return refuse(502, `upstream unreachable (${(error as Error).message})`);
     }
 
-    const outHeaders = new Headers(upstream.headers);
-    outHeaders.delete("content-encoding");
-    outHeaders.delete("content-length");
-    const contentType = upstream.headers.get("content-type") ?? "";
     // scan= is the redaction time this proxy adds to each request; allow=
     // names the tags the user's latest prompt carried ([allow-pii] → pii), so
     // the journal shows when masking or a guard was lifted.
     const allowed = tags.size > 0 ? ` allow=${[...tags].sort().join(",")}` : "";
-    const tag = `${match[1]}${rest} ${upstream.status} scan=${scanMs}ms${allowed}`;
-
-    if (format && upstream.body && contentType.includes("text/event-stream")) {
-      const stream = rewriteSse(upstream.body, format, tags, (swapped) =>
-        log(`${tag} redacted=${hits} swapped=${swapped} (stream)`),
-      );
-      return new Response(stream, { status: upstream.status, headers: outHeaders });
-    }
-    if (format && contentType.includes("json") && upstream.ok) {
-      const text = await upstream.text();
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(text);
-      } catch {
-        return refuse(
-          502,
-          "upstream reply is not valid JSON, refusing to pass unchecked tool calls",
-        );
-      }
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-        return refuse(502, "upstream reply is not a JSON object, refusing to pass it unchecked");
-      let swapped: number;
-      try {
-        swapped = swapResponseBody(format, parsed as Record<string, unknown>, tags);
-      } catch (error) {
-        // Half-swapped, with blocked calls maybe still intact: never pass on.
-        return refuse(
-          502,
-          `reply rewriting failed (${(error as Error).name}), refusing to pass unchecked tool ` +
-            `calls`,
-        );
-      }
-      log(`${tag} redacted=${hits} swapped=${swapped}`);
-      // Always re-serialized: a blocked call changes arguments without a swap.
-      return new Response(JSON.stringify(parsed), { status: upstream.status, headers: outHeaders });
-    }
-    // A successful model reply in a shape not read here could carry tool
-    // calls no guard saw. Errors and non-model routes pass as they are.
-    if (format && upstream.ok && upstream.body) {
-      await upstream.body.cancel();
-      return refuse(502, `upstream reply type ${contentType.split(";")[0]} cannot be checked`);
-    }
-    log(`${tag} redacted=${hits}`);
-    return new Response(upstream.body, { status: upstream.status, headers: outHeaders });
+    const line = `${match[1]}${rest} ${upstream.status} scan=${scanMs}ms${allowed} redacted=${scanned.hits}`;
+    return relayReply(upstream, format, tags, line);
   };
+}
+
+// The upstream reply with stand-ins in tool calls swapped back, or a refusal
+// when a model reply cannot be checked. `line` is the start of its log line.
+async function relayReply(
+  upstream: Response,
+  format: Format | undefined,
+  tags: Set<string>,
+  line: string,
+): Promise<Response> {
+  const headers = new Headers(upstream.headers);
+  headers.delete("content-encoding");
+  headers.delete("content-length");
+  const init = { status: upstream.status, headers };
+  const contentType = upstream.headers.get("content-type") ?? "";
+  if (format && upstream.body && contentType.includes("text/event-stream")) {
+    const stream = rewriteSse(upstream.body, format, tags, (swapped) =>
+      log(`${line} swapped=${swapped} (stream)`),
+    );
+    return new Response(stream, init);
+  }
+  if (format && contentType.includes("json") && upstream.ok) {
+    const parsed = await swapJsonReply(upstream, format, tags);
+    if (parsed instanceof Response) return parsed;
+    log(`${line} swapped=${parsed.swapped}`);
+    // Always re-serialized: a blocked call changes arguments without a swap.
+    return new Response(JSON.stringify(parsed.body), init);
+  }
+  // A successful model reply in a shape not read here could carry tool
+  // calls no guard saw. Errors and non-model routes pass as they are.
+  if (format && upstream.ok && upstream.body) {
+    await upstream.body.cancel();
+    return refuse(502, `upstream reply type ${contentType.split(";")[0]} cannot be checked`);
+  }
+  log(line);
+  return new Response(upstream.body, init);
+}
+
+async function swapJsonReply(
+  upstream: Response,
+  format: Format,
+  tags: Set<string>,
+): Promise<{ body: Record<string, unknown>; swapped: number } | Response> {
+  const text = await upstream.text();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return refuse(502, "upstream reply is not valid JSON, refusing to pass unchecked tool calls");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+    return refuse(502, "upstream reply is not a JSON object, refusing to pass it unchecked");
+  const body = parsed as Record<string, unknown>;
+  try {
+    return { body, swapped: swapResponseBody(format, body, tags) };
+  } catch (error) {
+    // Half-swapped, with blocked calls maybe still intact: never pass on.
+    return refuse(
+      502,
+      `reply rewriting failed (${(error as Error).name}), refusing to pass unchecked tool calls`,
+    );
+  }
 }
 
 // Longest a stop waits for in-flight replies. modules/canary-proxy.nix sets
