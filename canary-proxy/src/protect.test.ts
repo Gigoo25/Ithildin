@@ -89,6 +89,27 @@ describe("protected bash", () => {
     expect(bash("git reset HEAD~1 && git push origin main")).toBeUndefined();
     expect(bash("echo hi > notes.md")).toBeUndefined();
   });
+
+  // A script written through a heredoc was read as shell: its regex
+  // /<<(.*?)>>/ held the word .*?, which globbed to .git in the repo.
+  it("reads a heredoc body as data, unless a shell runs it", () => {
+    const script = "console.log(/<<(.*?)>>/.exec(text)?.[1]);\nrm -rf .git";
+    expect(bash(`cat > /tmp/probe.ts <<'EOF'\n${script}\nEOF\nbun /tmp/probe.ts`)).toBeUndefined();
+    expect(bash(`python3 - <<-EOF\n\t${script}\n\tEOF`)).toBeUndefined();
+    expect(bash(`cat <<A <<"B" > /tmp/two\nrm -rf .git\nA\nrm -rf .git\nB`)).toBeUndefined();
+    // Unterminated: bash takes the rest as the body.
+    expect(bash(`cat > /tmp/x <<EOF\nrm -rf .git`)).toBeUndefined();
+    // The header line and what follows the body are still commands.
+    expect(bash(`cat > .git/hooks/pre-commit <<'EOF'\nexit 0\nEOF`)).toBe("git");
+    expect(bash(`cat > /tmp/x <<EOF\nhi\nEOF\nrm -rf .git`)).toBe("git");
+    // A body a shell runs is commands.
+    expect(bash(`bash <<'EOF'\nrm -rf .git\nEOF`)).toBe("git");
+    expect(bash(`cat <<EOF | sh\nrm -rf .git\nEOF`)).toBe("git");
+    expect(bash(`ssh host <<EOF\nrm -rf .git\nEOF`)).toBe("git");
+    // Here-strings and a quoted << are not heredocs.
+    expect(bash(`cat <<< "x"\nrm -rf .git`)).toBe("git");
+    expect(bash(`echo "<<EOF"\nrm -rf .git\nEOF`)).toBe("git");
+  });
 });
 
 describe("protected calls through the proxy", () => {

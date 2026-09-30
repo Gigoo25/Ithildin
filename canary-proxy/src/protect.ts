@@ -128,6 +128,35 @@ function maskQuotes(command: string): string {
   return command.replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, (quoted) => quoted[0] + "_".repeat(quoted.length - 2) + quoted[0]);
 }
 
+// Programs whose heredoc body runs as commands.
+const SHELLS = new Set(["bash", "sh", "zsh", "dash", "ksh", "fish", "ssh", "eval", "source", "."]);
+const HEREDOC_OPERATOR = /(?<!<)<<(?!<)(-?)/g;
+const HEREDOC_WORD = /^\s*(['"]?)([^\s'"<>;|&()]+)\1/;
+
+// Heredoc bodies taken out: text fed to cat or python is data, and read as
+// shell it tripped the guard (a regex's .*? globbed to .git). A body a shell
+// on the same line reads stays in, as do the header and everything after.
+// Unterminated, the body runs to the end, as in bash.
+function heredocsAsData(command: string): string {
+  const out: string[] = [];
+  const pending: Array<{ word: string; tabs: boolean; keep: boolean }> = [];
+  for (const line of command.split("\n")) {
+    const body = pending[0];
+    if (body) {
+      if (body.keep) out.push(line);
+      if ((body.tabs ? line.replace(/^\t+/, "") : line) === body.word) pending.shift();
+      continue;
+    }
+    out.push(line);
+    const keep = segments(line).some((segment) => SHELLS.has(program(segment)[0] ?? ""));
+    for (const match of maskQuotes(line).matchAll(HEREDOC_OPERATOR)) {
+      const word = HEREDOC_WORD.exec(line.slice(match.index! + match[0].length))?.[2];
+      if (word) pending.push({ word, tabs: match[1] === "-", keep });
+    }
+  }
+  return out.join("\n");
+}
+
 function segments(command: string): string[] {
   const masked = maskQuotes(command).replace(/\d*>&\d+|&>/g, (match) => "_".repeat(match.length));
   const out: string[] = [];
@@ -228,7 +257,8 @@ function commandDirs(command: string, cwd: string): string[] {
   return dirs;
 }
 
-function bashChange(command: string, cwd: string, roots: ReturnType<typeof protectedRoots>): ProtectedKind | undefined {
+function bashChange(raw: string, cwd: string, roots: ReturnType<typeof protectedRoots>): ProtectedKind | undefined {
+  const command = heredocsAsData(raw);
   const dirs = commandDirs(command, cwd);
   for (const segment of segments(command)) {
     const argv = program(segment);
