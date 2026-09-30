@@ -15,7 +15,7 @@ import { existsSync, statSync } from "node:fs";
 import path from "node:path";
 import { aliases, asUserText, collectValues, blocksInventoryAccess, blocksSecretAccess, candidatePaths, flushScanCache, isSecretPath, latestAllowTags, loadScanCache, redactValue, rememberSwapped, setAliasBook } from "../engine/core.ts";
 import { AliasBook, aliasKeyPath, aliasMatches, aliasSpans, loadAliasKey, registerAliasLabels } from "../engine/lib/aliases.ts";
-import type { Message } from "../engine/lib/inspector.ts";
+import { type Message, userTypedText } from "../engine/lib/inspector.ts";
 import { aliasLabels, aliasStyle, inventoryLiterals, setRuntimeInventory, withScanBudget } from "../engine/lib/rules.ts";
 import { collectRuntimeIdentity, identityFromGit, identityFromOs, identityFromSsh } from "../engine/lib/runtime-inventory.ts";
 import { planSwapBack } from "../engine/lib/swap-back.ts";
@@ -92,7 +92,9 @@ export function requestAllowTags(format: Format, body: Record<string, unknown>):
     // a turn decides only when it carries a tag of its own.
     const results = Array.isArray(content) && content.some((block) => (block as { type?: unknown } | null)?.type === "tool_result");
     if (results && latestAllowTags([{ role: "user", content: blocks }]).size === 0) continue;
-    if (!results) typed = blocks.map((block) => block.text).join("\n");
+    // Typed text only: a system reminder quoting CLAUDE.md, or a pasted
+    // fence, that mentions [allow-protected] is not the user asking for it.
+    if (!results) typed = userTypedText({ role: "user", content: blocks });
     users.push({ role: "user", content: blocks });
   }
   const tags = latestAllowTags(users);
