@@ -206,7 +206,9 @@ describe("replies the proxy refuses", () => {
 describe("health and routing", () => {
   it("reports health with the route names", async () => {
     const handler = createHandler(DEFAULT_ROUTES, upstream(() => Response.json({})).fetch);
-    const body = (await (await handler(new Request("http://127.0.0.1/_canary/health"))).json()) as {
+    const body = (await (
+      await handler(new Request("http://127.0.0.1/_ithildin/health"))
+    ).json()) as {
       ok: boolean;
       routes: string[];
       badge: string;
@@ -337,7 +339,7 @@ describe("startup", () => {
     );
     try {
       const body = (await (
-        await fetch(`http://127.0.0.1:${server.port}/_canary/health`)
+        await fetch(`http://127.0.0.1:${server.port}/_ithildin/health`)
       ).json()) as { ok: boolean };
       expect(body.ok).toBe(true);
     } finally {

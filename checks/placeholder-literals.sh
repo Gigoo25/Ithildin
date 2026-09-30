@@ -4,7 +4,7 @@ set -euo pipefail
 # Relative paths make the two exceptions exact, independent of the store path.
 cd "${1:?source directory required}"
 status=0
-hits=$(grep -rEn --exclude-dir=.git '__(ITHILDIN|CANARY)_[A-Z]+_[0-9]+__' .) || status=$?
+hits=$(grep -rEn --exclude-dir=.git '__ITHILDIN_[A-Z]+_[0-9]+__' .) || status=$?
 if (( status > 1 )); then
     echo 'Cannot scan source for literal placeholders' >&2
     exit "$status"

@@ -218,15 +218,13 @@ describe("requests", () => {
       { role: "user", content: [{ type: "tool_result", tool_use_id: id, content }] },
     ];
     const first = [{ role: "user", content: `mail ${EMAIL}` }];
-    // The header from before the rename still tags the session.
-    await send({ "x-canary-session": "pi-1" }, [...first, ...call("t1", "nothing here")]);
+    await send({ "x-ithildin-session": "pi-1" }, [...first, ...call("t1", "nothing here")]);
     await send({ "x-Claude-Code-Session-Id": "claude-1" }, [
       { role: "user", content: "hi" },
       { role: "assistant", content: "hello" },
     ]);
     expect(await badge("pi-1")).toBe("ITHILDIN ON · 1m (+1) · 1 req");
     expect(await badge("claude-1")).toBe("ITHILDIN ON · 0 · 1 req");
-    expect(up.seen[0]!.headers.get("x-canary-session")).toBeNull();
     expect(up.seen[0]!.headers.get("x-ithildin-session")).toBeNull();
     // A tool result in the same turn adds to the turn; a new prompt starts
     // the count again.

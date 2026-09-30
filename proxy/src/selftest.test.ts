@@ -75,23 +75,23 @@ describe("gated handler", () => {
     expect(((await before.json()) as { error: { message: string } }).error.message).toContain(
       "self-test has not run",
     );
-    expect((await handler(new Request("http://127.0.0.1/_canary/selftest"))).status).toBe(200);
+    expect((await handler(new Request("http://127.0.0.1/_ithildin/selftest"))).status).toBe(200);
     expect((await handler(post(request))).status).toBe(200);
     const health = (await (
-      await handler(new Request("http://127.0.0.1/_canary/health"))
+      await handler(new Request("http://127.0.0.1/_ithildin/health"))
     ).json()) as { selftest: { ok: boolean } };
     expect(health.selftest.ok).toBe(true);
   });
 
   it("stays closed, and reads as down, after a failed self-test", async () => {
     const handler = createHandler(DEFAULT_ROUTES, refuse, leaking, true);
-    expect((await handler(new Request("http://127.0.0.1/_canary/selftest"))).status).toBe(503);
+    expect((await handler(new Request("http://127.0.0.1/_ithildin/selftest"))).status).toBe(503);
     const refused = await handler(post(request));
     expect(refused.status).toBe(503);
     expect(((await refused.json()) as { error: { message: string } }).error.message).toContain(
       "reached the provider",
     );
-    expect((await handler(new Request("http://127.0.0.1/_canary/health"))).status).toBe(503);
+    expect((await handler(new Request("http://127.0.0.1/_ithildin/health"))).status).toBe(503);
   });
 
   it("the real engine redacts the same request the gate lets through", () => {

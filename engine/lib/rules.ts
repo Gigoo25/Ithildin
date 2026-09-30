@@ -12,7 +12,7 @@ import {
 import { getValidator, isReservedIpv4 } from "./validators.ts";
 import { FIRST_NAMES } from "./first-names.ts";
 import { ALIAS_LABEL } from "./aliases.ts";
-import { configFile, LEGACY_ENGINE, setting } from "./names.ts";
+import { configFile, setting } from "./names.ts";
 import { assert } from "./assert.ts";
 
 export type Category = "secret" | "pii";
@@ -272,7 +272,7 @@ function hasNearbyContextWord(
 
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_CONFIG_PATH = join(MODULE_DIR, "default-config.json");
-const USER_CONFIG_PATH = setting("CONFIG") ?? configFile("config.json", LEGACY_ENGINE);
+const USER_CONFIG_PATH = setting("CONFIG") ?? configFile("config.json");
 // Generalize lists can live in their own file beside the config, so they can
 // be edited (and shared) without touching the private inventory.
 export const GENERALIZE_PATH =

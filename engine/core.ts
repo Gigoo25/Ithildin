@@ -42,11 +42,10 @@ import {
   aliasKeyPath,
   isAliasValue,
   loadAliasKey,
-  LEGACY_SESSION_KEY_SUFFIX,
   SESSION_KEY_SUFFIX,
 } from "./lib/aliases.ts";
 import { assert } from "./lib/assert.ts";
-import { LEGACY_ENGINE, NAME, sessionFile as sessionPath, setting } from "./lib/names.ts";
+import { NAME, sessionFile as sessionPath, setting } from "./lib/names.ts";
 import { planRedaction } from "./lib/redaction-spans.ts";
 import { redactEncoded } from "./lib/encoded.ts";
 import { reportRedaction } from "./lib/redaction-audit.ts";
@@ -867,40 +866,28 @@ export function isSecretPath(filePath: string, cwd: string): boolean {
 function isOwnInventory(filePath: string, cwd: string): boolean {
   if (!filePath) return false;
   const override = setting("CONFIG");
-  if (
-    /^\$(?:(?:ITHILDIN|SENSITIVE_CANARY)_CONFIG|\{(?:ITHILDIN|SENSITIVE_CANARY)_CONFIG\})$/.test(
-      filePath,
-    )
-  ) {
+  if (/^\$(?:ITHILDIN_CONFIG|\{ITHILDIN_CONFIG\})$/.test(filePath)) {
     if (!override) return false;
     filePath = override;
   }
   const expanded = canonicalPath(filePath.split(/[?:]/)[0] ?? filePath, cwd);
-  // Under the current name and the one it replaced (lib/names.ts).
-  const dirs = [NAME, LEGACY_ENGINE];
   const home = process.env.HOME ?? "";
   if (
-    dirs.some(
-      (dir) =>
-        expanded.endsWith(`/.config/${dir}/config.json`) ||
-        expanded === canonicalPath(path.join(home, ".config", dir, "config.json"), cwd),
-    )
+    expanded.endsWith(`/.config/${NAME}/config.json`) ||
+    expanded === canonicalPath(path.join(home, ".config", NAME, "config.json"), cwd)
   )
     return true;
   // The generalize list: which topics you consider sensitive.
   if (
-    dirs.some((dir) => expanded.endsWith(`/${dir}/generalize.json`)) ||
+    expanded.endsWith(`/${NAME}/generalize.json`) ||
     expanded === canonicalPath(GENERALIZE_PATH, cwd)
   )
     return true;
   // The stand-in key: with it, stand-ins could be matched back to guesses.
   if (
-    dirs.some(
-      (dir) =>
-        expanded.endsWith(`/${dir}/alias-key`) || expanded.endsWith(`/${dir}/proxy-alias-key`),
-    ) ||
+    expanded.endsWith(`/${NAME}/alias-key`) ||
+    expanded.endsWith(`/${NAME}/proxy-alias-key`) ||
     expanded.endsWith(SESSION_KEY_SUFFIX) ||
-    expanded.endsWith(LEGACY_SESSION_KEY_SUFFIX) ||
     expanded === canonicalPath(aliasKeyPath(), cwd)
   )
     return true;

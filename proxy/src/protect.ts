@@ -24,7 +24,7 @@
 import { existsSync, readdirSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { candidatePaths, canonicalPath, commandPathCandidates } from "../engine/core.ts";
-import { LEGACY_ENGINE, LEGACY_PROXY, NAME, setting } from "../engine/lib/names.ts";
+import { NAME, setting } from "../engine/lib/names.ts";
 
 export type ProtectedKind = "config" | "git";
 
@@ -66,15 +66,11 @@ function protectedRoots(): { dirs: string[]; files: string[] } {
   const state = process.env.XDG_STATE_HOME || path.join(home, ".local", "state");
   const dirs = new Set<string>();
   const files = new Set<string>();
-  // Under the current name and the ones it replaced (engine/lib/names.ts).
-  const names = [NAME, LEGACY_ENGINE, LEGACY_PROXY];
-  for (const dir of new Set(
-    names.flatMap((name) => [
-      path.join(config, name),
-      path.join(home, ".config", name),
-      path.join(state, name),
-    ]),
-  )) {
+  for (const dir of new Set([
+    path.join(config, NAME),
+    path.join(home, ".config", NAME),
+    path.join(state, NAME),
+  ])) {
     dirs.add(dir);
     const resolved = real(dir);
     if (!resolved) continue;

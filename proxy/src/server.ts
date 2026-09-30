@@ -26,7 +26,7 @@ import {
   saveScanCache,
   typedPromptCount,
 } from "./redact.ts";
-import { configHome, LEGACY_PROXY, NAME } from "../engine/lib/names.ts";
+import { configHome, NAME } from "../engine/lib/names.ts";
 import { createStatusBook } from "./status.ts";
 import { type SelfTest, selfTest } from "./selftest.ts";
 import { createRewriter, formatSse, parseSseBlock, swapResponseBody } from "./streams.ts";
@@ -85,11 +85,9 @@ export function upstreamUrl(route: Route, rest: string, search: string): string 
 }
 
 // Pi's footer tags its requests with its session id (the proxy's own header,
-// never forwarded); Claude sends X-Claude-Code-Session-Id itself. The x-canary-
-// and /_canary/ names are from before the rename, kept for older clients.
+// never forwarded); Claude sends X-Claude-Code-Session-Id itself.
 const SESSION_HEADER = "x-ithildin-session";
-const LEGACY_SESSION_HEADER = "x-canary-session";
-const OWN_PATH = /^\/_(ithildin|canary)\/(selftest|health)$/;
+const OWN_PATH = /^\/_ithildin\/(selftest|health)$/;
 
 const HOP_HEADERS = [
   "host",
@@ -337,7 +335,7 @@ export function createHandler(
   let proof: SelfTest | undefined;
   return async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
-    const own = OWN_PATH.exec(url.pathname)?.[2];
+    const own = OWN_PATH.exec(url.pathname)?.[1];
     if (own === "selftest") {
       proof = await runSelfTest(routes, redact);
       return Response.json(proof, { status: proof.ok ? 200 : 503 });
@@ -354,13 +352,11 @@ export function createHandler(
 
     const session =
       request.headers.get(SESSION_HEADER) ??
-      request.headers.get(LEGACY_SESSION_HEADER) ??
       request.headers.get("x-Claude-Code-Session-Id") ??
       undefined;
     const headers = new Headers(request.headers);
     for (const name of HOP_HEADERS) headers.delete(name);
     headers.delete(SESSION_HEADER);
-    headers.delete(LEGACY_SESSION_HEADER);
     headers.set("accept-encoding", "identity");
 
     const scanned = await scanRequest(request, format, redact);
@@ -475,16 +471,13 @@ export function readOptions(
     const index = argv.indexOf(`--${name}`);
     return index >= 0 ? argv[index + 1] : undefined;
   };
-  const text = arg("port") ?? env.ITHILDIN_PORT ?? env.CANARY_PROXY_PORT ?? "18733";
+  const text = arg("port") ?? env.ITHILDIN_PORT ?? "18733";
   const port = Number(text);
   if (!/^\d+$/.test(text) || port < 1 || port > 65_535)
     throw new Error(`ithildin: invalid port ${JSON.stringify(text)}`);
-  // The current name first, then the one it replaced (engine/lib/names.ts).
-  const defaultRoutes = [NAME, LEGACY_PROXY]
-    .map((dir) => path.join(configHome(env), dir, "routes.json"))
-    .find(exists);
+  const defaultRoutes = path.join(configHome(env), NAME, "routes.json");
   const routesFile =
-    arg("routes") ?? env.ITHILDIN_ROUTES ?? env.CANARY_PROXY_ROUTES ?? defaultRoutes;
+    arg("routes") ?? env.ITHILDIN_ROUTES ?? (exists(defaultRoutes) ? defaultRoutes : undefined);
   return { port, routesFile };
 }
 

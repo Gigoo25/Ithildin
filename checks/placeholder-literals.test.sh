@@ -11,8 +11,6 @@ bash "$checker" "$src"
 
 # Construct a fixture, not a literal that would fail the repository check.
 printf '__ITHILDIN_%s_%s__\n' HOST 9999 > "$allowed/core.ts"
-# Placeholders from before the rename are caught too.
-printf '__CANARY_%s_%s__\n' HOST 9999 >> "$allowed/core.ts"
 bash "$checker" "$src"
 
 expect_failure() {

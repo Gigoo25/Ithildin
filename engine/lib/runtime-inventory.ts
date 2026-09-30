@@ -156,7 +156,7 @@ function usableLiteral(value: string | undefined): string | undefined {
   const v = value?.trim();
   if (!v || [...v].length < 3) return;
   if (v.includes("\0") || v.includes("\n")) return;
-  if (/__(ITHILDIN|CANARY)_[A-Z]+_\d+__/.test(v) || looksLikeAlias(v)) return;
+  if (/__ITHILDIN_[A-Z]+_\d+__/.test(v) || looksLikeAlias(v)) return;
   const lower = v.toLowerCase();
   if (GENERIC.has(lower) || EXAMPLE_LITERALS.has(lower)) return;
   return v;

@@ -429,7 +429,6 @@ export interface Resolved {
 }
 
 export const SESSION_KEY_SUFFIX = ".ithildin-alias-key";
-export const LEGACY_SESSION_KEY_SUFFIX = ".canary-alias-key";
 
 // Per-session key file beside the transcript. A fork starts from its
 // parent's key, so the stand-ins it inherited keep resolving. No session
