@@ -13,7 +13,7 @@ import type * as TS from "typescript";
 const FUNCTION_LINES_MAX = 70;
 const SKIPPED_DIRS = new Set(["node_modules", "coverage", ".git"]);
 // The proxy's engine is a symlink to the engine directory, checked there.
-const SKIPPED_PATHS = new Set(["canary-proxy/engine"]);
+const SKIPPED_PATHS = new Set(["proxy/engine"]);
 
 const ts = createRequire(import.meta.url)(process.env.TYPESCRIPT ?? "typescript") as typeof TS;
 

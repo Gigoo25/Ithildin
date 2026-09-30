@@ -1,0 +1,57 @@
+{
+  "_readme": "Personal PII inventory. COPY to ~/.config/ithildin/config.json (or point $ITHILDIN_CONFIG at your copy), replace every EXAMPLE value with the real one, chmod 600 the copy. NEVER commit real values: this template stays inert (its values match nothing you will type). See PERSONAL-INVENTORY.md. All rules are category pii, so findings become stable stand-ins (label-hex words such as employer-3c9d0e; set label per entry, or aliases to tokens for the old __ITHILDIN_*__ tokens) and [allow-pii] bypasses them. Optional scanBudgetMs (or $ITHILDIN_SCAN_BUDGET_MS) raises the per-hook scan envelope for very large sessions.",
+  "aliases": "stand-ins",
+  "rules": [
+    {
+      "id": "pii-personal-name",
+      "description": "Your full name (exact match)",
+      "regex": "\\bJane Exampleperson\\b",
+      "flags": "gi",
+      "category": "pii"
+    },
+    {
+      "id": "pii-personal-handle",
+      "description": "Your handles, comma-free exact matches (add one rule per handle if they differ)",
+      "regex": "\\b(examplehandle|example_handle)\\b",
+      "flags": "gi",
+      "category": "pii"
+    },
+    {
+      "id": "pii-personal-github-url",
+      "description": "Your GitHub profile URLs (public-repo references to others still pass)",
+      "regex": "github\\.com/(examplehandle)\\b",
+      "flags": "gi",
+      "secretGroup": 0,
+      "category": "pii"
+    },
+    {
+      "id": "pii-personal-org",
+      "description": "Employer / team / client names (exact match)",
+      "regex": "\\b(ExampleCorp|Example Team)\\b",
+      "flags": "gi",
+      "category": "pii"
+    },
+    {
+      "id": "pii-personal-net",
+      "description": "Home SSID, personal domains, other named networks (exact match)",
+      "regex": "\\b(HomeSSID|example\\.home\\.arpa)\\b",
+      "flags": "gi",
+      "category": "pii"
+    },
+    {
+      "id": "pii-personal-ticket",
+      "description": "Employer ticket keys: pin YOUR prefix (a bare [A-Z]+-\\d+ would fire on CVEs and error codes)",
+      "regex": "\\bEX-\\d+\\b",
+      "flags": "g",
+      "category": "pii"
+    }
+  ],
+  "generalize": [
+    { "id": "example-topic", "terms": ["EXAMPLEtermone", "EXAMPLEtermtwo"], "replace": "an example topic" }
+  ],
+  "inventory": [
+    { "id": "fullname", "literal": "Jane Exampleperson", "match": "token", "label": "person" },
+    { "id": "handle", "literal": "example_handle", "match": "token", "label": "handle" },
+    { "id": "org", "literal": "ExampleCorp", "match": "token", "caseSensitive": false, "label": "employer" }
+  ]
+}

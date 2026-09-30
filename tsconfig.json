@@ -22,6 +22,6 @@
     "useUnknownInCatchVariables": true,
     "skipLibCheck": true
   },
-  "include": ["sensitive-canary/**/*.ts", "canary-proxy/src/**/*.ts", "canary-proxy/bench/**/*.ts"],
-  "exclude": ["canary-proxy/engine"]
+  "include": ["engine/**/*.ts", "proxy/src/**/*.ts", "proxy/bench/**/*.ts"],
+  "exclude": ["proxy/engine"]
 }

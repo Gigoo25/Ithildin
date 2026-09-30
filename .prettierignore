@@ -1,6 +1,6 @@
 node_modules/
 coverage/
-canary-proxy/engine
+proxy/engine
 *.json
 *.md
 *.lock

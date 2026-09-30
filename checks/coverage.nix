@@ -1,12 +1,12 @@
 # Coverage floors (checks/coverage.ts) over the proxy and engine suites run
 # together, the way the proxy ships the engine. The suites themselves are
-# gated by the canary-proxy and sensitive-canary checks; this one fails only
+# gated by the proxy and engine checks; this one fails only
 # on the numbers.
 {
   pkgs,
   root,
-  src ? root + "/canary-proxy",
-  engine ? root + "/sensitive-canary",
+  src ? root + "/proxy",
+  engine ? root + "/engine",
   script ? root + "/checks/coverage.ts",
 }:
 

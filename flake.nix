@@ -1,5 +1,5 @@
 {
-  description = "sensitive-canary redaction engine and canary-proxy, the local proxy that applies it to model requests";
+  description = "Ithildin: a redaction engine and the local proxy for model requests";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -19,8 +19,8 @@
     in
     {
       packages.${system} = {
-        canary-proxy = pkgs.callPackage ./canary-proxy { };
-        default = self.packages.${system}.canary-proxy;
+        ithildin = pkgs.callPackage ./proxy { };
+        default = self.packages.${system}.ithildin;
       };
 
       checks.${system} =
@@ -28,7 +28,7 @@
           name: nixpkgs.lib.callPackageWith { inherit pkgs root; } (./checks + "/${name}.nix") { }
         )
         // {
-          canary-proxy-package = self.packages.${system}.canary-proxy;
+          package = self.packages.${system}.ithildin;
         };
 
       # nixfmt alone reads stdin; `nix fmt` with no arguments formats the repo.
