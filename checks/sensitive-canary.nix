@@ -7,7 +7,11 @@
 
 pkgs.runCommand "check-sensitive-canary"
   {
-    nativeBuildInputs = [ pkgs.bun ];
+    nativeBuildInputs = [
+      pkgs.bun
+      # runtime-inventory-io.test.ts reads remotes from a scratch repo.
+      pkgs.git
+    ];
   }
   ''
     export HOME="$TMPDIR"

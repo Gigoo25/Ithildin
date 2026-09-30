@@ -1,6 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import {
+  aliasKeyScope,
   beginScanBudget,
+  withScanBudget,
   compileRule,
   RULES,
   scan,
@@ -653,5 +655,72 @@ describe("placeholder words in user and host slots", () => {
     expect(scan("ssh zqxops@buildbox").some((f) => f.ruleId === "pii-user-at-host")).toBe(true);
     expect(scan("user: zqxops\n").some((f) => f.ruleId === "pii-labeled-user")).toBe(true);
     expect(scan("hostname = zqxbuild").some((f) => f.ruleId === "pii-labeled-host")).toBe(true);
+  });
+});
+
+describe("rules added at runtime", () => {
+  // Pushed onto RULES for one test and removed after, so the scan drivers see
+  // a rule the shipped config never has.
+  function withRule<T>(config: Parameters<typeof compileRule>[0], work: () => T): T {
+    const rule = compileRule(config);
+    RULES.push(rule);
+    try {
+      return work();
+    } finally {
+      RULES.splice(RULES.indexOf(rule), 1);
+    }
+  }
+  // Exponential backtracking. JavaScriptCore gives up on it after about
+  // 900ms, past the 500ms a window grants one rule.
+  const POISON = {
+    id: "fixture-poison",
+    description: "fixture",
+    regex: "(a+)+b",
+    category: "secret" as const,
+  };
+  const poisoned = (tag: string) => `${tag} ${"a".repeat(40)}c`;
+
+  it("drops a match whose nearby words say it is not the rule's kind", () => {
+    const rule = {
+      id: "fixture-exclude",
+      description: "fixture",
+      regex: "zzfixture\\d+",
+      category: "secret" as const,
+      excludeContext: ["skip"],
+    };
+    withRule(rule, () => {
+      expect(scan("skip zzfixture1").some((f) => f.ruleId === rule.id)).toBe(false);
+      expect(scan("keep zzfixture1").some((f) => f.ruleId === rule.id)).toBe(true);
+    });
+  });
+
+  it("omits a window whose rule trips, and the rest once the envelope is spent", () => {
+    withRule(POISON, () => {
+      const tripped = poisoned("tripped");
+      expect(withScanBudget(() => scanWindows(tripped), 3_000).trips).toEqual([
+        { start: 0, end: tripped.length },
+      ]);
+      const spent = poisoned("spent");
+      expect(withScanBudget(() => scanWindows(spent), 300).trips).toEqual([
+        { start: 0, end: spent.length },
+      ]);
+    });
+  });
+});
+
+describe("aliasKeyScope", () => {
+  it("takes the environment over the config file", () => {
+    const scope = process.env.SENSITIVE_CANARY_ALIAS_KEY_SCOPE;
+    try {
+      process.env.SENSITIVE_CANARY_ALIAS_KEY_SCOPE = "shared";
+      expect(aliasKeyScope()).toBe("shared");
+      process.env.SENSITIVE_CANARY_ALIAS_KEY_SCOPE = "session";
+      expect(aliasKeyScope()).toBe("session");
+      process.env.SENSITIVE_CANARY_ALIAS_KEY_SCOPE = "bogus";
+      expect(["session", "shared"]).toContain(aliasKeyScope());
+    } finally {
+      if (scope === undefined) delete process.env.SENSITIVE_CANARY_ALIAS_KEY_SCOPE;
+      else process.env.SENSITIVE_CANARY_ALIAS_KEY_SCOPE = scope;
+    }
   });
 });

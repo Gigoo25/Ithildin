@@ -122,6 +122,18 @@ describe("protected bash", () => {
     expect(bash("git push origin +main")).toBe("git");
     expect(bash("git -C /work/app branch -D topic")).toBe("git");
     expect(bash("git stash clear")).toBe("git");
+    expect(bash("git filter-branch --tree-filter true HEAD")).toBe("git");
+    expect(bash("git filter-repo --path src")).toBe("git");
+    expect(bash("git reflog expire --expire=now --all")).toBe("git");
+    expect(bash("git update-ref -d refs/heads/topic")).toBe("git");
+    expect(bash("git gc --prune=now")).toBe("git");
+  });
+
+  it("lets the same git subcommands through when they keep history", () => {
+    expect(bash("git reflog show")).toBeUndefined();
+    expect(bash("git update-ref refs/heads/topic HEAD")).toBeUndefined();
+    expect(bash("git gc")).toBeUndefined();
+    expect(bash("git stash pop")).toBeUndefined();
   });
 
   it("lets reads and ordinary work through", () => {
