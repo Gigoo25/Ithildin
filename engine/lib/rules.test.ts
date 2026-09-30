@@ -52,6 +52,28 @@ describe("upstream PII parity", () => {
     // Blocking on documentation fixtures trains users to disable the tool.
     expect(scan("card 4111111111111111").some((f) => f.ruleId === "pii-credit-card")).toBe(false);
   });
+
+  it("detects compact international phone numbers, plus sign included", () => {
+    const e164 = (text: string) =>
+      scan(text)
+        .filter((f) => f.ruleId === "pii-phone-e164")
+        .map((f) => f.secretValue);
+    expect(e164("call +15550149876 now")).toEqual(["+15550149876"]);
+    expect(e164('{"phone":"+442079460958"}')).toEqual(["+442079460958"]);
+    expect(e164("tel:+33142685300")).toEqual(["+33142685300"]);
+    expect(e164("+498912345678")).toEqual(["+498912345678"]);
+    // Not phone numbers: spaced arithmetic, too few or too many digits, a
+    // plus inside a word or a number, a leading zero.
+    for (const text of [
+      "x + 100000000",
+      "+1234567",
+      "+1234567890123456",
+      "1e+10000000",
+      "a++15550149876",
+      "+05550149876",
+    ])
+      expect(e164(text)).toEqual([]);
+  });
 });
 
 describe("generic secret detection", () => {
