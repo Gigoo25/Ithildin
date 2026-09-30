@@ -21,6 +21,125 @@ export interface DocumentScan {
   scalars: ScalarEnvelope[];
   numericTypeChanges: number;
 }
+type Frame = { kind: "object" | "array"; key: string | null; expectKey: boolean };
+
+// Applies one structural character to the frame stack; false for the start
+// of a scalar.
+function structural(ch: string, stack: Frame[]): boolean {
+  const frame = stack.at(-1);
+  if (/\s/.test(ch) || ch === ":") return true;
+  if (ch === "{" || ch === "[") {
+    if (frame) frame.key = null;
+    stack.push({ kind: ch === "{" ? "object" : "array", key: null, expectKey: ch === "{" });
+    return true;
+  }
+  if (ch === "}" || ch === "]") {
+    stack.pop();
+    return true;
+  }
+  if (ch === ",") {
+    if (frame) {
+      frame.key = null;
+      frame.expectKey = frame.kind === "object";
+    }
+    return true;
+  }
+  return false;
+}
+
+// The scalar starting at `start`: its end, its decoded text, and its kind
+// (undefined for null, true and false).
+function readScalar(
+  text: string,
+  start: number,
+  check: () => void,
+): { end: number; decoded: string; jsonKind: ScalarEnvelope["jsonKind"] | undefined } {
+  let i = start;
+  if (text[i] === '"') {
+    i++;
+    while (i < text.length) {
+      check();
+      if (text[i] === "\\") {
+        i += 2;
+        continue;
+      }
+      if (text[i++] === '"') break;
+    }
+    return { end: i, decoded: JSON.parse(text.slice(start, i)), jsonKind: "json-string" };
+  }
+  while (i < text.length && !/[\s,\]}]/.test(text[i]!)) {
+    check();
+    i++;
+  }
+  const decoded = text.slice(start, i);
+  const literal = ["null", "true", "false"].includes(decoded);
+  return { end: i, decoded, jsonKind: literal ? undefined : "json-number" };
+}
+
+function fieldFinding(
+  key: string,
+  text: string,
+  start: number,
+  end: number,
+  jsonKind: ScalarEnvelope["jsonKind"],
+) {
+  const label = normalize(key);
+  const category: Category | null = SECRET_LABELS.has(label)
+    ? "secret"
+    : PII_LABELS.has(label)
+      ? "pii"
+      : null;
+  if (!category) return undefined;
+  // Boolean/null/empty sentinels are handled above. Nonempty explicit
+  // credential values are not exempted merely because they look weak.
+  return {
+    ruleId: `structured-${category}-field`,
+    description: "Sensitive document scalar",
+    category,
+    matchRedacted: "****",
+    secretValue: text.slice(start, end),
+    score: 1,
+    start,
+    end,
+    jsonKind,
+  };
+}
+
+// Walks parsed-valid JSON text once, recording every scalar's envelope and a
+// finding for each value under a sensitive key.
+function walkJson(text: string, result: DocumentScan, check: () => void): void {
+  const stack: Frame[] = [];
+  let i = 0;
+  while (i < text.length) {
+    check();
+    if (structural(text[i]!, stack)) {
+      i++;
+      continue;
+    }
+    const frame = stack.at(-1);
+    const start = i;
+    const { end, decoded, jsonKind } = readScalar(text, start, check);
+    i = end;
+    if (!jsonKind) {
+      if (frame) frame.key = null;
+      continue;
+    }
+    result.scalars.push({ start, end, jsonKind });
+    if (frame?.expectKey) {
+      frame.key = decoded;
+      frame.expectKey = false;
+      continue;
+    }
+    const key = frame?.key;
+    if (frame) frame.key = null;
+    if (!key || decoded.length === 0) continue;
+    const finding = fieldFinding(key, text, start, end, jsonKind);
+    if (!finding) continue;
+    result.findings.push(finding);
+    if (jsonKind === "json-number") result.numericTypeChanges++;
+  }
+}
+
 export function inspectDocument(text: string, check = assertScanBudget): DocumentScan {
   const result: DocumentScan = { status: "text", findings: [], scalars: [], numericTypeChanges: 0 };
   try {
@@ -35,99 +154,7 @@ export function inspectDocument(text: string, check = assertScanBudget): Documen
     }
     check();
     result.status = "json";
-    type Frame = { kind: "object" | "array"; key: string | null; expectKey: boolean };
-    const stack: Frame[] = [];
-    let i = 0;
-    while (i < text.length) {
-      check();
-      const ch = text[i]!;
-      const frame = stack.at(-1);
-      if (/\s/.test(ch)) {
-        i++;
-        continue;
-      }
-      if (ch === "{" || ch === "[") {
-        if (frame) frame.key = null;
-        stack.push({ kind: ch === "{" ? "object" : "array", key: null, expectKey: ch === "{" });
-        i++;
-        continue;
-      }
-      if (ch === "}" || ch === "]") {
-        stack.pop();
-        i++;
-        continue;
-      }
-      if (ch === ",") {
-        if (frame) {
-          frame.key = null;
-          frame.expectKey = frame.kind === "object";
-        }
-        i++;
-        continue;
-      }
-      if (ch === ":") {
-        i++;
-        continue;
-      }
-      const start = i;
-      let decoded: string;
-      let jsonKind: ScalarEnvelope["jsonKind"];
-      if (ch === '"') {
-        i++;
-        while (i < text.length) {
-          check();
-          if (text[i] === "\\") {
-            i += 2;
-            continue;
-          }
-          if (text[i++] === '"') break;
-        }
-        decoded = JSON.parse(text.slice(start, i));
-        jsonKind = "json-string";
-      } else {
-        while (i < text.length && !/[\s,\]}]/.test(text[i]!)) {
-          check();
-          i++;
-        }
-        decoded = text.slice(start, i);
-        if (["null", "true", "false"].includes(decoded)) {
-          if (frame) frame.key = null;
-          continue;
-        }
-        jsonKind = "json-number";
-      }
-      result.scalars.push({ start, end: i, jsonKind });
-      if (frame?.expectKey) {
-        frame.key = decoded;
-        frame.expectKey = false;
-        continue;
-      }
-      const key = frame?.key;
-      if (frame) frame.key = null;
-      if (!key || decoded.length === 0) continue;
-      const label = normalize(key);
-      const category: Category | null = SECRET_LABELS.has(label)
-        ? "secret"
-        : PII_LABELS.has(label)
-          ? "pii"
-          : null;
-      if (!category) continue;
-      // Boolean/null/empty sentinels are handled above. Nonempty explicit
-      // credential values are not exempted merely because they look weak.
-      const finding = {
-        ruleId: `structured-${category}-field`,
-        description: "Sensitive document scalar",
-        category,
-        matchRedacted: "****",
-        secretValue: text.slice(start, i),
-        score: 1,
-        start,
-        end: i,
-        jsonKind,
-      };
-      result.findings.push(finding);
-      if (jsonKind === "json-number") result.numericTypeChanges++;
-    }
+    walkJson(text, result, check);
     check();
     return result;
   } catch {
