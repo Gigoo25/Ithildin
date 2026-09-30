@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { badgeText, createStatusBook } from "./status.ts";
+import { allowLabels, badgeText, createStatusBook } from "./status.ts";
 
 const none = { masked: 0, files: 0, lines: 0, images: 0 };
 
@@ -12,6 +12,33 @@ describe("badge text", () => {
     expect(badgeText({ ...none, files: 1 }, 0)).toBe("ITHILDIN ON · 1f");
     expect(badgeText(none, 0, 3)).toBe("ITHILDIN ON · 0 · 3 req");
     expect(badgeText({ ...none, masked: 2 }, 1, 4)).toBe("ITHILDIN ON · 2m (+1) · 4 req");
+  });
+});
+
+describe("allow tags", () => {
+  it("names what the user typed, [allow-all] as all", () => {
+    expect(allowLabels(new Set())).toEqual([]);
+    expect(allowLabels(new Set(["secret"]))).toEqual(["secrets"]);
+    expect(allowLabels(new Set(["protected", "pii"]))).toEqual(["pii", "protected"]);
+    expect(allowLabels(new Set(["all", "secret", "pii"]))).toEqual(["all"]);
+    expect(allowLabels(new Set(["all", "secret", "pii", "protected"]))).toEqual([
+      "all",
+      "protected",
+    ]);
+  });
+
+  it("go last in the badge", () => {
+    expect(badgeText(none, 0, 2, ["pii", "protected"])).toBe(
+      "ITHILDIN ON · 0 · 2 req · +pii +protected",
+    );
+  });
+
+  it("follow the latest prompt: a prompt without one clears it", () => {
+    const book = createStatusBook();
+    book.record("s", "anthropic", none, 1, new Set(["protected"]));
+    expect(book.lookup("s", undefined)?.badge).toBe("ITHILDIN ON · 0 · 1 req · +protected");
+    book.record("s", "anthropic", none, 2);
+    expect(book.lookup("s", undefined)?.allowed).toEqual([]);
   });
 });
 

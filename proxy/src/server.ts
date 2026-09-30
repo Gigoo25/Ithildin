@@ -369,7 +369,7 @@ export function createHandler(
     const search = redactSearch(url.search, scanned, redact);
     if (typeof search !== "string") return search;
     const target = upstreamUrl(route, rest, search);
-    if (counts) book.record(session, match[1]!, counts, prompts);
+    if (counts) book.record(session, match[1]!, counts, prompts, tags);
 
     let upstream: Response;
     try {

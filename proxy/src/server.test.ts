@@ -163,6 +163,34 @@ describe("requests", () => {
     expect((await health()).badge).toBe("ITHILDIN ON · 1m (+1) · 1 req");
   });
 
+  it("shows the latest prompt's allow tags on the badge, never upstream", async () => {
+    const up = fakeUpstream(() => Response.json({}));
+    const handler = createHandler(DEFAULT_ROUTES, up.fetch);
+    const history = [
+      { role: "user", content: "hi" },
+      { role: "assistant", content: "hello" },
+    ];
+    const badge = async () =>
+      (
+        (await (
+          await handler(new Request("http://127.0.0.1/_ithildin/health?route=anthropic"))
+        ).json()) as { badge: string }
+      ).badge;
+    await handler(
+      post("anthropic/v1/messages", {
+        messages: [...history, { role: "user", content: "[allow-protected] commit" }],
+      }),
+    );
+    expect(await badge()).toBe("ITHILDIN ON · 0 · 1 req · +protected");
+    expect(JSON.stringify(up.seen[0]!.body)).not.toContain("allow-protected");
+    await handler(
+      post("anthropic/v1/messages", {
+        messages: [...history, { role: "user", content: "commit" }],
+      }),
+    );
+    expect(await badge()).toBe("ITHILDIN ON · 0 · 2 req");
+  });
+
   it("keeps one badge per session and never forwards the proxy's session header", async () => {
     const up = fakeUpstream(() => Response.json({}));
     const handler = createHandler(DEFAULT_ROUTES, up.fetch);
