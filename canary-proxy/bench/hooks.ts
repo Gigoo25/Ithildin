@@ -17,7 +17,10 @@ export type Hooks = {
   context(event: { messages: unknown[] }, _ctx?: unknown): Result;
   before_provider_request(event: { payload: Record<string, unknown> }, _ctx?: unknown): Result;
   message_end(event: { message: Record<string, unknown> }, _ctx?: unknown): Result;
-  tool_result(event: { toolName: string; input?: unknown; content: Chunk[] }, _ctx?: unknown): Result;
+  tool_result(
+    event: { toolName: string; input?: unknown; content: Chunk[] },
+    _ctx?: unknown,
+  ): Result;
 };
 
 export function createHooks(): Hooks {
@@ -55,9 +58,22 @@ export function createHooks(): Hooks {
       if (tags.has("all")) return undefined;
       // Without an input, only the result is sent: every scanned string is
       // then the fixture itself, which the bench's coordinate audit requires.
-      const call = event.input === undefined ? [] : [
-        { role: "assistant", content: null, tool_calls: [{ id: "call", type: "function", function: { name: event.toolName, arguments: JSON.stringify(event.input) } }] },
-      ];
+      const call =
+        event.input === undefined
+          ? []
+          : [
+              {
+                role: "assistant",
+                content: null,
+                tool_calls: [
+                  {
+                    id: "call",
+                    type: "function",
+                    function: { name: event.toolName, arguments: JSON.stringify(event.input) },
+                  },
+                ],
+              },
+            ];
       const out = chat([...call, { role: "tool", tool_call_id: "call", content: event.content }]);
       if (out.hits === 0) return undefined;
       const content = (out.body.messages as Array<{ content: unknown }>).at(-1)!.content;

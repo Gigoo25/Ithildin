@@ -56,7 +56,11 @@ export function redactCookieValue(
     if (result.hits > 0) {
       cookieSeen = true;
       const match = /^(\s*[^=;\s]+\s*=\s*)(.*?)(\s*)$/.exec(part)!;
-      onEdit?.(start + match[1]!.length, start + match[1]!.length + match[2]!.length, result.text.length - match[1]!.length - match[3]!.length);
+      onEdit?.(
+        start + match[1]!.length,
+        start + match[1]!.length + match[2]!.length,
+        result.text.length - match[1]!.length - match[3]!.length,
+      );
     }
     hits += result.hits;
     return result.text;
@@ -79,7 +83,12 @@ export function redactCookieHeaders(
         header.toLowerCase() === "set-cookie",
         replaceValue,
         isSynthetic,
-        (start, end, length) => onEdit?.(offset + header.length + separator.length + start, offset + header.length + separator.length + end, length),
+        (start, end, length) =>
+          onEdit?.(
+            offset + header.length + separator.length + start,
+            offset + header.length + separator.length + end,
+            length,
+          ),
       );
       hits += result.hits;
       return `${header}${separator}${result.text}`;

@@ -31,8 +31,12 @@ const WRITE_TOOLS = new Set(["write", "edit", "Write", "Edit", "MultiEdit", "Not
 const BASH_TOOLS = new Set(["bash", "Bash"]);
 
 export function protectedBlocked(kind: ProtectedKind): string {
-  const what = kind === "git" ? "would delete or rewrite git history" : "would change protected configuration";
-  return `Not run: this call ${what}, so nothing was changed. If the change is intended, ask the user to include [allow-protected] in their prompt.`;
+  const what =
+    kind === "git" ? "would delete or rewrite git history" : "would change protected configuration";
+  return (
+    `Not run: this call ${what}, so nothing was changed. If the change is intended, ask the user ` +
+    `to include [allow-protected] in their prompt.`
+  );
 }
 
 function expandHome(filePath: string): string {
@@ -61,7 +65,13 @@ function protectedRoots(): { dirs: string[]; files: string[] } {
   const state = process.env.XDG_STATE_HOME || path.join(home, ".local", "state");
   const dirs = new Set<string>();
   const files = new Set<string>();
-  for (const dir of new Set([path.join(config, "sensitive-canary"), path.join(home, ".config", "sensitive-canary"), path.join(state, "sensitive-canary"), path.join(config, "canary-proxy"), path.join(home, ".config", "canary-proxy")])) {
+  for (const dir of new Set([
+    path.join(config, "sensitive-canary"),
+    path.join(home, ".config", "sensitive-canary"),
+    path.join(state, "sensitive-canary"),
+    path.join(config, "canary-proxy"),
+    path.join(home, ".config", "canary-proxy"),
+  ])) {
     dirs.add(dir);
     const resolved = real(dir);
     if (!resolved) continue;
@@ -78,7 +88,12 @@ function protectedRoots(): { dirs: string[]; files: string[] } {
     }
   }
   const override = process.env.SENSITIVE_CANARY_CONFIG;
-  for (const file of [path.join(home, ".pi", "agent", "models.json"), path.join(home, ".pi", "agent", "settings.json"), path.join(home, ".claude", "settings.json"), ...(override ? [override] : [])]) {
+  for (const file of [
+    path.join(home, ".pi", "agent", "models.json"),
+    path.join(home, ".pi", "agent", "settings.json"),
+    path.join(home, ".claude", "settings.json"),
+    ...(override ? [override] : []),
+  ]) {
     files.add(file);
     const resolved = real(file);
     if (resolved) files.add(resolved);
@@ -95,24 +110,39 @@ function within(file: string, root: string): boolean {
 function spellings(filePath: string, cwd: string): string[] {
   const lexical = path.resolve(cwd, expandHome(filePath.replace(/^@/, "")));
   const parent = real(path.dirname(lexical));
-  return [...new Set([lexical, canonicalPath(lexical, "/"), ...(parent ? [path.join(parent, path.basename(lexical))] : [])])];
+  return [
+    ...new Set([
+      lexical,
+      canonicalPath(lexical, "/"),
+      ...(parent ? [path.join(parent, path.basename(lexical))] : []),
+    ]),
+  ];
 }
 
 const CLAUDE_SETTINGS = /(?:^|\/)\.claude\/settings(?:\.[\w-]+)?\.json$/;
 
-function protectedPath(filePath: string, cwd: string, roots: ReturnType<typeof protectedRoots>): ProtectedKind | undefined {
+function protectedPath(
+  filePath: string,
+  cwd: string,
+  roots: ReturnType<typeof protectedRoots>,
+): ProtectedKind | undefined {
   if (!filePath) return;
   for (const spelling of spellings(filePath, cwd)) {
     if (spelling.split("/").includes(".git")) return "git";
     if (CLAUDE_SETTINGS.test(spelling)) return "config";
-    if (roots.files.includes(spelling) || roots.dirs.some((dir) => within(spelling, dir))) return "config";
+    if (roots.files.includes(spelling) || roots.dirs.some((dir) => within(spelling, dir)))
+      return "config";
   }
   return undefined;
 }
 
 // Removing or moving a directory takes what is below it: a repo (its .git)
 // or a protected directory or file.
-function holdsProtected(filePath: string, cwd: string, roots: ReturnType<typeof protectedRoots>): ProtectedKind | undefined {
+function holdsProtected(
+  filePath: string,
+  cwd: string,
+  roots: ReturnType<typeof protectedRoots>,
+): ProtectedKind | undefined {
   for (const spelling of spellings(filePath, cwd)) {
     if (existsSync(path.join(spelling, ".git"))) return "git";
     if ([...roots.dirs, ...roots.files].some((root) => within(root, spelling))) return "config";
@@ -125,7 +155,10 @@ function holdsProtected(filePath: string, cwd: string, roots: ReturnType<typeof 
 // Quoted text blanked, same length, so splitting and redirect checks do not
 // trip on a ; or > inside a string.
 function maskQuotes(command: string): string {
-  return command.replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, (quoted) => quoted[0] + "_".repeat(quoted.length - 2) + quoted[0]);
+  return command.replace(
+    /'[^']*'|"(?:[^"\\]|\\.)*"/g,
+    (quoted) => quoted[0] + "_".repeat(quoted.length - 2) + quoted[0],
+  );
 }
 
 // Programs whose heredoc body runs as commands.
@@ -170,14 +203,23 @@ function segments(command: string): string[] {
 }
 
 function words(segment: string): string[] {
-  return (segment.match(/(?:"[^"\n]*"|'[^'\n]*'|[^\s<>"'])+/g) ?? []).map((word) => word.replace(/^(['"])(.*)\1$/, "$2"));
+  return (segment.match(/(?:"[^"\n]*"|'[^'\n]*'|[^\s<>"'])+/g) ?? []).map((word) =>
+    word.replace(/^(['"])(.*)\1$/, "$2"),
+  );
 }
 
 // The program and its arguments, past assignments and wrappers.
 function program(segment: string): string[] {
   const list = words(segment);
   let i = 0;
-  while (i < list.length && (/^[A-Za-z_]\w*=/.test(list[i]!) || ["sudo", "env", "command", "exec", "time", "nice", "nohup", "doas", "{", "!"].includes(list[i]!))) i++;
+  while (
+    i < list.length &&
+    (/^[A-Za-z_]\w*=/.test(list[i]!) ||
+      ["sudo", "env", "command", "exec", "time", "nice", "nohup", "doas", "{", "!"].includes(
+        list[i]!,
+      ))
+  )
+    i++;
   return list.slice(i).map((word, j) => (j === 0 ? path.basename(word) : word));
 }
 
@@ -187,17 +229,77 @@ function writesRedirect(segment: string): boolean {
 }
 
 const READ_ONLY = new Set([
-  "cat", "head", "tail", "less", "more", "bat", "grep", "egrep", "fgrep", "rg", "ag", "jq", "yq", "stat", "ls", "tree",
-  "readlink", "realpath", "file", "wc", "diff", "cmp", "test", "[", "echo", "printf", "true", "pwd", "cd", "which", "type",
-  "sha256sum", "sha1sum", "md5sum", "b2sum", "du", "df", "sort", "uniq", "cut", "tr", "column", "nl", "od", "xxd", "hexdump",
-  "basename", "dirname",
+  "cat",
+  "head",
+  "tail",
+  "less",
+  "more",
+  "bat",
+  "grep",
+  "egrep",
+  "fgrep",
+  "rg",
+  "ag",
+  "jq",
+  "yq",
+  "stat",
+  "ls",
+  "tree",
+  "readlink",
+  "realpath",
+  "file",
+  "wc",
+  "diff",
+  "cmp",
+  "test",
+  "[",
+  "echo",
+  "printf",
+  "true",
+  "pwd",
+  "cd",
+  "which",
+  "type",
+  "sha256sum",
+  "sha1sum",
+  "md5sum",
+  "b2sum",
+  "du",
+  "df",
+  "sort",
+  "uniq",
+  "cut",
+  "tr",
+  "column",
+  "nl",
+  "od",
+  "xxd",
+  "hexdump",
+  "basename",
+  "dirname",
 ]);
 // add and commit record the file as it is; they do not change it.
-const GIT_READ_ONLY = new Set(["status", "log", "show", "diff", "blame", "ls-files", "ls-tree", "rev-parse", "grep", "cat-file", "shortlog", "describe", "add", "commit"]);
+const GIT_READ_ONLY = new Set([
+  "status",
+  "log",
+  "show",
+  "diff",
+  "blame",
+  "ls-files",
+  "ls-tree",
+  "rev-parse",
+  "grep",
+  "cat-file",
+  "shortlog",
+  "describe",
+  "add",
+  "commit",
+]);
 
 function gitArgs(argv: string[]): string[] {
   const args = argv.slice(1);
-  while (args.length > 0 && /^-(?:C|c)$|^--(?:git-dir|work-tree)$/.test(args[0]!)) args.splice(0, 2);
+  while (args.length > 0 && /^-(?:C|c)$|^--(?:git-dir|work-tree)$/.test(args[0]!))
+    args.splice(0, 2);
   while (args.length > 0 && args[0]!.startsWith("-")) args.shift();
   return args;
 }
@@ -217,14 +319,18 @@ function readOnly(argv: string[], segment: string): boolean {
 function destroysHistory(argv: string[]): boolean {
   if (argv[0] !== "git") return false;
   const [sub, ...rest] = gitArgs(argv);
-  const has = (...flags: string[]) => rest.some((arg) => flags.some((flag) => arg === flag || arg.startsWith(`${flag}=`)));
+  const has = (...flags: string[]) =>
+    rest.some((arg) => flags.some((flag) => arg === flag || arg.startsWith(`${flag}=`)));
   switch (sub) {
     case "reset":
       return has("--hard");
     case "clean":
       return rest.some((arg) => arg === "--force" || /^-[a-zA-Z]*f/.test(arg));
     case "push":
-      return has("--force", "-f", "--force-with-lease", "--mirror", "--delete", "-d", "--prune") || rest.some((arg) => /^[+:]/.test(arg));
+      return (
+        has("--force", "-f", "--force-with-lease", "--mirror", "--delete", "-d", "--prune") ||
+        rest.some((arg) => /^[+:]/.test(arg))
+      );
     case "branch":
       return has("-D") || (has("-d", "--delete") && has("-f", "--force"));
     case "filter-branch":
@@ -251,13 +357,22 @@ function commandDirs(command: string, cwd: string): string[] {
   const dirs = [cwd];
   for (const segment of segments(command)) {
     const argv = program(segment);
-    const target = argv[0] === "cd" || argv[0] === "pushd" ? argv[1] : argv[0] === "git" && argv[1] === "-C" ? argv[2] : undefined;
+    const target =
+      argv[0] === "cd" || argv[0] === "pushd"
+        ? argv[1]
+        : argv[0] === "git" && argv[1] === "-C"
+          ? argv[2]
+          : undefined;
     if (target) dirs.push(path.resolve(cwd, expandHome(target)));
   }
   return dirs;
 }
 
-function bashChange(raw: string, cwd: string, roots: ReturnType<typeof protectedRoots>): ProtectedKind | undefined {
+function bashChange(
+  raw: string,
+  cwd: string,
+  roots: ReturnType<typeof protectedRoots>,
+): ProtectedKind | undefined {
   const command = heredocsAsData(raw);
   const dirs = commandDirs(command, cwd);
   for (const segment of segments(command)) {
@@ -271,7 +386,9 @@ function bashChange(raw: string, cwd: string, roots: ReturnType<typeof protected
       }
       if (!REMOVERS.has(argv[0] ?? "")) continue;
       // mv's last argument is where things go, not what goes.
-      const operands = argv.slice(1, argv[0] === "mv" ? -1 : undefined).filter((arg) => !arg.startsWith("-"));
+      const operands = argv
+        .slice(1, argv[0] === "mv" ? -1 : undefined)
+        .filter((arg) => !arg.startsWith("-"));
       for (const operand of operands) {
         for (const candidate of commandPathCandidates(operand, dir)) {
           const kind = holdsProtected(candidate, dir, roots);
@@ -284,13 +401,23 @@ function bashChange(raw: string, cwd: string, roots: ReturnType<typeof protected
 }
 
 // What a tool call would change that is protected, or undefined.
-export function protectedChange(toolName: string, args: unknown, cwd: string): ProtectedKind | undefined {
+export function protectedChange(
+  toolName: string,
+  args: unknown,
+  cwd: string,
+): ProtectedKind | undefined {
   if (!args || typeof args !== "object" || Array.isArray(args)) return;
   const record = args as Record<string, unknown>;
-  if (BASH_TOOLS.has(toolName)) return typeof record.command === "string" ? bashChange(record.command, cwd, protectedRoots()) : undefined;
+  if (BASH_TOOLS.has(toolName))
+    return typeof record.command === "string"
+      ? bashChange(record.command, cwd, protectedRoots())
+      : undefined;
   if (!WRITE_TOOLS.has(toolName)) return;
   const roots = protectedRoots();
-  const targets = [...candidatePaths(record), ...(typeof record.notebook_path === "string" ? [record.notebook_path] : [])];
+  const targets = [
+    ...candidatePaths(record),
+    ...(typeof record.notebook_path === "string" ? [record.notebook_path] : []),
+  ];
   for (const target of targets) {
     const kind = protectedPath(target, cwd, roots);
     if (kind) return kind;

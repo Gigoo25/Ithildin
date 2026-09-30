@@ -10,7 +10,9 @@ describe("located findings", () => {
   });
   it("locates captured subgroups, not the whole match", () => {
     const text = `owner = "fixtureoperator"`;
-    const found = scan(text).filter((f) => f.ruleId === "pii-labeled-username" || f.secretValue === "fixtureoperator");
+    const found = scan(text).filter(
+      (f) => f.ruleId === "pii-labeled-username" || f.secretValue === "fixtureoperator",
+    );
     expect(found.length).toBeGreaterThan(0);
     for (const f of found) expect(text.slice(f.start, f.end)).toBe(f.secretValue);
   });
@@ -42,7 +44,7 @@ describe("located findings", () => {
   });
   it("every finding satisfies the slice invariant", () => {
     const texts = [
-      "api_key = test-key " + ["192","168","7","77"].join(".") + " up",
+      "api_key = test-key " + ["192", "168", "7", "77"].join(".") + " up",
       `owner = "fixtureoperator"\nconst fixtureoperatorCount = 1;`,
       `iban DE89370400440532013000`,
     ];

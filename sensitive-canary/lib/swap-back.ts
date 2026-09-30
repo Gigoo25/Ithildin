@@ -32,13 +32,63 @@ const WEB_TOOLS = new Set(["web_fetch", "web_search"]);
 // Programs that send data over the network, and those among them whose bare
 // positional argument is a destination host.
 const NETWORK_CLIENTS = new Set([
-  "curl", "wget", "http", "https", "xh", "httpie", "aria2c", "nc", "ncat", "netcat", "socat", "telnet", "ftp", "lftp",
-  "ssh", "scp", "sftp", "rsync", "mosh", "git",
+  "curl",
+  "wget",
+  "http",
+  "https",
+  "xh",
+  "httpie",
+  "aria2c",
+  "nc",
+  "ncat",
+  "netcat",
+  "socat",
+  "telnet",
+  "ftp",
+  "lftp",
+  "ssh",
+  "scp",
+  "sftp",
+  "rsync",
+  "mosh",
+  "git",
 ]);
 const GIT_NETWORK = new Set(["push", "fetch", "pull", "clone", "ls-remote"]);
-const HOST_ARG_CLIENTS = new Set(["nc", "ncat", "netcat", "telnet", "ssh", "sftp", "mosh", "ftp", "lftp"]);
+const HOST_ARG_CLIENTS = new Set([
+  "nc",
+  "ncat",
+  "netcat",
+  "telnet",
+  "ssh",
+  "sftp",
+  "mosh",
+  "ftp",
+  "lftp",
+]);
 // ssh-style options that take a value.
-const OPTION_VALUES = new Set(["-p", "-P", "-i", "-l", "-o", "-F", "-J", "-L", "-R", "-D", "-b", "-c", "-E", "-e", "-m", "-O", "-Q", "-S", "-W", "-w", "-B"]);
+const OPTION_VALUES = new Set([
+  "-p",
+  "-P",
+  "-i",
+  "-l",
+  "-o",
+  "-F",
+  "-J",
+  "-L",
+  "-R",
+  "-D",
+  "-b",
+  "-c",
+  "-E",
+  "-e",
+  "-m",
+  "-O",
+  "-Q",
+  "-S",
+  "-W",
+  "-w",
+  "-B",
+]);
 
 type Span = { text: string; start: number; end: number };
 
@@ -51,7 +101,8 @@ function standInSpans(text: string, book: AliasBook): Span[] {
   const found = book.matches(text);
   found.sort((left, right) => left.start - right.start || right.end - left.end);
   const spans: Span[] = [];
-  for (const span of found) if (!spans.length || span.start >= spans[spans.length - 1]!.end) spans.push(span);
+  for (const span of found)
+    if (!spans.length || span.start >= spans[spans.length - 1]!.end) spans.push(span);
   return spans;
 }
 
@@ -63,14 +114,25 @@ function destinations(command: string): Array<{ start: number; end: number }> | 
   let network = false;
   const ranges: Array<{ start: number; end: number }> = [];
   for (const segment of segments) {
-    const words = [...segment[0].matchAll(/\S+/g)].map((word) => ({ text: word[0], start: segment.index + word.index }));
+    const words = [...segment[0].matchAll(/\S+/g)].map((word) => ({
+      text: word[0],
+      start: segment.index + word.index,
+    }));
     let i = 0;
-    while (i < words.length && (/^[A-Za-z_]\w*=/.test(words[i]!.text) || ["sudo", "env", "command", "time", "nohup"].includes(words[i]!.text))) i++;
+    while (
+      i < words.length &&
+      (/^[A-Za-z_]\w*=/.test(words[i]!.text) ||
+        ["sudo", "env", "command", "time", "nohup"].includes(words[i]!.text))
+    )
+      i++;
     const program = (words[i]?.text ?? "").split("/").pop() ?? "";
     if (!NETWORK_CLIENTS.has(program)) continue;
-    if (program === "git" && !words.slice(i + 1).some((word) => GIT_NETWORK.has(word.text))) continue;
+    if (program === "git" && !words.slice(i + 1).some((word) => GIT_NETWORK.has(word.text)))
+      continue;
     network = true;
-    for (const url of segment[0].matchAll(/[a-z][a-z0-9+.-]*:\/\/(?:[^@\s/]*@)?(\[[^\]\s]+\]|[^/:\s?#'"]+)/gi)) {
+    for (const url of segment[0].matchAll(
+      /[a-z][a-z0-9+.-]*:\/\/(?:[^@\s/]*@)?(\[[^\]\s]+\]|[^/:\s?#'"]+)/gi,
+    )) {
       const host = url[1] ?? "";
       const start = segment.index + url.index + url[0].length - host.length;
       ranges.push({ start, end: start + host.length });
@@ -78,7 +140,10 @@ function destinations(command: string): Array<{ start: number; end: number }> | 
     let hostTaken = false;
     for (let j = i + 1; j < words.length; j++) {
       const word = words[j]!;
-      if (OPTION_VALUES.has(word.text)) { j++; continue; }
+      if (OPTION_VALUES.has(word.text)) {
+        j++;
+        continue;
+      }
       if (word.text.startsWith("-") || word.text.includes("://")) continue;
       // user@host, host:path (scp, rsync, git), or a bare host argument.
       const target = /^(?:[^@\s]+@)?([^:\s/@]+)(?::|$)/.exec(word.text);
@@ -95,7 +160,12 @@ function destinations(command: string): Array<{ start: number; end: number }> | 
   return network ? ranges : undefined;
 }
 
-function swapString(text: string, book: AliasBook, out: Swap, egress: (span: Span) => boolean): string {
+function swapString(
+  text: string,
+  book: AliasBook,
+  out: Swap,
+  egress: (span: Span) => boolean,
+): string {
   let result = "";
   let last = 0;
   for (const span of standInSpans(text, book)) {
@@ -115,17 +185,28 @@ function swapString(text: string, book: AliasBook, out: Swap, egress: (span: Spa
   return result + text.slice(last);
 }
 
-function walk(value: unknown, visit: (text: string, key: string | undefined) => string, key?: string): unknown {
+function walk(
+  value: unknown,
+  visit: (text: string, key: string | undefined) => string,
+  key?: string,
+): unknown {
   if (typeof value === "string") return visit(value, key);
   if (Array.isArray(value)) return value.map((item) => walk(item, visit));
   if (value && typeof value === "object") {
-    return Object.fromEntries(Object.entries(value).map(([childKey, item]) => [childKey, walk(item, visit, childKey)]));
+    return Object.fromEntries(
+      Object.entries(value).map(([childKey, item]) => [childKey, walk(item, visit, childKey)]),
+    );
   }
   return value;
 }
 
 // `offMachineAllowed`: [allow-pii] lets real values go anywhere.
-export function planSwapBack(toolName: string, input: unknown, book: AliasBook, offMachineAllowed: boolean): Swap {
+export function planSwapBack(
+  toolName: string,
+  input: unknown,
+  book: AliasBook,
+  offMachineAllowed: boolean,
+): Swap {
   const out: Swap = { input, resolved: [], unresolved: [], egress: [] };
   out.input = walk(input, (text, key) => {
     let egress: (span: Span) => boolean = () => false;
@@ -136,9 +217,15 @@ export function planSwapBack(toolName: string, input: unknown, book: AliasBook, 
         // Every destination a stand-in: the data goes to your own hosts, so
         // stand-ins may appear anywhere (ssh host-… "cat /home/user-…/x").
         const spans = ranges ? standInSpans(text, book) : [];
-        const external = ranges !== undefined &&
-          (ranges.length === 0 || ranges.some((range) => !spans.some((span) => span.start <= range.start && span.end >= range.end)));
-        if (external) egress = (span) => !ranges!.some((range) => span.start >= range.start && span.end <= range.end);
+        const external =
+          ranges !== undefined &&
+          (ranges.length === 0 ||
+            ranges.some(
+              (range) => !spans.some((span) => span.start <= range.start && span.end >= range.end),
+            ));
+        if (external)
+          egress = (span) =>
+            !ranges!.some((range) => span.start >= range.start && span.end <= range.end);
       }
     }
     return swapString(text, book, out, egress);

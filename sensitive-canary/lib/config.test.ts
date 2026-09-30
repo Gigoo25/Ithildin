@@ -22,21 +22,34 @@ describe("user rule precedence", () => {
   });
   it("keeps the built-in when an override drops its validator", () => {
     const base = [
-      { id: "iban", description: "i", regex: /\bX\b/g, category: "pii" as const, validate: () => true },
+      {
+        id: "iban",
+        description: "i",
+        regex: /\bX\b/g,
+        category: "pii" as const,
+        validate: () => true,
+      },
     ];
-    const out = applyUserOverrides(base, [{ id: "iban", description: "i2", regex: "\\bX\\b", category: "pii" }]);
+    const out = applyUserOverrides(base, [
+      { id: "iban", description: "i2", regex: "\\bX\\b", category: "pii" },
+    ]);
     expect(out[0]!.validate).toBeDefined();
   });
   it("a malformed new rule does not remove unrelated built-ins", () => {
     const base = [{ id: "ok", description: "o", regex: /ok/g, category: "pii" as const }];
-    const out = applyUserOverrides(base, [{ id: "bad", description: "", regex: "", category: "pii" } as never]);
+    const out = applyUserOverrides(base, [
+      { id: "bad", description: "", regex: "", category: "pii" } as never,
+    ]);
     expect(out.map((r) => r.id)).toEqual(["ok"]);
   });
   it("last duplicate custom id wins without duplicating findings", () => {
-    const out = applyUserOverrides([], [
-      { id: "x", description: "a", regex: "aa", category: "pii" },
-      { id: "x", description: "b", regex: "bb", category: "pii" },
-    ]);
+    const out = applyUserOverrides(
+      [],
+      [
+        { id: "x", description: "a", regex: "aa", category: "pii" },
+        { id: "x", description: "b", regex: "bb", category: "pii" },
+      ],
+    );
     expect(out).toHaveLength(1);
     expect(out[0]!.regex.source).toBe("bb");
   });
@@ -48,14 +61,44 @@ describe("user rule precedence", () => {
       return true;
     };
     try {
-      applyUserOverrides([], [{ id: "private-fixture-id", description: "fixture", regex: "(private-regex-body", category: "pii" } as never]);
-      applyUserOverrides([], [{ id: "private-fixture-id", description: "fixture", regex: "private-regex-body", validate: "private-validator", category: "pii" }]);
-      compileInventoryList([{ id: "private-inventory-id", literal: "private-inventory-body", match: "invalid" }]);
+      applyUserOverrides(
+        [],
+        [
+          {
+            id: "private-fixture-id",
+            description: "fixture",
+            regex: "(private-regex-body",
+            category: "pii",
+          } as never,
+        ],
+      );
+      applyUserOverrides(
+        [],
+        [
+          {
+            id: "private-fixture-id",
+            description: "fixture",
+            regex: "private-regex-body",
+            validate: "private-validator",
+            category: "pii",
+          },
+        ],
+      );
+      compileInventoryList([
+        { id: "private-inventory-id", literal: "private-inventory-body", match: "invalid" },
+      ]);
     } finally {
       process.stderr.write = orig as never;
     }
     expect(err.length).toBeGreaterThan(0);
-    for (const value of ["private-fixture-id", "private-regex-body", "private-validator", "private-inventory-id", "private-inventory-body"]) expect(err.join("")).not.toContain(value);
+    for (const value of [
+      "private-fixture-id",
+      "private-regex-body",
+      "private-validator",
+      "private-inventory-id",
+      "private-inventory-body",
+    ])
+      expect(err.join("")).not.toContain(value);
   });
 });
 
@@ -72,7 +115,12 @@ describe("private literal inventory", () => {
     expect("Käsebrett".match(rule.regex)).toBeNull();
   });
   it("supports case-insensitive and phrase modes", () => {
-    const ci = compileInventoryEntry({ id: "t3", literal: "Acme", match: "token", caseSensitive: false });
+    const ci = compileInventoryEntry({
+      id: "t3",
+      literal: "Acme",
+      match: "token",
+      caseSensitive: false,
+    });
     expect("acme".match(ci.regex)?.[0]).toBe("acme");
     const phrase = compileInventoryEntry({ id: "t4", literal: "Acme Corp", match: "phrase" });
     expect("Acme Corp!".match(phrase.regex)?.[0]).toBe("Acme Corp");
@@ -108,7 +156,9 @@ describe("private literal inventory", () => {
     expect(out.some((r) => r.id === "d1")).toBe(true);
   });
   it("example config stays inert", async () => {
-    const config = (await Bun.file(`${import.meta.dir}/../user-config.example.json`).json()) as { rules: Array<{ id: string }> };
+    const config = (await Bun.file(`${import.meta.dir}/../user-config.example.json`).json()) as {
+      rules: Array<{ id: string }>;
+    };
     for (const rule of config.rules) expect(() => compileRule(rule as never)).not.toThrow();
   });
 });

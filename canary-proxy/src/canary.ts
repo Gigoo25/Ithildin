@@ -3,7 +3,8 @@
 //
 // The engine is ../sensitive-canary (core.ts + lib/), and this proxy is
 // the only place it runs: every agent (Claude, Pi, local models) points its
-// provider base URL here. The proxy is a single long-lived process for every agent and session, so its stand-ins come from
+// provider base URL here. The proxy is a single long-lived process for every agent and session, so
+// its stand-ins come from
 // one persistent key (proxy-alias-key): a restart keeps them stable, and so
 // keeps the provider's prompt cache warm.
 //
@@ -13,11 +14,43 @@
 import { createHmac } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
 import path from "node:path";
-import { aliases, asUserText, collectValues, blocksInventoryAccess, blocksSecretAccess, candidatePaths, flushScanCache, isSecretPath, latestAllowTags, loadScanCache, redactValue, rememberSwapped, setAliasBook } from "../engine/core.ts";
-import { AliasBook, aliasKeyPath, aliasMatches, aliasSpans, loadAliasKey, registerAliasLabels } from "../engine/lib/aliases.ts";
+import {
+  aliases,
+  asUserText,
+  collectValues,
+  blocksInventoryAccess,
+  blocksSecretAccess,
+  candidatePaths,
+  flushScanCache,
+  isSecretPath,
+  latestAllowTags,
+  loadScanCache,
+  redactValue,
+  rememberSwapped,
+  setAliasBook,
+} from "../engine/core.ts";
+import {
+  AliasBook,
+  aliasKeyPath,
+  aliasMatches,
+  aliasSpans,
+  loadAliasKey,
+  registerAliasLabels,
+} from "../engine/lib/aliases.ts";
 import { type Message, userTypedText } from "../engine/lib/inspector.ts";
-import { aliasLabels, aliasStyle, inventoryLiterals, setRuntimeInventory, withScanBudget } from "../engine/lib/rules.ts";
-import { collectRuntimeIdentity, identityFromGit, identityFromOs, identityFromSsh } from "../engine/lib/runtime-inventory.ts";
+import {
+  aliasLabels,
+  aliasStyle,
+  inventoryLiterals,
+  setRuntimeInventory,
+  withScanBudget,
+} from "../engine/lib/rules.ts";
+import {
+  collectRuntimeIdentity,
+  identityFromGit,
+  identityFromOs,
+  identityFromSsh,
+} from "../engine/lib/runtime-inventory.ts";
 import { planSwapBack } from "../engine/lib/swap-back.ts";
 import { protectedBlocked, protectedChange } from "./protect.ts";
 import { argsKey, initReplay, recordOriginal, replayOriginal, saveReplay } from "./replay.ts";
@@ -36,23 +69,32 @@ export function saveScanCache(): void {
   aliases().saveCounters();
 }
 
-export function initEngine(keyFile = process.env.SENSITIVE_CANARY_PROXY_KEY_FILE ?? path.join(path.dirname(aliasKeyPath()), "proxy-alias-key")): void {
-  setRuntimeInventory(collectRuntimeIdentity({
-    ...identityFromOs(),
-    ...identityFromGit(),
-    // Git remotes are per project, and the proxy has no project.
-    ...(process.env.SENSITIVE_CANARY_INFRA_INVENTORY === "off" ? {} : identityFromSsh()),
-  }));
+export function initEngine(
+  keyFile = process.env.SENSITIVE_CANARY_PROXY_KEY_FILE ??
+    path.join(path.dirname(aliasKeyPath()), "proxy-alias-key"),
+): void {
+  setRuntimeInventory(
+    collectRuntimeIdentity({
+      ...identityFromOs(),
+      ...identityFromGit(),
+      // Git remotes are per project, and the proxy has no project.
+      ...(process.env.SENSITIVE_CANARY_INFRA_INVENTORY === "off" ? {} : identityFromSsh()),
+    }),
+  );
   registerAliasLabels(aliasLabels());
   const aliasKey = loadAliasKey(keyFile);
   const book = new AliasBook(aliasKey);
   setAliasBook(book);
   scanCacheBase = path.join(path.dirname(keyFile), "proxy");
   book.loadCounters(`${scanCacheBase}-standins.json`);
-  initReplay(createHmac("sha256", aliasKey).update("replay").digest(), `${scanCacheBase}-replay.json`);
+  initReplay(
+    createHmac("sha256", aliasKey).update("replay").digest(),
+    `${scanCacheBase}-replay.json`,
+  );
   loadScanCache(scanCacheBase);
   if (aliasStyle() === "stand-ins") {
-    for (const entry of inventoryLiterals()) aliases().standIn(entry.ruleId, entry.literal, entry.label);
+    for (const entry of inventoryLiterals())
+      aliases().standIn(entry.ruleId, entry.literal, entry.label);
   }
 }
 
@@ -68,16 +110,21 @@ function textBlocks(content: unknown): Array<{ type: "text"; text: string }> {
     if (typeof block === "string") return [{ type: "text" as const, text: block }];
     if (!block || typeof block !== "object") return [];
     const { type, text } = block as { type?: unknown; text?: unknown };
-    return (type === "text" || type === "input_text") && typeof text === "string" ? [{ type: "text" as const, text }] : [];
+    return (type === "text" || type === "input_text") && typeof text === "string"
+      ? [{ type: "text" as const, text }]
+      : [];
   });
 }
 
 const PROTECTED_TAG = /\[allow-protected\]/i;
 
 export function requestAllowTags(format: Format, body: Record<string, unknown>): Set<string> {
-  const list = format === "responses"
-    ? (typeof body.input === "string" ? [{ role: "user", content: body.input }] : body.input)
-    : body.messages;
+  const list =
+    format === "responses"
+      ? typeof body.input === "string"
+        ? [{ role: "user", content: body.input }]
+        : body.input
+      : body.messages;
   if (!Array.isArray(list)) return new Set();
   const users: Message[] = [];
   let typed = "";
@@ -90,7 +137,9 @@ export function requestAllowTags(format: Format, body: Record<string, unknown>):
     // beside them. Taken as the latest prompt, they cancelled the typed tag
     // at the first tool call, so [allow-secrets] never reached a read. Such
     // a turn decides only when it carries a tag of its own.
-    const results = Array.isArray(content) && content.some((block) => (block as { type?: unknown } | null)?.type === "tool_result");
+    const results =
+      Array.isArray(content) &&
+      content.some((block) => (block as { type?: unknown } | null)?.type === "tool_result");
     if (results && latestAllowTags([{ role: "user", content: blocks }]).size === 0) continue;
     // Typed text only: a system reminder quoting CLAUDE.md, or a pasted
     // fence, that mentions [allow-protected] is not the user asking for it.
@@ -110,9 +159,14 @@ export function typedPromptCount(format: Format, body: Record<string, unknown>):
   const list = format === "responses" ? body.input : body.messages;
   if (!Array.isArray(list)) return typeof list === "string" ? 1 : 0;
   return list.filter((item) => {
-    if (!item || typeof item !== "object" || (item as { role?: unknown }).role !== "user") return false;
+    if (!item || typeof item !== "object" || (item as { role?: unknown }).role !== "user")
+      return false;
     const content = (item as { content?: unknown }).content;
-    if (Array.isArray(content) && content.some((block) => (block as { type?: unknown } | null)?.type === "tool_result")) return false;
+    if (
+      Array.isArray(content) &&
+      content.some((block) => (block as { type?: unknown } | null)?.type === "tool_result")
+    )
+      return false;
     return textBlocks(content).length > 0;
   }).length;
 }
@@ -125,10 +179,16 @@ export function typedPromptCount(format: Format, body: Record<string, unknown>):
 const ANTHROPIC_OPAQUE_BLOCKS = new Set(["thinking", "redacted_thinking"]);
 const ANTHROPIC_ID_KEYS = new Set(["id", "tool_use_id", "name", "signature", "cache_control"]);
 
-function redactAnthropicBlock(block: unknown, tags: Set<string>, location: Array<string | number>): { value: unknown; hits: number } {
-  if (!block || typeof block !== "object" || Array.isArray(block)) return redactValue(block, tags, undefined, undefined, location, true);
+function redactAnthropicBlock(
+  block: unknown,
+  tags: Set<string>,
+  location: Array<string | number>,
+): { value: unknown; hits: number } {
+  if (!block || typeof block !== "object" || Array.isArray(block))
+    return redactValue(block, tags, undefined, undefined, location, true);
   const record = block as Record<string, unknown>;
-  if (typeof record.type === "string" && ANTHROPIC_OPAQUE_BLOCKS.has(record.type)) return { value: block, hits: 0 };
+  if (typeof record.type === "string" && ANTHROPIC_OPAQUE_BLOCKS.has(record.type))
+    return { value: block, hits: 0 };
   let hits = 0;
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(record)) {
@@ -150,7 +210,10 @@ function typed<T>(user: boolean, scan: () => T): T {
   return user ? asUserText(scan) : scan();
 }
 
-function redactAnthropic(body: Record<string, unknown>, tags: Set<string>): { value: Record<string, unknown>; hits: number } {
+function redactAnthropic(
+  body: Record<string, unknown>,
+  tags: Set<string>,
+): { value: Record<string, unknown>; hits: number } {
   const { messages, ...rest } = body;
   const top = redactValue(rest, tags, undefined, undefined, [], true);
   let hits = top.hits;
@@ -161,11 +224,21 @@ function redactAnthropic(body: Record<string, unknown>, tags: Set<string>): { va
       const { content, ...fields } = message as Record<string, unknown>;
       const next: Record<string, unknown> = { ...fields };
       const user = fields.role === "user";
-      const replayed = !user && typeof content === "string" ? replayOriginal("text", content) : undefined;
+      const replayed =
+        !user && typeof content === "string" ? replayOriginal("text", content) : undefined;
       if (replayed !== undefined) {
         next.content = replayed;
       } else if (typeof content === "string") {
-        const result = typed(user, () => redactValue(content, tags, "content", message as Record<string, unknown>, ["messages", i, "content"], true));
+        const result = typed(user, () =>
+          redactValue(
+            content,
+            tags,
+            "content",
+            message as Record<string, unknown>,
+            ["messages", i, "content"],
+            true,
+          ),
+        );
         hits += result.hits;
         next.content = result.value;
       } else if (Array.isArray(content)) {
@@ -173,7 +246,9 @@ function redactAnthropic(body: Record<string, unknown>, tags: Set<string>): { va
           const replayed = user ? undefined : replayAnthropicBlock(block);
           if (replayed !== undefined) return replayed;
           const text = user && (block as { type?: unknown } | null)?.type === "text";
-          const result = typed(text, () => redactAnthropicBlock(block, tags, ["messages", i, "content", j]));
+          const result = typed(text, () =>
+            redactAnthropicBlock(block, tags, ["messages", i, "content", j]),
+          );
           hits += result.hits;
           return result.value;
         });
@@ -208,16 +283,26 @@ function replayAnthropicBlock(block: unknown): unknown {
 // A Chat assistant message or a Responses function call with every
 // replayable part put back and every other part redacted. Undefined when
 // nothing replays, so the item takes the ordinary walk.
-function replayOpenAiItem(item: Record<string, unknown>, tags: Set<string>, location: Array<string | number>): { value: unknown; hits: number } | undefined {
+function replayOpenAiItem(
+  item: Record<string, unknown>,
+  tags: Set<string>,
+  location: Array<string | number>,
+): { value: unknown; hits: number } | undefined {
   let replays = 0;
   let hits = 0;
-  const redact = (value: unknown, at: Array<string | number>, key?: string, parent?: Record<string, unknown>) => {
+  const redact = (
+    value: unknown,
+    at: Array<string | number>,
+    key?: string,
+    parent?: Record<string, unknown>,
+  ) => {
     const result = redactValue(value, tags, key, parent, at, true);
     hits += result.hits;
     return result.value;
   };
   const replay = (kind: "text" | "args", value: unknown): string | undefined => {
-    const harness = kind === "text" ? (typeof value === "string" ? value : undefined) : argsKey(value);
+    const harness =
+      kind === "text" ? (typeof value === "string" ? value : undefined) : argsKey(value);
     const original = harness === undefined ? undefined : replayOriginal(kind, harness);
     if (original !== undefined) replays++;
     return original;
@@ -230,19 +315,29 @@ function replayOpenAiItem(item: Record<string, unknown>, tags: Set<string>, loca
     } else if (key === "content" && Array.isArray(value)) {
       out[key] = value.map((part, i) => {
         const record = part as { type?: unknown; text?: unknown } | null;
-        const original = record?.type === "text" || record?.type === "output_text" ? replay("text", record.text) : undefined;
+        const original =
+          record?.type === "text" || record?.type === "output_text"
+            ? replay("text", record.text)
+            : undefined;
         return original === undefined ? redact(part, [...at, i]) : { ...record, text: original };
       });
     } else if (key === "tool_calls" && Array.isArray(value)) {
       out[key] = value.map((call, i) => {
         const { function: fn, ...fields } = (call ?? {}) as { function?: { arguments?: unknown } };
-        const original = typeof fn?.arguments === "string" ? replay("args", fn.arguments) : undefined;
+        const original =
+          typeof fn?.arguments === "string" ? replay("args", fn.arguments) : undefined;
         if (original === undefined) return redact(call, [...at, i]);
-        return { ...(redact(fields, [...at, i]) as Record<string, unknown>), function: { ...fn, arguments: original } };
+        return {
+          ...(redact(fields, [...at, i]) as Record<string, unknown>),
+          function: { ...fn, arguments: original },
+        };
       });
     } else if (key === "arguments" && typeof value === "string") {
       out[key] = replay("args", value) ?? redact(value, at, key, item);
-    } else if (["type", "role", "id", "call_id", "name"].includes(key) && typeof value === "string") {
+    } else if (
+      ["type", "role", "id", "call_id", "name"].includes(key) &&
+      typeof value === "string"
+    ) {
       out[key] = value;
     } else {
       out[key] = redact(value, at, key, item);
@@ -253,7 +348,11 @@ function replayOpenAiItem(item: Record<string, unknown>, tags: Set<string>, loca
 
 // Chat messages and Responses input items: the same walk as the rest of the
 // body, with user items scanned as typed text.
-function redactOpenAi(format: Format, body: Record<string, unknown>, tags: Set<string>): { value: Record<string, unknown>; hits: number } {
+function redactOpenAi(
+  format: Format,
+  body: Record<string, unknown>,
+  tags: Set<string>,
+): { value: Record<string, unknown>; hits: number } {
   const key = format === "responses" ? "input" : "messages";
   const { [key]: list, ...rest } = body;
   const top = redactValue(rest, tags, undefined, undefined, [], true);
@@ -262,15 +361,22 @@ function redactOpenAi(format: Format, body: Record<string, unknown>, tags: Set<s
   if (Array.isArray(list)) {
     out[key] = list.map((item, i) => {
       const record = item as Record<string, unknown> | null;
-      if (record && typeof record === "object" && (record.role === "assistant" || record.type === "function_call")) {
+      if (
+        record &&
+        typeof record === "object" &&
+        (record.role === "assistant" || record.type === "function_call")
+      ) {
         const replayed = replayOpenAiItem(record, tags, [key, i]);
         if (replayed) {
           hits += replayed.hits;
           return replayed.value;
         }
       }
-      const user = !!item && typeof item === "object" && (item as { role?: unknown }).role === "user";
-      const result = typed(user, () => redactValue(item, tags, undefined, undefined, [key, i], true));
+      const user =
+        !!item && typeof item === "object" && (item as { role?: unknown }).role === "user";
+      const result = typed(user, () =>
+        redactValue(item, tags, undefined, undefined, [key, i], true),
+      );
       hits += result.hits;
       return result.value;
     });
@@ -293,7 +399,10 @@ export interface Counts {
   images: number;
 }
 
-export function redactRequest(format: Format, body: Record<string, unknown>): { body: Record<string, unknown>; hits: number; counts: Counts; tags: Set<string> } {
+export function redactRequest(
+  format: Format,
+  body: Record<string, unknown>,
+): { body: Record<string, unknown>; hits: number; counts: Counts; tags: Set<string> } {
   const tags = requestAllowTags(format, body);
   requestDirs.set(tags, requestCwd(format, body));
   rememberLiterals(format, body);
@@ -308,14 +417,29 @@ export function redactRequest(format: Format, body: Record<string, unknown>): { 
   }
 }
 
-function redactWithCorpus(format: Format, body: Record<string, unknown>, tags: Set<string>): { body: Record<string, unknown>; hits: number; counts: Counts; tags: Set<string> } {
+function redactWithCorpus(
+  format: Format,
+  body: Record<string, unknown>,
+  tags: Set<string>,
+): { body: Record<string, unknown>; hits: number; counts: Counts; tags: Set<string> } {
   // Each prompt's own tag decides its images, read before tags are stripped;
   // the notice goes in after, so its own tag mention survives.
   const images = withholdImages(format, stripAllowTags(format, body), body);
-  if (tags.has("all")) return { body: explainBlocked(format, images.body), hits: images.hits, counts: { masked: 0, files: 0, lines: 0, images: images.hits }, tags };
+  if (tags.has("all"))
+    return {
+      body: explainBlocked(format, images.body),
+      hits: images.hits,
+      counts: { masked: 0, files: 0, lines: 0, images: images.hits },
+      tags,
+    };
   const stripped = images.body;
   const result = redactBody(format, stripped, tags);
-  return { body: explainBlocked(format, result.body), hits: result.hits + images.hits, counts: { ...result.counts, images: images.hits }, tags };
+  return {
+    body: explainBlocked(format, result.body),
+    hits: result.hits + images.hits,
+    counts: { ...result.counts, images: images.hits },
+    tags,
+  };
 }
 
 // ── invented stand-ins ──────────────────────────────────────────────────────
@@ -343,12 +467,20 @@ const MAX_REMEMBERED = 50_000;
 
 function rememberLiterals(format: Format, body: Record<string, unknown>): void {
   const list = format === "responses" ? body.input : body.messages;
-  const real = [format === "anthropic" ? body.system : format === "responses" ? body.instructions : undefined];
+  const real = [
+    format === "anthropic" ? body.system : format === "responses" ? body.instructions : undefined,
+  ];
   if (Array.isArray(list)) {
     for (const item of list) {
       if (!item || typeof item !== "object") continue;
       const record = item as Record<string, unknown>;
-      if (record.role === "assistant" || record.type === "function_call" || record.type === "custom_tool_call" || record.type === "reasoning") continue;
+      if (
+        record.role === "assistant" ||
+        record.type === "function_call" ||
+        record.type === "custom_tool_call" ||
+        record.type === "reasoning"
+      )
+        continue;
       real.push(record);
     }
   } else {
@@ -357,12 +489,17 @@ function rememberLiterals(format: Format, body: Record<string, unknown>): void {
   if (seenLiterals.size > MAX_REMEMBERED) seenLiterals.clear();
   for (const value of real) {
     if (value === undefined) continue;
-    for (const match of aliasMatches(typeof value === "string" ? value : JSON.stringify(value))) seenLiterals.add(match.text);
+    for (const match of aliasMatches(typeof value === "string" ? value : JSON.stringify(value)))
+      seenLiterals.add(match.text);
   }
 }
 
 export function standInBlocked(tokens: string[]): string {
-  return `Not run: ${tokens.join(", ")} ${tokens.length === 1 ? "does" : "do"} not appear anywhere in this conversation, so nothing was written. Use values exactly as they appear in files and tool output; do not make up identifiers.`;
+  return (
+    `Not run: ${tokens.join(", ")} ${tokens.length === 1 ? "does" : "do"} not appear anywhere in ` +
+    `this conversation, so nothing was written. Use values exactly as they appear in files and ` +
+    `tool output; do not make up identifiers.`
+  );
 }
 
 function explainBlocked(format: Format, body: Record<string, unknown>): Record<string, unknown> {
@@ -380,16 +517,22 @@ function explainBlocked(format: Format, body: Record<string, unknown>): Record<s
     if (!item || typeof item !== "object") return item;
     const record = item as Record<string, unknown>;
     if (format === "anthropic" && Array.isArray(record.content)) {
-      return { ...record, content: (record.content as Array<Record<string, unknown>>).map((block) => {
-        const text = block?.type === "tool_result" ? notice(block.tool_use_id) : undefined;
-        return text === undefined ? block : { ...block, content: text, is_error: true };
-      }) };
+      return {
+        ...record,
+        content: (record.content as Array<Record<string, unknown>>).map((block) => {
+          const text = block?.type === "tool_result" ? notice(block.tool_use_id) : undefined;
+          return text === undefined ? block : { ...block, content: text, is_error: true };
+        }),
+      };
     }
     if (format === "chat" && record.role === "tool") {
       const text = notice(record.tool_call_id);
       return text === undefined ? item : { ...record, content: text };
     }
-    if (format === "responses" && (record.type === "function_call_output" || record.type === "custom_tool_call_output")) {
+    if (
+      format === "responses" &&
+      (record.type === "function_call_output" || record.type === "custom_tool_call_output")
+    ) {
       const text = notice(record.call_id);
       return text === undefined ? item : { ...record, output: text };
     }
@@ -400,27 +543,45 @@ function explainBlocked(format: Format, body: Record<string, unknown>): Record<s
 
 // Query parameter values, scanned like body strings. API query strings are
 // flags (?beta=true), so this rarely finds anything, but a URL is sent too.
-export function redactQuery(search: string, tags: Set<string>): { search: string; hits: number; values: number } {
+export function redactQuery(
+  search: string,
+  tags: Set<string>,
+): { search: string; hits: number; values: number } {
   if (search === "" || search === "?" || tags.has("all")) return { search, hits: 0, values: 0 };
   const params = new URLSearchParams(search);
   let hits = 0;
-  const { values } = collectValues(() => withScanBudget(() => {
-    for (const [name, value] of [...params]) {
-      const result = redactValue(value, tags, name, undefined, ["query", name], true);
-      if (result.hits === 0) continue;
-      hits += result.hits;
-      params.set(name, String(result.value));
-    }
-  }));
+  const { values } = collectValues(() =>
+    withScanBudget(() => {
+      for (const [name, value] of [...params]) {
+        const result = redactValue(value, tags, name, undefined, ["query", name], true);
+        if (result.hits === 0) continue;
+        hits += result.hits;
+        params.set(name, String(result.value));
+      }
+    }),
+  );
   return hits === 0 ? { search, hits, values } : { search: `?${params}`, hits, values };
 }
 
 // One scan envelope per request. Split out so tests can set the allow tags.
-export function redactBody(format: Format, body: Record<string, unknown>, tags: Set<string>): { body: Record<string, unknown>; hits: number; counts: Counts } {
+export function redactBody(
+  format: Format,
+  body: Record<string, unknown>,
+  tags: Set<string>,
+): { body: Record<string, unknown>; hits: number; counts: Counts } {
   return withScanBudget(() => {
     const withheld = withholdSecretReads(format, body, tags);
-    const { result, values } = collectValues(() => format === "anthropic" ? redactAnthropic(withheld.body, tags) : redactOpenAi(format, withheld.body, tags));
-    const counts = { masked: values, files: withheld.files, lines: withheld.hits - withheld.files, images: 0 };
+    const { result, values } = collectValues(() =>
+      format === "anthropic"
+        ? redactAnthropic(withheld.body, tags)
+        : redactOpenAi(format, withheld.body, tags),
+    );
+    const counts = {
+      masked: values,
+      files: withheld.files,
+      lines: withheld.hits - withheld.files,
+      images: 0,
+    };
     return { body: result.value, hits: result.hits + withheld.hits, counts };
   });
 }
@@ -433,11 +594,16 @@ export function redactBody(format: Format, body: Record<string, unknown>, tags: 
 // Results are matched to calls by id, which every format carries. Checked on
 // the harness's real arguments, before redaction rewrites them.
 
-export const WITHHELD_NOTICE = "Output withheld: this call read a protected file (.env, private keys, credentials), so its contents are not shown. Work with such files through commands that do not print their values, or ask the user to include [allow-secrets] in their prompt.";
+export const WITHHELD_NOTICE =
+  "Output withheld: this call read a protected file (.env, private keys, credentials), so its " +
+  "contents are not shown. Work with such files through commands that do not print their values, " +
+  "or ask the user to include [allow-secrets] in their prompt.";
 // The canary's own config and inventory hold personal values, so [allow-pii]
 // opens them, not [allow-secrets]. One notice for both sent the user around
 // in circles typing a tag that could never work.
-export const INVENTORY_NOTICE = "Output withheld: this call read a file of personal values, so its contents are not shown. Ask the user to include [allow-pii] in their prompt if you need to see it.";
+export const INVENTORY_NOTICE =
+  "Output withheld: this call read a file of personal values, so its contents are not shown. Ask " +
+  "the user to include [allow-pii] in their prompt if you need to see it.";
 
 // The agent's working directory, from its system prompt (Claude: "Primary
 // working directory:", Pi: "Current working directory:"). The latest mention
@@ -448,13 +614,18 @@ const CWD_LINE = /(?:Primary|Current) working directory: ([^\n]+)/g;
 
 export function requestCwd(format: Format, body: Record<string, unknown>): string {
   const texts: string[] = [];
-  const add = (content: unknown) => { for (const block of textBlocks(content)) texts.push(block.text); };
-  add(format === "anthropic" ? body.system : format === "responses" ? body.instructions : undefined);
+  const add = (content: unknown) => {
+    for (const block of textBlocks(content)) texts.push(block.text);
+  };
+  add(
+    format === "anthropic" ? body.system : format === "responses" ? body.instructions : undefined,
+  );
   const list = format === "responses" ? body.input : body.messages;
   if (Array.isArray(list)) {
     for (const item of list) {
       const role = (item as { role?: unknown } | null)?.role;
-      if (role === "user" || role === "system" || role === "developer") add((item as { content?: unknown }).content);
+      if (role === "user" || role === "system" || role === "developer")
+        add((item as { content?: unknown }).content);
     }
   }
   let cwd: string | undefined;
@@ -468,7 +639,12 @@ export function requestCwd(format: Format, body: Record<string, unknown>): strin
 }
 
 // The notice for a call that read something protected, or undefined.
-function readsSecret(name: string, input: unknown, tags: Set<string>, cwd: string): string | undefined {
+function readsSecret(
+  name: string,
+  input: unknown,
+  tags: Set<string>,
+  cwd: string,
+): string | undefined {
   if (!input || typeof input !== "object" || Array.isArray(input)) return;
   const record = input as Record<string, unknown>;
   const tool = BASH_TOOLS.has(name) ? "bash" : name;
@@ -490,26 +666,50 @@ function parseArgs(json: unknown): unknown {
 
 // hits counts withheld results and withheld lines together; files, the
 // results alone.
-function withholdSecretReads(format: Format, body: Record<string, unknown>, tags: Set<string>): { body: Record<string, unknown>; hits: number; files: number } {
+function withholdSecretReads(
+  format: Format,
+  body: Record<string, unknown>,
+  tags: Set<string>,
+): { body: Record<string, unknown>; hits: number; files: number } {
   const list = format === "responses" ? body.input : body.messages;
   if (!Array.isArray(list)) return { body, hits: 0, files: 0 };
   const cwd = requestCwd(format, body);
   const listed = secretListing(cwd);
   const secret = new Map<string, string>();
-  const withhold = (id: unknown, notice: string | undefined) => { if (notice) secret.set(String(id), notice); };
+  const withhold = (id: unknown, notice: string | undefined) => {
+    if (notice) secret.set(String(id), notice);
+  };
   for (const item of list) {
     if (!item || typeof item !== "object") continue;
     const record = item as Record<string, unknown>;
     if (format === "anthropic" && Array.isArray(record.content)) {
       for (const block of record.content as Array<Record<string, unknown>>) {
-        if (block?.type === "tool_use") withhold(block.id, readsSecret(String(block.name), block.input, tags, cwd));
+        if (block?.type === "tool_use")
+          withhold(block.id, readsSecret(String(block.name), block.input, tags, cwd));
       }
     } else if (format === "chat" && Array.isArray(record.tool_calls)) {
-      for (const call of record.tool_calls as Array<{ id?: unknown; function?: { name?: unknown; arguments?: unknown } }>) {
-        withhold(call.id, readsSecret(String(call?.function?.name), parseArgs(call?.function?.arguments), tags, cwd));
+      for (const call of record.tool_calls as Array<{
+        id?: unknown;
+        function?: { name?: unknown; arguments?: unknown };
+      }>) {
+        withhold(
+          call.id,
+          readsSecret(
+            String(call?.function?.name),
+            parseArgs(call?.function?.arguments),
+            tags,
+            cwd,
+          ),
+        );
       }
-    } else if (format === "responses" && (record.type === "function_call" || record.type === "custom_tool_call")) {
-      withhold(record.call_id, readsSecret(String(record.name), parseArgs(record.arguments ?? record.input), tags, cwd));
+    } else if (
+      format === "responses" &&
+      (record.type === "function_call" || record.type === "custom_tool_call")
+    ) {
+      withhold(
+        record.call_id,
+        readsSecret(String(record.name), parseArgs(record.arguments ?? record.input), tags, cwd),
+      );
     }
   }
   let hits = 0;
@@ -532,7 +732,10 @@ function withholdSecretReads(format: Format, body: Record<string, unknown>, tags
     if (format === "anthropic" && Array.isArray(record.content)) {
       const before = hits;
       const content = (record.content as Array<Record<string, unknown>>).map((block) =>
-        block?.type === "tool_result" ? { ...block, content: result(block.tool_use_id, block.content) } : block);
+        block?.type === "tool_result"
+          ? { ...block, content: result(block.tool_use_id, block.content) }
+          : block,
+      );
       return hits > before ? { ...record, content } : item;
     }
     if (format === "chat" && record.role === "tool") {
@@ -540,14 +743,19 @@ function withholdSecretReads(format: Format, body: Record<string, unknown>, tags
       const content = result(record.tool_call_id, record.content);
       return hits > before ? { ...record, content } : item;
     }
-    if (format === "responses" && (record.type === "function_call_output" || record.type === "custom_tool_call_output")) {
+    if (
+      format === "responses" &&
+      (record.type === "function_call_output" || record.type === "custom_tool_call_output")
+    ) {
       const before = hits;
       const output = result(record.call_id, record.output);
       return hits > before ? { ...record, output } : item;
     }
     return item;
   });
-  return hits === 0 ? { body, hits, files } : { body: { ...body, [format === "responses" ? "input" : "messages"]: replaced }, hits, files };
+  return hits === 0
+    ? { body, hits, files }
+    : { body: { ...body, [format === "responses" ? "input" : "messages"]: replaced }, hits, files };
 }
 
 // Search output names a file on each line (grep -rn, rg: "path:12:text",
@@ -570,14 +778,18 @@ function secretListing(cwd: string): (listed: string) => boolean {
   return (listed) => {
     let secret = seen.get(listed);
     if (secret === undefined) {
-      secret = (!/\s/.test(listed) || existsSync(path.resolve(cwd, listed))) && isSecretPath(listed, cwd);
+      secret =
+        (!/\s/.test(listed) || existsSync(path.resolve(cwd, listed))) && isSecretPath(listed, cwd);
       seen.set(listed, secret);
     }
     return secret;
   };
 }
 
-function withholdLines(text: string, secret: (listed: string) => boolean): { text: string; hits: number } {
+function withholdLines(
+  text: string,
+  secret: (listed: string) => boolean,
+): { text: string; hits: number } {
   if (!text.includes(":") && !text.includes("-")) return { text, hits: 0 };
   let hits = 0;
   let group = false;
@@ -599,8 +811,9 @@ function withholdLines(text: string, secret: (listed: string) => boolean): { tex
     // Match lines put ":" after the path, context lines "-12-"; context text
     // can hold a ":" too, so both heads are checked.
     const colon = line.indexOf(":");
-    const head = [colon > 0 ? line.slice(0, colon) : undefined, FLAT_CONTEXT.exec(line)?.[1]]
-      .find((candidate) => candidate !== undefined && secret(candidate));
+    const head = [colon > 0 ? line.slice(0, colon) : undefined, FLAT_CONTEXT.exec(line)?.[1]].find(
+      (candidate) => candidate !== undefined && secret(candidate),
+    );
     if (!head) return line;
     hits++;
     return `${head}: ${WITHHELD_LINE}`;
@@ -610,7 +823,10 @@ function withholdLines(text: string, secret: (listed: string) => boolean): { tex
 
 // Tool result content: a string, or text parts (Anthropic text blocks, chat
 // text parts, Responses input_text).
-function withholdSecretLines(content: unknown, secret: (listed: string) => boolean): { content: unknown; hits: number } {
+function withholdSecretLines(
+  content: unknown,
+  secret: (listed: string) => boolean,
+): { content: unknown; hits: number } {
   if (typeof content === "string") {
     const out = withholdLines(content, secret);
     return { content: out.text, hits: out.hits };
@@ -618,7 +834,8 @@ function withholdSecretLines(content: unknown, secret: (listed: string) => boole
   if (!Array.isArray(content)) return { content, hits: 0 };
   let hits = 0;
   const parts = content.map((part) => {
-    if (!part || typeof part !== "object" || typeof (part as { text?: unknown }).text !== "string") return part;
+    if (!part || typeof part !== "object" || typeof (part as { text?: unknown }).text !== "string")
+      return part;
     const out = withholdLines((part as { text: string }).text, secret);
     hits += out.hits;
     return out.hits === 0 ? part : { ...part, text: out.text };
@@ -635,7 +852,9 @@ function withholdSecretLines(content: unknown, secret: (listed: string) => boole
 // not per request, keeps earlier turns byte-stable, and so the prompt cache.
 // Images by URL or uploaded file id are already the provider's to fetch.
 
-export const IMAGE_NOTICE = "Image withheld: images and documents cannot be checked for sensitive values, so this one is not shown. Ask the user to include [allow-images] in their prompt if you need to see it.";
+export const IMAGE_NOTICE =
+  "Image withheld: images and documents cannot be checked for sensitive values, so this one is " +
+  "not shown. Ask the user to include [allow-images] in their prompt if you need to see it.";
 const IMAGE_TAG = /\[allow-(?:images?|all)\]/i;
 
 function isInlineData(value: unknown): boolean {
@@ -696,7 +915,11 @@ function replaceImages(value: unknown, format: Format, count: { hits: number }):
 
 // Tags are read from `tagged` (the body as the client sent it), images
 // replaced in `body` (the same body with its tags stripped).
-export function withholdImages(format: Format, body: Record<string, unknown>, tagged = body): { body: Record<string, unknown>; hits: number } {
+export function withholdImages(
+  format: Format,
+  body: Record<string, unknown>,
+  tagged = body,
+): { body: Record<string, unknown>; hits: number } {
   const key = format === "responses" ? "input" : "messages";
   const list = body[key];
   const original = tagged[key];
@@ -707,7 +930,9 @@ export function withholdImages(format: Format, body: Record<string, unknown>, ta
     if (!item || typeof item !== "object") return item;
     const record = (original[i] ?? item) as { role?: unknown; content?: unknown };
     // A tool-result turn is not a prompt, even with harness text beside it.
-    const results = Array.isArray(record.content) && record.content.some((block) => (block as { type?: unknown } | null)?.type === "tool_result");
+    const results =
+      Array.isArray(record.content) &&
+      record.content.some((block) => (block as { type?: unknown } | null)?.type === "tool_result");
     if (record.role === "user" && !results) {
       const typed = textBlocks(record.content);
       if (typed.length > 0) allowed = typed.some((block) => IMAGE_TAG.test(block.text));
@@ -733,19 +958,26 @@ function stripTagText(content: unknown): unknown {
   return content.map((block) => {
     if (!block || typeof block !== "object") return block;
     const { type, text } = block as { type?: unknown; text?: unknown };
-    return (type === "text" || type === "input_text") && typeof text === "string" ? { ...block, text: text.replace(ALLOW_TAG, "") } : block;
+    return (type === "text" || type === "input_text") && typeof text === "string"
+      ? { ...block, text: text.replace(ALLOW_TAG, "") }
+      : block;
   });
 }
 
-export function stripAllowTags(format: Format, body: Record<string, unknown>): Record<string, unknown> {
-  if (format === "responses" && typeof body.input === "string") return { ...body, input: stripTagText(body.input) };
+export function stripAllowTags(
+  format: Format,
+  body: Record<string, unknown>,
+): Record<string, unknown> {
+  if (format === "responses" && typeof body.input === "string")
+    return { ...body, input: stripTagText(body.input) };
   const key = format === "responses" ? "input" : "messages";
   const list = body[key];
   if (!Array.isArray(list)) return body;
   return {
     ...body,
     [key]: list.map((item) => {
-      if (!item || typeof item !== "object" || (item as { role?: unknown }).role !== "user") return item;
+      if (!item || typeof item !== "object" || (item as { role?: unknown }).role !== "user")
+        return item;
       const record = item as { content?: unknown };
       return { ...record, content: stripTagText(record.content) };
     }),
@@ -759,8 +991,21 @@ export function stripAllowTags(format: Format, body: Record<string, unknown>): R
 
 const BASH_TOOLS = new Set(["bash", "Bash"]);
 const LOCAL_TOOLS = new Set([
-  "read", "write", "edit", "grep", "find", "ls", "search_files",
-  "Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "LS", "NotebookEdit",
+  "read",
+  "write",
+  "edit",
+  "grep",
+  "find",
+  "ls",
+  "search_files",
+  "Read",
+  "Write",
+  "Edit",
+  "MultiEdit",
+  "Glob",
+  "Grep",
+  "LS",
+  "NotebookEdit",
 ]);
 
 // planSwapBack's tool vocabulary: "bash" gets the network-destination check,
@@ -787,22 +1032,41 @@ const requestDirs = new WeakMap<Set<string>, string>();
 
 // Checked on the arguments as written and as swapped: a path may hold a
 // stand-in (a home directory) that only its real value resolves.
-export function swapToolArguments(toolName: string, args: unknown, tags: Set<string>, callId?: string): Swapped {
+export function swapToolArguments(
+  toolName: string,
+  args: unknown,
+  tags: Set<string>,
+  callId?: string,
+): Swapped {
   const result = swapArguments(toolName, args, tags, callId);
   if (result.blocked || tags.has("protected")) return result;
   const cwd = requestDirs.get(tags) ?? process.env.HOME ?? process.cwd();
-  const kind = protectedChange(toolName, args, cwd) ?? (result.swapped > 0 ? protectedChange(toolName, result.args, cwd) : undefined);
+  const kind =
+    protectedChange(toolName, args, cwd) ??
+    (result.swapped > 0 ? protectedChange(toolName, result.args, cwd) : undefined);
   return kind ? block(callId, protectedBlocked(kind)) : result;
 }
 
-function swapArguments(toolName: string, args: unknown, tags: Set<string>, callId?: string): Swapped {
+function swapArguments(
+  toolName: string,
+  args: unknown,
+  tags: Set<string>,
+  callId?: string,
+): Swapped {
   if (aliasStyle() !== "stand-ins") return { args, swapped: 0 };
-  const swap = planSwapBack(swapToolName(toolName), args, aliases(), tags.has("pii") || tags.has("all"));
+  const swap = planSwapBack(
+    swapToolName(toolName),
+    args,
+    aliases(),
+    tags.has("pii") || tags.has("all"),
+  );
   // Old hash-like shapes: stand-ins now look real, so a model that writes a
   // label and six hex digits copied them from an older transcript or made
   // them up.
   const invented = WRITE_TOOLS.has(toolName)
-    ? [...new Set(aliasSpans(JSON.stringify(args ?? {})))].filter((token) => !seenLiterals.has(token) && !aliases().isStandIn(token))
+    ? [...new Set(aliasSpans(JSON.stringify(args ?? {})))].filter(
+        (token) => !seenLiterals.has(token) && !aliases().isStandIn(token),
+      )
     : [];
   if (invented.length > 0) return block(callId, standInBlocked(invented));
   // Swap per span. A stand-in the book cannot resolve (often a stand-in-shaped
@@ -839,7 +1103,12 @@ export function swapWholeText(text: string, tags: Set<string>): { text: string; 
 }
 
 // Arguments as a JSON string (OpenAI shapes, Anthropic streaming).
-export function swapToolJson(toolName: string, json: string, tags: Set<string>, callId?: string): { json: string; swapped: number; blocked?: boolean } {
+export function swapToolJson(
+  toolName: string,
+  json: string,
+  tags: Set<string>,
+  callId?: string,
+): { json: string; swapped: number; blocked?: boolean } {
   let args: unknown;
   try {
     args = json.trim() === "" ? {} : JSON.parse(json);
@@ -848,6 +1117,7 @@ export function swapToolJson(toolName: string, json: string, tags: Set<string>, 
   }
   const result = swapToolArguments(toolName, args, tags, callId);
   if (result.blocked) return { json: "{}", swapped: 0, blocked: true };
-  return result.swapped === 0 ? { json, swapped: 0 } : { json: JSON.stringify(result.args), swapped: result.swapped };
+  return result.swapped === 0
+    ? { json, swapped: 0 }
+    : { json: JSON.stringify(result.args), swapped: result.swapped };
 }
-

@@ -7,12 +7,20 @@ import { setRuntimeInventory } from "./rules.ts";
 import { collectRuntimeIdentity } from "./runtime-inventory.ts";
 
 const HOST = "ZQXLAB-KWVRT7";
-const file = Buffer.from(`{"host":"${HOST}","port":22,"note":"enough text for several rows of dump output"}\n`);
+const file = Buffer.from(
+  `{"host":"${HOST}","port":22,"note":"enough text for several rows of dump output"}\n`,
+);
 
 afterEach(() => setRuntimeInventory([]));
 
 describe("encoded copies of a value", () => {
-  for (const [name, dump] of [["xxd", xxd], ["hexdump -C", hexdumpC], ["od -x", odX], ["base64", base64Wrapped], ["xxd -p", xxdPlain]] as const) {
+  for (const [name, dump] of [
+    ["xxd", xxd],
+    ["hexdump -C", hexdumpC],
+    ["od -x", odX],
+    ["base64", base64Wrapped],
+    ["xxd -p", xxdPlain],
+  ] as const) {
     it(`withholds ${name} output that holds an inventory value`, () => {
       setRuntimeInventory(collectRuntimeIdentity({ hostname: HOST }));
       const text = `$ ${name} config.json\n${dump(file)}done\n`;

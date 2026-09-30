@@ -2,7 +2,9 @@ import { describe, expect, it } from "bun:test";
 import { planRedaction } from "./redaction-spans.ts";
 import type { LocatedFinding } from "./rules.ts";
 
-function loc(partial: Partial<LocatedFinding> & { start: number; end: number; secretValue: string }): LocatedFinding {
+function loc(
+  partial: Partial<LocatedFinding> & { start: number; end: number; secretValue: string },
+): LocatedFinding {
   return {
     ruleId: "test",
     description: "test",
@@ -19,7 +21,9 @@ describe("redaction spans", () => {
     const start = text.indexOf("sampler");
     const out = planRedaction({
       text,
-      findings: [loc({ ruleId: "u", category: "pii", secretValue: "sampler", start, end: start + 7 })],
+      findings: [
+        loc({ ruleId: "u", category: "pii", secretValue: "sampler", start, end: start + 7 }),
+      ],
       trips: [],
       replacementFor: () => "<test-user-1>",
     });

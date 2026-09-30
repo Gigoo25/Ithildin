@@ -44,7 +44,9 @@ export interface Rewriter {
 function json(event: SseEvent): Record<string, unknown> | undefined {
   try {
     const value = JSON.parse(event.data);
-    return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+    return value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : undefined;
   } catch {
     return undefined;
   }
@@ -60,13 +62,21 @@ class TextHold {
   // The whole block as the provider sent it and as released, for replay.ts.
   private raw = "";
   private out = "";
-  constructor(private readonly tags: Set<string>, private readonly count: (swapped: number) => void) {}
+  constructor(
+    private readonly tags: Set<string>,
+    private readonly count: (swapped: number) => void,
+  ) {}
 
   push(chunk: string): string {
     this.held += chunk;
     this.raw += chunk;
-    const space = Math.max(this.held.lastIndexOf(" "), this.held.lastIndexOf("\n"), this.held.lastIndexOf("\t"));
-    const cut = space >= 0 ? space + 1 : this.held.length > HOLD_LIMIT ? this.held.length - HOLD_TAIL : 0;
+    const space = Math.max(
+      this.held.lastIndexOf(" "),
+      this.held.lastIndexOf("\n"),
+      this.held.lastIndexOf("\t"),
+    );
+    const cut =
+      space >= 0 ? space + 1 : this.held.length > HOLD_LIMIT ? this.held.length - HOLD_TAIL : 0;
     return this.release(cut);
   }
 
@@ -90,7 +100,10 @@ class TextHold {
 
 class AnthropicRewriter implements Rewriter {
   swapped = 0;
-  private readonly calls = new Map<number, { name: string; id?: string | undefined; json: string }>();
+  private readonly calls = new Map<
+    number,
+    { name: string; id?: string | undefined; json: string }
+  >();
   private readonly texts = new Map<number, TextHold>();
   constructor(private readonly tags: Set<string>) {}
 
@@ -100,8 +113,15 @@ class AnthropicRewriter implements Rewriter {
     const index = typeof data.index === "number" ? data.index : -1;
     if (data.type === "content_block_start") {
       const block = data.content_block as { type?: string; name?: string; id?: string } | undefined;
-      if (block?.type === "tool_use") this.calls.set(index, { name: String(block.name ?? ""), id: block.id, json: "" });
-      if (block?.type === "text") this.texts.set(index, new TextHold(this.tags, (n) => { this.swapped += n; }));
+      if (block?.type === "tool_use")
+        this.calls.set(index, { name: String(block.name ?? ""), id: block.id, json: "" });
+      if (block?.type === "text")
+        this.texts.set(
+          index,
+          new TextHold(this.tags, (n) => {
+            this.swapped += n;
+          }),
+        );
       return [event];
     }
     const text = this.texts.get(index);
@@ -123,14 +143,23 @@ class AnthropicRewriter implements Rewriter {
       if (result.json === "") return [event];
       const delta: SseEvent = {
         event: "content_block_delta",
-        data: JSON.stringify({ type: "content_block_delta", index, delta: { type: "input_json_delta", partial_json: result.json } }),
+        data: JSON.stringify({
+          type: "content_block_delta",
+          index,
+          delta: { type: "input_json_delta", partial_json: result.json },
+        }),
       };
       return [delta, event];
     }
     return [event];
   }
 
-  private pushText(index: number, text: TextHold, event: SseEvent, data: Record<string, unknown>): SseEvent[] {
+  private pushText(
+    index: number,
+    text: TextHold,
+    event: SseEvent,
+    data: Record<string, unknown>,
+  ): SseEvent[] {
     if (data.type === "content_block_delta") {
       const delta = data.delta as { type?: string; text?: unknown } | undefined;
       if (delta?.type !== "text_delta" || typeof delta.text !== "string") return [event];
@@ -141,10 +170,17 @@ class AnthropicRewriter implements Rewriter {
       this.texts.delete(index);
       const rest = text.flush();
       if (rest === "") return [event];
-      return [{
-        event: "content_block_delta",
-        data: JSON.stringify({ type: "content_block_delta", index, delta: { type: "text_delta", text: rest } }),
-      }, event];
+      return [
+        {
+          event: "content_block_delta",
+          data: JSON.stringify({
+            type: "content_block_delta",
+            index,
+            delta: { type: "text_delta", text: rest },
+          }),
+        },
+        event,
+      ];
     }
     return [event];
   }
@@ -152,13 +188,24 @@ class AnthropicRewriter implements Rewriter {
 
 // ── OpenAI Chat Completions ─────────────────────────────────────────────────
 
-type ChatToolCall = { index?: number; id?: string; function?: { name?: string; arguments?: string } };
-type ChatChoice = { index?: number; delta?: { content?: unknown; tool_calls?: ChatToolCall[] }; finish_reason?: unknown };
+type ChatToolCall = {
+  index?: number;
+  id?: string;
+  function?: { name?: string; arguments?: string };
+};
+type ChatChoice = {
+  index?: number;
+  delta?: { content?: unknown; tool_calls?: ChatToolCall[] };
+  finish_reason?: unknown;
+};
 
 class ChatRewriter implements Rewriter {
   swapped = 0;
   // choice index -> tool index -> call
-  private readonly calls = new Map<number, Map<number, { name: string; id?: string; args: string }>>();
+  private readonly calls = new Map<
+    number,
+    Map<number, { name: string; id?: string; args: string }>
+  >();
   private readonly texts = new Map<number, TextHold>();
   private base: Record<string, unknown> = {};
   constructor(private readonly tags: Set<string>) {}
@@ -172,14 +219,30 @@ class ChatRewriter implements Rewriter {
       this.swapped += result.swapped;
       return { index, function: { arguments: result.json } };
     });
-    return [{ data: JSON.stringify({ ...this.base, choices: [{ index: choice, delta: { tool_calls: toolCalls }, finish_reason: null }] }) }];
+    return [
+      {
+        data: JSON.stringify({
+          ...this.base,
+          choices: [{ index: choice, delta: { tool_calls: toolCalls }, finish_reason: null }],
+        }),
+      },
+    ];
   }
 
   push(event: SseEvent): SseEvent[] {
     if (event.data.trim() === "[DONE]") {
       const rest = [...this.texts].flatMap(([index, text]) => {
         const content = text.flush();
-        return content === "" ? [] : [{ data: JSON.stringify({ ...this.base, choices: [{ index, delta: { content }, finish_reason: null }] }) }];
+        return content === ""
+          ? []
+          : [
+              {
+                data: JSON.stringify({
+                  ...this.base,
+                  choices: [{ index, delta: { content }, finish_reason: null }],
+                }),
+              },
+            ];
       });
       this.texts.clear();
       return [...rest, ...[...this.calls.keys()].flatMap((choice) => this.flush(choice)), event];
@@ -202,13 +265,19 @@ class ChatRewriter implements Rewriter {
           call.function.arguments = "";
         }
       }
-      if (typeof choice.delta?.content === "string" || (choice.finish_reason != null && this.texts.has(index))) {
+      if (
+        typeof choice.delta?.content === "string" ||
+        (choice.finish_reason != null && this.texts.has(index))
+      ) {
         let text = this.texts.get(index);
         if (!text) {
-          text = new TextHold(this.tags, (n) => { this.swapped += n; });
+          text = new TextHold(this.tags, (n) => {
+            this.swapped += n;
+          });
           this.texts.set(index, text);
         }
-        let content = typeof choice.delta?.content === "string" ? text.push(choice.delta.content) : "";
+        let content =
+          typeof choice.delta?.content === "string" ? text.push(choice.delta.content) : "";
         if (choice.finish_reason != null) {
           content += text.flush();
           this.texts.delete(index);
@@ -223,7 +292,12 @@ class ChatRewriter implements Rewriter {
     const out: SseEvent[] = [{ ...event, data: JSON.stringify(data) }];
     for (const { index, reason } of finishing) {
       out.push(...this.flush(index));
-      out.push({ data: JSON.stringify({ ...this.base, choices: [{ index, delta: {}, finish_reason: reason }] }) });
+      out.push({
+        data: JSON.stringify({
+          ...this.base,
+          choices: [{ index, delta: {}, finish_reason: reason }],
+        }),
+      });
     }
     return out;
   }
@@ -231,7 +305,14 @@ class ChatRewriter implements Rewriter {
 
 // ── OpenAI Responses (incl. Codex) ──────────────────────────────────────────
 
-type ResponseItem = { type?: string; id?: string; call_id?: string; name?: string | undefined; arguments?: string; content?: Array<{ type?: string; text?: unknown }> };
+type ResponseItem = {
+  type?: string;
+  id?: string;
+  call_id?: string;
+  name?: string | undefined;
+  arguments?: string;
+  content?: Array<{ type?: string; text?: unknown }>;
+};
 
 class ResponsesRewriter implements Rewriter {
   swapped = 0;
@@ -246,7 +327,8 @@ class ResponsesRewriter implements Rewriter {
   private swapMessage(item: ResponseItem): void {
     if (item.type !== "message" || !Array.isArray(item.content)) return;
     for (const part of item.content) {
-      if (part?.type === "output_text" && typeof part.text === "string") part.text = swapText(part.text, this.tags).text;
+      if (part?.type === "output_text" && typeof part.text === "string")
+        part.text = swapText(part.text, this.tags).text;
     }
   }
 
@@ -258,7 +340,12 @@ class ResponsesRewriter implements Rewriter {
       item.arguments = known;
       return;
     }
-    const result = swapToolJson(item.name ?? "", item.arguments, this.tags, item.call_id ?? (item.id === undefined ? undefined : this.callIds.get(item.id)));
+    const result = swapToolJson(
+      item.name ?? "",
+      item.arguments,
+      this.tags,
+      item.call_id ?? (item.id === undefined ? undefined : this.callIds.get(item.id)),
+    );
     this.swapped += result.swapped;
     item.arguments = result.json;
     if (item.id !== undefined) this.done.set(item.id, result.json);
@@ -281,7 +368,9 @@ class ResponsesRewriter implements Rewriter {
     if (type === "response.output_text.delta" && typeof data.delta === "string") {
       let text = this.texts.get(textKey);
       if (!text) {
-        text = new TextHold(this.tags, (n) => { this.swapped += n; });
+        text = new TextHold(this.tags, (n) => {
+          this.swapped += n;
+        });
         this.texts.set(textKey, text);
       }
       data.delta = text.push(data.delta);
@@ -293,7 +382,14 @@ class ResponsesRewriter implements Rewriter {
       if (typeof data.text === "string") data.text = swapText(data.text, this.tags).text;
       const done = { ...event, data: JSON.stringify(data) };
       if (rest === "") return [done];
-      const delta = { type: "response.output_text.delta", item_id: itemId, output_index: data.output_index, content_index: data.content_index, sequence_number: data.sequence_number, delta: rest };
+      const delta = {
+        type: "response.output_text.delta",
+        item_id: itemId,
+        output_index: data.output_index,
+        content_index: data.content_index,
+        sequence_number: data.sequence_number,
+        delta: rest,
+      };
       return [{ event: "response.output_text.delta", data: JSON.stringify(delta) }, done];
     }
     if (type === "response.content_part.done") {
@@ -302,12 +398,29 @@ class ResponsesRewriter implements Rewriter {
       part.text = swapText(part.text, this.tags).text;
       return [{ ...event, data: JSON.stringify(data) }];
     }
-    if (type === "response.function_call_arguments.delta" && itemId && this.names.has(itemId)) return [];
-    if (type === "response.function_call_arguments.done" && itemId && this.names.has(itemId) && typeof data.arguments === "string") {
-      const item: ResponseItem = { type: "function_call", id: itemId, name: this.names.get(itemId), arguments: data.arguments };
+    if (type === "response.function_call_arguments.delta" && itemId && this.names.has(itemId))
+      return [];
+    if (
+      type === "response.function_call_arguments.done" &&
+      itemId &&
+      this.names.has(itemId) &&
+      typeof data.arguments === "string"
+    ) {
+      const item: ResponseItem = {
+        type: "function_call",
+        id: itemId,
+        name: this.names.get(itemId),
+        arguments: data.arguments,
+      };
       this.swapItem(item);
       data.arguments = item.arguments;
-      const delta = { type: "response.function_call_arguments.delta", item_id: itemId, output_index: data.output_index, sequence_number: data.sequence_number, delta: item.arguments };
+      const delta = {
+        type: "response.function_call_arguments.delta",
+        item_id: itemId,
+        output_index: data.output_index,
+        sequence_number: data.sequence_number,
+        delta: item.arguments,
+      };
       return [
         { event: "response.function_call_arguments.delta", data: JSON.stringify(delta) },
         { ...event, data: JSON.stringify(data) },
@@ -320,7 +433,10 @@ class ResponsesRewriter implements Rewriter {
       return [{ ...event, data: JSON.stringify(data) }];
     }
     const response = data.response as { output?: ResponseItem[] } | undefined;
-    if (Array.isArray(response?.output) && response.output.some((item) => item?.type === "function_call" || item?.type === "message")) {
+    if (
+      Array.isArray(response?.output) &&
+      response.output.some((item) => item?.type === "function_call" || item?.type === "message")
+    ) {
       for (const item of response.output) if (item) this.swapItem(item);
       return [{ ...event, data: JSON.stringify(data) }];
     }
@@ -336,10 +452,20 @@ export function createRewriter(format: Format, tags: Set<string>): Rewriter {
 
 // ── non-streaming bodies ────────────────────────────────────────────────────
 
-export function swapResponseBody(format: Format, body: Record<string, unknown>, tags: Set<string>): number {
+export function swapResponseBody(
+  format: Format,
+  body: Record<string, unknown>,
+  tags: Set<string>,
+): number {
   let swapped = 0;
   if (format === "anthropic" && Array.isArray(body.content)) {
-    for (const block of body.content as Array<{ type?: string; id?: string; name?: string; input?: unknown; text?: unknown }>) {
+    for (const block of body.content as Array<{
+      type?: string;
+      id?: string;
+      name?: string;
+      input?: unknown;
+      text?: unknown;
+    }>) {
       if (block?.type === "text" && typeof block.text === "string") {
         const result = swapWholeText(block.text, tags);
         block.text = result.text;
@@ -351,7 +477,9 @@ export function swapResponseBody(format: Format, body: Record<string, unknown>, 
       swapped += result.swapped;
     }
   } else if (format === "chat" && Array.isArray(body.choices)) {
-    for (const choice of body.choices as Array<{ message?: { content?: unknown; tool_calls?: ChatToolCall[] } }>) {
+    for (const choice of body.choices as Array<{
+      message?: { content?: unknown; tool_calls?: ChatToolCall[] };
+    }>) {
       if (choice.message && typeof choice.message.content === "string") {
         const result = swapWholeText(choice.message.content, tags);
         choice.message.content = result.text;
@@ -359,7 +487,12 @@ export function swapResponseBody(format: Format, body: Record<string, unknown>, 
       }
       for (const call of choice.message?.tool_calls ?? []) {
         if (typeof call.function?.arguments !== "string") continue;
-        const result = swapToolJson(call.function.name ?? "", call.function.arguments, tags, call.id);
+        const result = swapToolJson(
+          call.function.name ?? "",
+          call.function.arguments,
+          tags,
+          call.id,
+        );
         call.function.arguments = result.json;
         swapped += result.swapped;
       }

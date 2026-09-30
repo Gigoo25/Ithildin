@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { collectRuntimeIdentity, gitRemoteHost, identityFromGit, identityFromGitRemotes, identityFromSsh } from "./runtime-inventory.ts";
+import {
+  collectRuntimeIdentity,
+  gitRemoteHost,
+  identityFromGit,
+  identityFromGitRemotes,
+  identityFromSsh,
+} from "./runtime-inventory.ts";
 import { RULES, scan, setRuntimeInventory } from "./rules.ts";
 import { aliases, redactText } from "../core.ts";
 import { planSwapBack } from "./swap-back.ts";
@@ -77,7 +83,9 @@ describe("setRuntimeInventory", () => {
 
 describe("identityFromGit", () => {
   it("reads git identity through the injected getter", () => {
-    const got = identityFromGit((key) => key === "user.name" ? "Zzzxq Gitname" : "zzzxqgit@zzzxq.test");
+    const got = identityFromGit((key) =>
+      key === "user.name" ? "Zzzxq Gitname" : "zzzxqgit@zzzxq.test",
+    );
     expect(got.gitName).toBe("Zzzxq Gitname");
     expect(got.gitEmail).toBe("zzzxqgit@zzzxq.test");
     expect(identityFromGit(() => undefined)).toEqual({ gitName: undefined, gitEmail: undefined });
@@ -108,22 +116,35 @@ describe("infrastructure sources", () => {
   it("reads concrete hosts, hostnames, users, and includes from SSH config", () => {
     const ssh = identityFromSsh("/h", read, list);
     expect(ssh.sshHosts).toEqual(["zqxbox", "zqxbox-alias", "gh", "jump", "zqxwork"]);
-    expect(ssh.sshHostNames).toEqual(["zqxbox.zqxcorp.internal", "github.com", "203.0.113.44", "fd00:zq::5"]);
+    expect(ssh.sshHostNames).toEqual([
+      "zqxbox.zqxcorp.internal",
+      "github.com",
+      "203.0.113.44",
+      "fd00:zq::5",
+    ]);
     expect(ssh.sshUsers).toEqual(["zqxadmin", "git"]);
   });
 
   it("extracts git remote hosts from every URL form", () => {
-    expect(gitRemoteHost("git@zqxgit.zqxcorp.internal:team/repo.git")).toBe("zqxgit.zqxcorp.internal");
+    expect(gitRemoteHost("git@zqxgit.zqxcorp.internal:team/repo.git")).toBe(
+      "zqxgit.zqxcorp.internal",
+    );
     expect(gitRemoteHost("ssh://git@zqxgit:2222/team/repo")).toBe("zqxgit");
     expect(gitRemoteHost("https://user@zqxgit.example.org/team/repo")).toBe("zqxgit.example.org");
     expect(gitRemoteHost("file:///srv/repo")).toBeUndefined();
     expect(gitRemoteHost("/srv/repo")).toBeUndefined();
     expect(gitRemoteHost("C:/repo")).toBeUndefined();
-    expect(identityFromGitRemotes("/x", () => ["git@github.com:o/r.git", "https://zqxgit.internal/r"]).gitHosts).toEqual(["github.com", "zqxgit.internal"]);
+    expect(
+      identityFromGitRemotes("/x", () => ["git@github.com:o/r.git", "https://zqxgit.internal/r"])
+        .gitHosts,
+    ).toEqual(["github.com", "zqxgit.internal"]);
   });
 
-  it("turns infrastructure names into caseless rules, skipping public forges and service users", () => {
-    const entries = collectRuntimeIdentity({ ...identityFromSsh("/h", read, list), gitHosts: ["github.com", "zqxgit.zqxcorp.internal"] });
+  it("makes infrastructure names caseless rules, skipping public forges and service users", () => {
+    const entries = collectRuntimeIdentity({
+      ...identityFromSsh("/h", read, list),
+      gitHosts: ["github.com", "zqxgit.zqxcorp.internal"],
+    });
     const literals = entries.map((entry) => entry.literal);
     expect(literals).toContain("zqxbox");
     expect(literals).toContain("zqxbox.zqxcorp.internal");
@@ -135,7 +156,11 @@ describe("infrastructure sources", () => {
     expect(entries.find((entry) => entry.literal === "zqxbox")?.caseSensitive).toBe(false);
     expect(entries.find((entry) => entry.literal === "203.0.113.44")?.id).toMatch(/-ip-\d+$/);
     setRuntimeInventory(entries);
-    expect(scan("ssh ZQXBOX then 203.0.113.44").map((finding) => finding.secretValue).sort()).toEqual(["203.0.113.44", "ZQXBOX"]);
+    expect(
+      scan("ssh ZQXBOX then 203.0.113.44")
+        .map((finding) => finding.secretValue)
+        .sort(),
+    ).toEqual(["203.0.113.44", "ZQXBOX"]);
   });
 });
 
@@ -144,7 +169,9 @@ describe("infrastructure sources", () => {
 function odC(text: string): string {
   const lines: string[] = [];
   for (let at = 0; at < text.length; at += 16) {
-    const columns = [...text.slice(at, at + 16)].map((char) => (char === "\n" ? "\\n" : char).padStart(4)).join("");
+    const columns = [...text.slice(at, at + 16)]
+      .map((char) => (char === "\n" ? "\\n" : char).padStart(4))
+      .join("");
     lines.push(at.toString(8).padStart(7, "0") + columns);
   }
   return `${lines.join("\n")}\n${text.length.toString(8).padStart(7, "0")}\n`;
@@ -165,7 +192,9 @@ describe("spaced-out identity literals", () => {
   it("leaves spaced text that is not the whole value alone", () => {
     setRuntimeInventory(collectRuntimeIdentity({ hostname: MIXED_HOST }));
     expect(scan("Z Q X L A B").some((f) => f.ruleId.startsWith("pii-inventory-"))).toBe(false);
-    expect(scan("Z Q X L A B - K W V R T").some((f) => f.ruleId.startsWith("pii-inventory-"))).toBe(false);
+    expect(scan("Z Q X L A B - K W V R T").some((f) => f.ruleId.startsWith("pii-inventory-"))).toBe(
+      false,
+    );
   });
 
   it("gives both spellings one stand-in that swaps back to the exact value", () => {
@@ -178,7 +207,12 @@ describe("spaced-out identity literals", () => {
       const dump = redactText(odC(MIXED_HOST)).text;
       expect(dump).toContain(standIn);
       expect(dump).not.toMatch(/Z\s+Q\s+X/);
-      const swap = planSwapBack("bash", { command: `nix eval .#hosts.${standIn}.config` }, aliases(), true);
+      const swap = planSwapBack(
+        "bash",
+        { command: `nix eval .#hosts.${standIn}.config` },
+        aliases(),
+        true,
+      );
       expect(swap.input).toEqual({ command: `nix eval .#hosts.${MIXED_HOST}.config` });
     } finally {
       if (previous === undefined) delete process.env.SENSITIVE_CANARY_ALIASES;

@@ -16,12 +16,7 @@ export function isNotSecretShaped(value: string): boolean {
   // A URL or a URN. Credentials embedded in one are the connection-string
   // rule's business, and a URL carrying a token in its query is left alone
   // here so the `?` case still reaches the other rules.
-  if (
-    /^[a-z][a-z0-9+.-]*:\/\//i.test(v) &&
-    !v.includes("?") &&
-    !v.includes("@")
-  )
-    return true;
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(v) && !v.includes("?") && !v.includes("@")) return true;
   if (/^urn:/i.test(v)) return true;
   // A filesystem path.
   if (/^[~.]?\/[^\s]*$/.test(v)) return true;
@@ -37,10 +32,7 @@ export function isNotSecretShaped(value: string): boolean {
   // `user.password_digest`, `self.api_key`, `response.data.accessToken`. Of the
   // distinct values `env-assignment` matched across thirty thousand real files,
   // two in five were one of these.
-  if (
-    /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/.test(v) &&
-    v.split(".").every(readsAsWords)
-  )
+  if (/^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/.test(v) && v.split(".").every(readsAsWords))
     return true;
   return false;
 }
@@ -74,8 +66,13 @@ export function readsAsWords(segment: string): boolean {
 // it is. The rule fires on the keyword anywhere in the name, so
 // `SECRET_MANAGER_PROJECT` reads as a secret because of its first word, when its
 // last one says it holds a project.
-const DESCRIBES_A_SECRET =
-  /\b[A-Za-z0-9_]*_(?:PROJECT|NAME|PATH|FILE|DIR|URL|URI|ENDPOINT|HOST|PORT|ID|TYPE|HEADER|PREFIX|SUFFIX|FIELD|COLUMN|TABLE|ENV|REGION|BUCKET|ARN|VERSION|TTL|TIMEOUT|LENGTH|COUNT|ENABLED|ALGORITHM|ISSUER|AUDIENCE|SCOPE|PROVIDER|BACKEND|SOURCE)\b[ \t]*[:=]/i;
+const DESCRIBES_A_SECRET = new RegExp(
+  String.raw`\b[A-Za-z0-9_]*_(?:PROJECT|NAME|PATH|FILE|DIR|URL|URI|ENDPOINT|HOST|PORT|ID|` +
+    String.raw`TYPE|HEADER|PREFIX|SUFFIX|FIELD|COLUMN|TABLE|ENV|REGION|BUCKET|ARN|VERSION|` +
+    String.raw`TTL|TIMEOUT|LENGTH|COUNT|ENABLED|ALGORITHM|ISSUER|AUDIENCE|SCOPE|PROVIDER|` +
+    String.raw`BACKEND|SOURCE)\b[ \t]*[:=]`,
+  "i",
+);
 
 export function keyDescribesRatherThanHolds(matchText: string): boolean {
   return DESCRIBES_A_SECRET.test(matchText);
@@ -90,18 +87,33 @@ export function keyDescribesRatherThanHolds(matchText: string): boolean {
 // deliberately absent from the marker list where it would matter.
 
 // A word that only ever appears in a value nobody typed.
-const PLACEHOLDER_MARKERS =
-  /^(?:changeme|change|me|replace|insert|set|with|real|this|your|my|here|todo|tbd|fixme|dummy|placeholder|insecure|sample|example|test|fake|redacted|value|x{3,})$/i;
+const PLACEHOLDER_MARKERS = new RegExp(
+  String.raw`^(?:changeme|change|me|replace|insert|set|with|real|this|your|my|here|todo|` +
+    String.raw`tbd|fixme|dummy|placeholder|insecure|sample|example|test|fake|redacted|value|` +
+    String.raw`x{3,})$`,
+  "i",
+);
 
 // A word that can make up the rest of such a value, but never marks one alone.
-const PLACEHOLDER_FILLER =
-  /^(?:api|key|keys|token|tokens|secret|secrets|password|passwd|pwd|pass|base|url|uri|host|hostname|name|user|username|id|access|refresh|client|auth|sk|pk|in|production|development|staging|local|dev|the|a|of|for|and|[0-9]+)$/i;
+const PLACEHOLDER_FILLER = new RegExp(
+  String.raw`^(?:api|key|keys|token|tokens|secret|secrets|password|passwd|pwd|pass|base|` +
+    String.raw`url|uri|host|hostname|name|user|username|id|access|refresh|client|auth|sk|pk|` +
+    String.raw`in|production|development|staging|local|dev|the|a|of|for|and|[0-9]+)$`,
+  "i",
+);
 
 // The scheme is bounded: an unbounded `\w+` in front of a literal that usually
 // is not there makes the match quadratic in the length of the value, and a
 // value is as long as whoever wrote the text wants. A scheme is a word.
 const GENERIC_CREDENTIALS =
   /\w{1,32}:\/\/(?:your[_-]?)?(?:user|username)(?:name)?:(?:your[_-]?)?(?:password|passwd|pwd)@/i;
+
+// Service names that ship as their own user and password.
+const SERVICE_USERS = new RegExp(
+  String.raw`^(?:postgres|postgresql|mysql|mariadb|mongo|mongodb|redis|root|guest|admin|user|` +
+    String.raw`test|rabbitmq)$`,
+  "i",
+);
 
 const GENERIC_HOST =
   /^(?:localhost|127\.0\.0\.1|0\.0\.0\.0|host|hostname|db|database|example\.(?:com|org|net))\b/i;
@@ -117,11 +129,7 @@ export function isPlaceholder(value: string, following = ""): boolean {
   if (/^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?$/.test(v)) return true;
   // An unexpanded reference anywhere inside a connection string: no character
   // of the credentials has been substituted yet.
-  if (
-    /:\/\/[^@\s]*(?:\$\{[A-Za-z_][^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*|\{\})[^@\s]*@/.test(
-      v,
-    )
-  )
+  if (/:\/\/[^@\s]*(?:\$\{[A-Za-z_][^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*|\{\})[^@\s]*@/.test(v))
     return true;
   // A user and a password that are the same word, and that word names the
   // service: `postgres:postgres@`, `root:root@`, `guest:guest@` are what a
@@ -130,9 +138,7 @@ export function isPlaceholder(value: string, following = ""): boolean {
   if (
     samePair &&
     samePair[1]?.toLowerCase() === samePair[2]?.toLowerCase() &&
-    /^(?:postgres|postgresql|mysql|mariadb|mongo|mongodb|redis|root|guest|admin|user|test|rabbitmq)$/i.test(
-      samePair[1] ?? "",
-    )
+    SERVICE_USERS.test(samePair[1] ?? "")
   )
     return true;
   // The default the django template generates, which ships in every new project.
@@ -155,9 +161,7 @@ export function isPlaceholder(value: string, following = ""): boolean {
   const parts = v.split(/[-_.\s]+/).filter(Boolean);
   if (parts.length === 0) return false;
   if (!parts.some((part) => PLACEHOLDER_MARKERS.test(part))) return false;
-  return parts.every(
-    (part) => PLACEHOLDER_MARKERS.test(part) || PLACEHOLDER_FILLER.test(part),
-  );
+  return parts.every((part) => PLACEHOLDER_MARKERS.test(part) || PLACEHOLDER_FILLER.test(part));
 }
 
 // Shannon entropy in bits per character (≈0–8 for byte-sized alphabets).

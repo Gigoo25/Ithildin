@@ -28,7 +28,11 @@ const UTF8 = new TextDecoder("utf-8", { fatal: true });
 function asText(bytes: Buffer): string | undefined {
   if (bytes.length < MIN_HEX_BYTES) return;
   let text: string;
-  try { text = UTF8.decode(bytes); } catch { return; }
+  try {
+    text = UTF8.decode(bytes);
+  } catch {
+    return;
+  }
   const control = text.match(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g)?.length ?? 0;
   return control <= text.length * 0.05 ? text : undefined;
 }
@@ -49,18 +53,32 @@ function dumpBlocks(text: string): EncodedBlock[] {
   const close = () => {
     if (!open) return;
     const bytes = Buffer.from(open.hex.slice(0, open.hex.length & ~1), "hex");
-    const decoded = [asText(bytes), open.words ? asText(swapPairs(bytes)) : undefined].filter((d): d is string => d !== undefined);
+    const decoded = [asText(bytes), open.words ? asText(swapPairs(bytes)) : undefined].filter(
+      (d): d is string => d !== undefined,
+    );
     if (decoded.length) blocks.push({ start: open.start, end: open.end, decoded });
     open = undefined;
   };
   let at = 0;
   for (const line of text.split("\n")) {
     const end = at + line.length;
-    const groups = DUMP_LINE.exec(line)?.[1]?.trim().split(/[ \t]+/) ?? [];
+    const groups =
+      DUMP_LINE.exec(line)?.[1]
+        ?.trim()
+        .split(/[ \t]+/) ?? [];
     const width = groups[0]?.length ?? 0;
     // Groups of one even width; the last line of a dump may end short.
-    const same = groups.filter((group, i) => group.length === width || (i === groups.length - 1 && group.length < width && group.length % 2 === 0));
-    if (width % 2 === 0 && same.length >= 4 && same.length === groups.length && end - (open?.start ?? at) <= MAX_BLOCK_CHARS) {
+    const same = groups.filter(
+      (group, i) =>
+        group.length === width ||
+        (i === groups.length - 1 && group.length < width && group.length % 2 === 0),
+    );
+    if (
+      width % 2 === 0 &&
+      same.length >= 4 &&
+      same.length === groups.length &&
+      end - (open?.start ?? at) <= MAX_BLOCK_CHARS
+    ) {
       open ??= { start: at, end, hex: "", words: width === 4 };
       open.hex += same.join("");
       open.end = end;
@@ -74,7 +92,11 @@ function dumpBlocks(text: string): EncodedBlock[] {
 }
 
 // Base64 (standard or URL alphabet) and plain hex runs, wrapped lines joined.
-const RUN = /(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{16,}(?:\r?\n[A-Za-z0-9+/_-]{4,})*={0,2}(?![A-Za-z0-9+/_=-])/g;
+const RUN = new RegExp(
+  String.raw`(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{16,}(?:\r?\n[A-Za-z0-9+/_-]{4,})*={0,2}(?!` +
+    String.raw`[A-Za-z0-9+/_=-])`,
+  "g",
+);
 
 function runBlocks(text: string): EncodedBlock[] {
   const blocks: EncodedBlock[] = [];
@@ -104,14 +126,20 @@ function runBlocks(text: string): EncodedBlock[] {
     if (!found.length) continue;
     const count = Math.max(...found.map((f) => f.count));
     const length = pieces.slice(0, count * 2 - 1).join("").length;
-    blocks.push({ start: match.index, end: match.index + length, decoded: found.map((f) => f.text) });
+    blocks.push({
+      start: match.index,
+      end: match.index + length,
+      decoded: found.map((f) => f.text),
+    });
   }
   return blocks;
 }
 
 export function encodedBlocks(text: string): EncodedBlock[] {
   if (text.length < MIN_BASE64) return [];
-  return [...dumpBlocks(text), ...runBlocks(text)].sort((a, b) => a.start - b.start || b.end - a.end);
+  return [...dumpBlocks(text), ...runBlocks(text)].sort(
+    (a, b) => a.start - b.start || b.end - a.end,
+  );
 }
 
 // Withholds every block whose decoding holds a finding in a category not
@@ -128,11 +156,15 @@ export function redactEncoded(
   let hits = 0;
   for (const block of encodedBlocks(text)) {
     if (block.start < last) continue;
-    const categories = new Set(block.decoded.flatMap((decoded) => scan(decoded).map((finding) => finding.category)));
+    const categories = new Set(
+      block.decoded.flatMap((decoded) => scan(decoded).map((finding) => finding.category)),
+    );
     const held = [...categories].filter((category) => !allowed(category));
     if (!held.length) continue;
     const what = held.includes("secret") ? "a secret" : "personal data";
-    const marker = `[sensitive-canary: omitted ${block.end - block.start} chars (encoded data holding ${what})]`;
+    const marker =
+      `[sensitive-canary: omitted ${block.end - block.start} chars (encoded data holding ` +
+      `${what})]`;
     out += text.slice(last, block.start);
     onEdit(block.start, block.end, marker.length);
     out += marker;

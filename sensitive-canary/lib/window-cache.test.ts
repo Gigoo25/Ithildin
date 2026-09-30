@@ -15,7 +15,11 @@ const secret = "AKIA" + "A".repeat(16);
 const text = `key ${secret} ${"x".repeat(70_000)}`;
 const digest = "a".repeat(64);
 const record = { ruleId: "fixture", category: "secret", start: 0, end: 4, score: 1 };
-const snapshot = (entries: unknown) => ({ version: WINDOW_CACHE_VERSION, fingerprint: activeRulesFingerprint(), entries });
+const snapshot = (entries: unknown) => ({
+  version: WINDOW_CACHE_VERSION,
+  fingerprint: activeRulesFingerprint(),
+  entries,
+});
 
 afterEach(() => clearWindowCache());
 
@@ -41,8 +45,13 @@ it("exports completed windows without values and replays them", () => {
 });
 
 it("ignores a snapshot from other rules or another version", () => {
-  for (const bad of [null, 5, { ...snapshot([]), version: WINDOW_CACHE_VERSION + 1 },
-    { ...snapshot([]), fingerprint: "0".repeat(64) }, snapshot({})]) {
+  for (const bad of [
+    null,
+    5,
+    { ...snapshot([]), version: WINDOW_CACHE_VERSION + 1 },
+    { ...snapshot([]), fingerprint: "0".repeat(64) },
+    snapshot({}),
+  ]) {
     expect(importWindowCache(bad)).toBe(0);
   }
 });

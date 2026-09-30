@@ -66,7 +66,11 @@ export function createStatusBook() {
       const key = session ?? `route:${route}`;
       const previous = sessions.get(key);
       // A conversation first seen here counts from zero: all of it is new.
-      const baseline = !previous ? 0 : prompts > previous.prompts ? previous.total : previous.baseline;
+      const baseline = !previous
+        ? 0
+        : prompts > previous.prompts
+          ? previous.total
+          : previous.baseline;
       // Compaction can shrink the total below the baseline.
       const turn = Math.max(0, total - baseline);
       const requests = (previous?.status.requests ?? 0) + 1;
@@ -78,7 +82,10 @@ export function createStatusBook() {
     },
 
     lookup(session: string | undefined, route: string | undefined): Status | undefined {
-      return (session ? sessions.get(session)?.status : undefined) ?? (route ? routes.get(route) : undefined);
+      return (
+        (session ? sessions.get(session)?.status : undefined) ??
+        (route ? routes.get(route) : undefined)
+      );
     },
   };
 }

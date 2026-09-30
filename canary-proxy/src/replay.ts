@@ -87,7 +87,9 @@ export function replayOriginal(kind: ReplayKind, harness: string): string | unde
 // object (Anthropic input) or a re-serialized string (Chat arguments).
 export function argsKey(args: unknown): string | undefined {
   try {
-    return JSON.stringify(typeof args === "string" ? JSON.parse(args === "" ? "{}" : args) : args ?? {});
+    return JSON.stringify(
+      typeof args === "string" ? JSON.parse(args === "" ? "{}" : args) : (args ?? {}),
+    );
   } catch {
     return undefined;
   }

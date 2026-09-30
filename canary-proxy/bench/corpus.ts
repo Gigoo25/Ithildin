@@ -10,7 +10,7 @@ export interface BenchFixture {
   support: FixtureSupport;
   input: string;
   expectedSecrets: string[];
-  expectedRanges?: Array<{start:number;end:number}> | undefined;
+  expectedRanges?: Array<{ start: number; end: number }> | undefined;
   mustPreserve: string[];
 }
 

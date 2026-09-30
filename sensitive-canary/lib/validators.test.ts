@@ -112,31 +112,85 @@ describe("checksums", () => {
 
 describe("reserved addresses", () => {
   it("IPv4", () => {
-    for (const ip of ["0.1.2.3", "10.0.0.1", "100.64.0.1", "127.0.0.1", "169.254.1.1", "172.16.0.1", "192.0.0.1", "192.0.2.1",
-      "192.88.99.1", "192.168.1.1", "198.18.0.1", "198.19.0.1", "198.51.100.1", "203.0.113.1", "224.0.0.1", "255.255.255.255"]) {
+    for (const ip of [
+      "0.1.2.3",
+      "10.0.0.1",
+      "100.64.0.1",
+      "127.0.0.1",
+      "169.254.1.1",
+      "172.16.0.1",
+      "192.0.0.1",
+      "192.0.2.1",
+      "192.88.99.1",
+      "192.168.1.1",
+      "198.18.0.1",
+      "198.19.0.1",
+      "198.51.100.1",
+      "203.0.113.1",
+      "224.0.0.1",
+      "255.255.255.255",
+    ]) {
       expect([ip, isReservedIpv4(ip)]).toEqual([ip, true]);
     }
-    for (const ip of ["1a.2.3.4", "1.2.3", "1.2.3.4.5", "256.1.1.1"]) expect(isReservedIpv4(ip)).toBe(true);
-    for (const ip of ["8.8.8.8", "100.128.0.1", "172.32.0.1", "192.0.1.1", "198.20.0.1"]) expect(isReservedIpv4(ip)).toBe(false);
+    for (const ip of ["1a.2.3.4", "1.2.3", "1.2.3.4.5", "256.1.1.1"])
+      expect(isReservedIpv4(ip)).toBe(true);
+    for (const ip of ["8.8.8.8", "100.128.0.1", "172.32.0.1", "192.0.1.1", "198.20.0.1"])
+      expect(isReservedIpv4(ip)).toBe(false);
   });
 
   it("IPv6, full and compressed", () => {
-    for (const ip of ["::", "::1", "0:0:0:0:0:0:0:1", "fe80::1", "FEBF::1", "fc00::1", "fd12:3456::1", "ff02::1", "2001:db8::1"]) {
+    for (const ip of [
+      "::",
+      "::1",
+      "0:0:0:0:0:0:0:1",
+      "fe80::1",
+      "FEBF::1",
+      "fc00::1",
+      "fd12:3456::1",
+      "ff02::1",
+      "2001:db8::1",
+    ]) {
       expect([ip, isReservedIpv6(ip)]).toEqual([ip, true]);
     }
     // Malformed: treated as reserved so it is never flagged.
-    for (const ip of ["1::2::3", "2001:zz::1", "g::1", "1:2:3:4:5:6:7", "1:2:3:4::5:6:7:8", "1:2:3:4:5:6:7:8:9", "12345::1"]) {
+    for (const ip of [
+      "1::2::3",
+      "2001:zz::1",
+      "g::1",
+      "1:2:3:4:5:6:7",
+      "1:2:3:4::5:6:7:8",
+      "1:2:3:4:5:6:7:8:9",
+      "12345::1",
+    ]) {
       expect([ip, isReservedIpv6(ip)]).toEqual([ip, true]);
     }
-    for (const ip of ["2606:4700::1111", "2a00:1450:4001:0:0:0:0:200e", "::ffff:808:808", "2001:4860::"]) {
+    for (const ip of [
+      "2606:4700::1111",
+      "2a00:1450:4001:0:0:0:0:200e",
+      "::ffff:808:808",
+      "2001:4860::",
+    ]) {
       expect([ip, isReservedIpv6(ip)]).toEqual([ip, false]);
     }
   });
 });
 
 it("every configured validator name resolves", () => {
-  for (const name of ["luhn", "aws-key", "mynumber-jp", "phone-jp", "nir-fr", "codice-fiscale-it", "steuer-id-de", "dni-nie-es",
-    "rrn-kr", "brn-kr", "resident-id-cn", "public-ipv4", "public-ipv6"]) {
+  for (const name of [
+    "luhn",
+    "aws-key",
+    "mynumber-jp",
+    "phone-jp",
+    "nir-fr",
+    "codice-fiscale-it",
+    "steuer-id-de",
+    "dni-nie-es",
+    "rrn-kr",
+    "brn-kr",
+    "resident-id-cn",
+    "public-ipv4",
+    "public-ipv6",
+  ]) {
     expect(typeof getValidator(name)).toBe("function");
   }
   expect(getValidator("public-ipv4")!("8.8.8.8")).toBe(true);

@@ -11,7 +11,12 @@ it("swaps a multi-label host stand-in back with its exact case", () => {
   const aliasBook = book();
   const standIn = aliasBook.standIn("pii-inventory-runtime-host", "ZQXLAB-KWVRT7");
   expect(standIn).toMatch(/^[a-z]{6}-[a-z]{5}[0-9]$/);
-  const swap = planSwapBack("bash", { command: `nix eval .#hosts.${standIn}.config` }, aliasBook, true);
+  const swap = planSwapBack(
+    "bash",
+    { command: `nix eval .#hosts.${standIn}.config` },
+    aliasBook,
+    true,
+  );
   expect(swap.input).toEqual({ command: "nix eval .#hosts.ZQXLAB-KWVRT7.config" });
   expect(swap.resolved).toHaveLength(1);
 });
@@ -44,13 +49,24 @@ function egressBook() {
 }
 const bash = (command: string, allowed = false) => {
   const { aliasBook, host, other } = egressBook();
-  const swap = planSwapBack("bash", { command: command.replaceAll("HOST", host).replaceAll("OTHER", other) }, aliasBook, allowed);
+  const swap = planSwapBack(
+    "bash",
+    { command: command.replaceAll("HOST", host).replaceAll("OTHER", other) },
+    aliasBook,
+    allowed,
+  );
   return { swap, host, other, command: (swap.input as { command: string }).command };
 };
 
 it("swaps stand-ins when every destination is one", () => {
-  for (const command of ["curl https://HOST/x?q=OTHER", "ssh -p 22 HOST cat /srv/OTHER", "scp notes.txt deploy@HOST:/tmp/OTHER",
-    "sudo env A=1 /usr/bin/curl -s https://user@HOST:8443/OTHER", "ssh -o StrictHostKeyChecking=no HOST", "rsync -a ./ HOST:/srv/"]) {
+  for (const command of [
+    "curl https://HOST/x?q=OTHER",
+    "ssh -p 22 HOST cat /srv/OTHER",
+    "scp notes.txt deploy@HOST:/tmp/OTHER",
+    "sudo env A=1 /usr/bin/curl -s https://user@HOST:8443/OTHER",
+    "ssh -o StrictHostKeyChecking=no HOST",
+    "rsync -a ./ HOST:/srv/",
+  ]) {
     const { swap } = bash(command);
     expect([command, swap.egress]).toEqual([command, []]);
     expect(swap.resolved.length).toBeGreaterThan(0);
@@ -58,8 +74,13 @@ it("swaps stand-ins when every destination is one", () => {
 });
 
 it("keeps stand-ins out of commands that reach other hosts", () => {
-  for (const command of ["curl https://example.com/?q=HOST", "curl -d HOST https://example.com", "echo HOST | nc example.com 80",
-    "git push HOST main", "wget -O- http://[2001:db8::1]/HOST"]) {
+  for (const command of [
+    "curl https://example.com/?q=HOST",
+    "curl -d HOST https://example.com",
+    "echo HOST | nc example.com 80",
+    "git push HOST main",
+    "wget -O- http://[2001:db8::1]/HOST",
+  ]) {
     const { swap, host } = bash(command);
     expect([command, swap.egress]).toEqual([command, [host]]);
     expect(swap.resolved).toEqual([]);
@@ -88,14 +109,24 @@ it("web tools never get real values", () => {
   const swap = planSwapBack("web_fetch", { url: `https://${host}/` }, aliasBook, false);
   expect(swap.egress).toEqual([host]);
   expect(swap.input).toEqual({ url: `https://${host}/` });
-  expect(planSwapBack("web_fetch", { url: `https://${host}/` }, aliasBook, true).input).toEqual({ url: "https://ZQXLAB-KWVRT7/" });
+  expect(planSwapBack("web_fetch", { url: `https://${host}/` }, aliasBook, true).input).toEqual({
+    url: "https://ZQXLAB-KWVRT7/",
+  });
 });
 
 it("walks nested arguments and leaves non-strings alone", () => {
   const { aliasBook, host } = egressBook();
-  const input = { edits: [{ old: host, n: 3 }, [host, null, true]], path: `/srv/${host}`, depth: 2 };
+  const input = {
+    edits: [{ old: host, n: 3 }, [host, null, true]],
+    path: `/srv/${host}`,
+    depth: 2,
+  };
   const swap = planSwapBack("edit", input, aliasBook, false);
-  expect(swap.input).toEqual({ edits: [{ old: "ZQXLAB-KWVRT7", n: 3 }, ["ZQXLAB-KWVRT7", null, true]], path: "/srv/ZQXLAB-KWVRT7", depth: 2 });
+  expect(swap.input).toEqual({
+    edits: [{ old: "ZQXLAB-KWVRT7", n: 3 }, ["ZQXLAB-KWVRT7", null, true]],
+    path: "/srv/ZQXLAB-KWVRT7",
+    depth: 2,
+  });
   expect(swap.resolved).toHaveLength(3);
   expect(planSwapBack("read", 42, aliasBook, false).input).toBe(42);
 });

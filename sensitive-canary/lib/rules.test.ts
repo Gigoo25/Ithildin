@@ -1,5 +1,16 @@
 import { describe, expect, it } from "bun:test";
-import { beginScanBudget, compileRule, RULES, scan, scanWindows, SCAN_WINDOW_CHARS, assertScanBudget, currentScanBudgetMs, setScanBudgetMs, DEFAULT_SCAN_BUDGET_MS } from "./rules.ts";
+import {
+  beginScanBudget,
+  compileRule,
+  RULES,
+  scan,
+  scanWindows,
+  SCAN_WINDOW_CHARS,
+  assertScanBudget,
+  currentScanBudgetMs,
+  setScanBudgetMs,
+  DEFAULT_SCAN_BUDGET_MS,
+} from "./rules.ts";
 
 describe("upstream detector parity", () => {
   it("loads every detector block from the pinned upstream config", async () => {
@@ -70,12 +81,10 @@ describe("local rule additions", () => {
     for (const [text, id] of [
       [`key: hf_${"aB3xK9mQ2wR7vT5zY8cN1jF4hL6pD0sGq1"}`, "huggingface"],
       [`signing: whsec_a1b2c3d4e5f6g7h8i9j0k1l2m3n4`, "stripe-webhook"],
+      [`Authorization: Bearer AbCdEf1234567890abcdefGHIJKL`, "bearer"],
       [
-        `Authorization: Bearer AbCdEf1234567890abcdefGHIJKL`,
-        "bearer",
-      ],
-      [
-        `DefaultEndpointsProtocol=https;AccountKey=${"q2Zw8xR5tY3uI9oP1aS6dF7gH0jK4lM9nbV2cX5zB8mQ3wE6rT1yU4iO0pL7kJ9hG+dz/"}==;`,
+        "DefaultEndpointsProtocol=https;AccountKey=" +
+          "q2Zw8xR5tY3uI9oP1aS6dF7gH0jK4lM9nbV2cX5zB8mQ3wE6rT1yU4iO0pL7kJ9hG+dz/==;",
         "azure-storage",
       ],
     ] as const) {
@@ -110,16 +119,14 @@ describe("local rule additions", () => {
       "whichKeyWritable = pkgs.stdenv.hostPlatform.system;",
       "whichKeyMenu = pkgs.writeShellApplication;",
     ]) {
-      expect(
-        scan(text).some((f) => f.ruleId === "anchored-entropy"),
-      ).toBe(false);
+      expect(scan(text).some((f) => f.ruleId === "anchored-entropy")).toBe(false);
     }
   });
 
   it("synthesizes fleet hostnames and usernames", () => {
     for (const [text, id, secretValue] of [
       ["deploy to FatMan tonight", "pii-fleet-host", "FatMan"],
-      ["hostAlias = \"Mini\"", "pii-fleet-host-short", "Mini"],
+      ['hostAlias = "Mini"', "pii-fleet-host-short", "Mini"],
       ["User rstocchi logs in", "pii-fleet-user", "rstocchi"],
       ["path /home/rob/nix-dotfiles", "pii-home-user", "rob"],
       ['username = "rob"', "pii-fleet-user-context", "rob"],
@@ -131,40 +138,30 @@ describe("local rule additions", () => {
     ] as const) {
       const findings = scan(text);
       expect(findings.some((f) => f.ruleId === id)).toBe(true);
-      expect(
-        findings.some((f) => f.ruleId === id && f.secretValue === secretValue),
-      ).toBe(true);
+      expect(findings.some((f) => f.ruleId === id && f.secretValue === secretValue)).toBe(true);
     }
   });
 
   it("does not fire fleet inventory on ordinary prose", () => {
-    expect(
-      scan("they rob banks").some((f) => f.ruleId === "pii-fleet-user-context"),
-    ).toBe(false);
-    expect(
-      scan("mini pc review").some((f) => f.ruleId === "pii-fleet-host-short"),
-    ).toBe(false);
+    expect(scan("they rob banks").some((f) => f.ruleId === "pii-fleet-user-context")).toBe(false);
+    expect(scan("mini pc review").some((f) => f.ruleId === "pii-fleet-host-short")).toBe(false);
   });
 
   it("does not fire generic PII on public or non-identity text", () => {
     expect(
       scan("see github.com/nixos for docs").some((f) => f.ruleId === "pii-internal-host"),
     ).toBe(false);
-    expect(
-      scan("localhost is always local").some((f) => f.ruleId === "pii-internal-host"),
-    ).toBe(false);
-    expect(
-      scan("dns 8.8.8.8 without context").some((f) => f.ruleId === "pii-tailscale-ip"),
-    ).toBe(false);
-    expect(
-      scan("price @ 5 is not an address").some((f) => f.ruleId === "pii-user-at-host"),
-    ).toBe(false);
-    expect(
-      scan("login = true").some((f) => f.ruleId === "pii-labeled-user"),
-    ).toBe(false);
-    expect(
-      scan('user = "Display Name"').some((f) => f.ruleId === "pii-labeled-user"),
-    ).toBe(false);
+    expect(scan("localhost is always local").some((f) => f.ruleId === "pii-internal-host")).toBe(
+      false,
+    );
+    expect(scan("dns 8.8.8.8 without context").some((f) => f.ruleId === "pii-tailscale-ip")).toBe(
+      false,
+    );
+    expect(scan("price @ 5 is not an address").some((f) => f.ruleId === "pii-user-at-host")).toBe(
+      false,
+    );
+    expect(scan("login = true").some((f) => f.ruleId === "pii-labeled-user")).toBe(false);
+    expect(scan('user = "Display Name"').some((f) => f.ruleId === "pii-labeled-user")).toBe(false);
   });
 
   it("leaves documented CIDR ranges alone", () => {
@@ -186,9 +183,7 @@ describe("local rule additions", () => {
       const findings = scan(text);
       expect(findings.some((f) => f.ruleId === "pii-labeled-host")).toBe(true);
       expect(
-        findings.some(
-          (f) => f.ruleId === "pii-labeled-host" && f.secretValue === secretValue,
-        ),
+        findings.some((f) => f.ruleId === "pii-labeled-host" && f.secretValue === secretValue),
       ).toBe(true);
     }
   });
@@ -203,9 +198,7 @@ describe("local rule additions", () => {
       "const host = normalizeHostname(identity.hostname);",
       "machine = readMachineName()",
     ]) {
-      expect(
-        scan(text).some((f) => f.ruleId === "pii-labeled-host"),
-      ).toBe(false);
+      expect(scan(text).some((f) => f.ruleId === "pii-labeled-host")).toBe(false);
     }
   });
 
@@ -230,40 +223,40 @@ describe("local rule additions", () => {
       "options.local",
       "file = ./.env.local",
     ]) {
-      expect(
-        scan(text).some((f) => f.ruleId === "pii-internal-host"),
-      ).toBe(false);
+      expect(scan(text).some((f) => f.ruleId === "pii-internal-host")).toBe(false);
     }
     const findings = scan("stream at adalina-room.lan:7447, mesh ai.corp");
-    expect(
-      findings.some((f) => f.ruleId === "pii-internal-host"),
-    ).toBe(true);
+    expect(findings.some((f) => f.ruleId === "pii-internal-host")).toBe(true);
   });
 
   it("does not mistake version pins for user@host addresses", () => {
     for (const text of ["depends on repo@v1", "pin lib bar@1.0.0"]) {
-      expect(
-        scan(text).some((f) => f.ruleId === "pii-user-at-host"),
-      ).toBe(false);
+      expect(scan(text).some((f) => f.ruleId === "pii-user-at-host")).toBe(false);
     }
   });
 
   it("detects device identity and network credentials", () => {
     for (const [text, id, secretValue] of [
       ["dev AA:BB:CC:DD:EE:FF up", "pii-mac", "AA:BB:CC:DD:EE:FF"],
-      ['machine-id = "a1b2c3d4e5f60718293a4b5c6d7e8f90"', "pii-machine-id", "a1b2c3d4e5f60718293a4b5c6d7e8f90"],
+      [
+        'machine-id = "a1b2c3d4e5f60718293a4b5c6d7e8f90"',
+        "pii-machine-id",
+        "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+      ],
       ['networking.hostId = "deadbeef"', "pii-machine-id", "deadbeef"],
       ['ssid = "HomeNet"', "pii-ssid", "HomeNet"],
-      ["key otpauth://totp/svc?secret=JBSWY3DPEHPK3PXP", "totp-uri", "otpauth://totp/svc?secret=JBSWY3DPEHPK3PXP"],
+      [
+        "key otpauth://totp/svc?secret=JBSWY3DPEHPK3PXP",
+        "totp-uri",
+        "otpauth://totp/svc?secret=JBSWY3DPEHPK3PXP",
+      ],
       ["Authorization: Basic dXNlcjpwYXNz", "basic-auth-header", "dXNlcjpwYXNz"],
       ["curl -u admin:s3cret https://x", "curl-basic-auth", "admin:s3cret"],
       ['psk = "sup3rsecretwifi"', "wifi-psk", "sup3rsecretwifi"],
     ] as const) {
       const findings = scan(text);
       expect(findings.some((f) => f.ruleId === id)).toBe(true);
-      expect(
-        findings.some((f) => f.ruleId === id && f.secretValue === secretValue),
-      ).toBe(true);
+      expect(findings.some((f) => f.ruleId === id && f.secretValue === secretValue)).toBe(true);
     }
   });
 
@@ -283,9 +276,9 @@ describe("local rule additions", () => {
     const token = "K7mQ2vX9pL4sW8eR1tY6uI3oP5aS0dF9gH2jK6";
     const findings = scan(`key is\n${token}\ndeployed`);
     expect(findings.some((f) => f.ruleId === "lone-token-line")).toBe(true);
-    expect(
-      findings.some((f) => f.ruleId === "lone-token-line" && f.secretValue === token),
-    ).toBe(true);
+    expect(findings.some((f) => f.ruleId === "lone-token-line" && f.secretValue === token)).toBe(
+      true,
+    );
   });
 
   it("does not fire lone-token on digests, ids, keys, or prose", () => {
@@ -304,9 +297,9 @@ describe("local rule additions", () => {
   it("detects bare public IPs but not versions or private ranges", () => {
     const findings = scan("8.8.8.8");
     expect(findings.some((f) => f.ruleId === "pii-ipv4-lone")).toBe(true);
-    expect(
-      findings.some((f) => f.ruleId === "pii-ipv4-lone" && f.secretValue === "8.8.8.8"),
-    ).toBe(true);
+    expect(findings.some((f) => f.ruleId === "pii-ipv4-lone" && f.secretValue === "8.8.8.8")).toBe(
+      true,
+    );
     for (const [text, id] of [
       ["192.168.1.10", "pii-ipv4-lone"],
       ["999.1.1.1", "pii-ipv4-lone"],
@@ -322,16 +315,22 @@ describe("local rule additions", () => {
   it("detects wallet addresses, WIF keys, and valid IBANs", () => {
     for (const [text, id, secretValue] of [
       ["pay 1A2B3C4D5E6F7G8H9J2K3M4N5P6Q7R8", "btc-address", "1A2B3C4D5E6F7G8H9J2K3M4N5P6Q7R8"],
-      ["pay bc1qpzry9x8gf2tvdw0s3jn54khce6mua7lqpzry9x8g", "btc-address", "bc1qpzry9x8gf2tvdw0s3jn54khce6mua7lqpzry9x8g"],
-      ["to 0x1234567890abcdef1234567890abcdef12345678", "eth-address", "0x1234567890abcdef1234567890abcdef12345678"],
+      [
+        "pay bc1qpzry9x8gf2tvdw0s3jn54khce6mua7lqpzry9x8g",
+        "btc-address",
+        "bc1qpzry9x8gf2tvdw0s3jn54khce6mua7lqpzry9x8g",
+      ],
+      [
+        "to 0x1234567890abcdef1234567890abcdef12345678",
+        "eth-address",
+        "0x1234567890abcdef1234567890abcdef12345678",
+      ],
       [`key 5${"J".repeat(50)}`, "wif-private-key", `5${"J".repeat(50)}`],
       ["iban DE89370400440532013000", "iban", "DE89370400440532013000"],
     ] as const) {
       const findings = scan(text);
       expect(findings.some((f) => f.ruleId === id)).toBe(true);
-      expect(
-        findings.some((f) => f.ruleId === id && f.secretValue === secretValue),
-      ).toBe(true);
+      expect(findings.some((f) => f.ruleId === id && f.secretValue === secretValue)).toBe(true);
     }
     expect(scan("iban DE00123456789012345678").some((f) => f.ruleId === "iban")).toBe(false);
     expect(scan("0x1234").some((f) => f.ruleId === "eth-address")).toBe(false);
@@ -344,9 +343,7 @@ describe("local rule additions", () => {
     ] as const) {
       const findings = scan(text);
       expect(findings.some((f) => f.ruleId === id)).toBe(true);
-      expect(
-        findings.some((f) => f.ruleId === id && f.secretValue === secretValue),
-      ).toBe(true);
+      expect(findings.some((f) => f.ruleId === id && f.secretValue === secretValue)).toBe(true);
     }
     for (const [text, id] of [
       ["order 12345678 shipped", "pii-us-bank-account"],
@@ -357,86 +354,124 @@ describe("local rule additions", () => {
   });
 
   it("detects bank plain", () => {
-    const findings = scan('acct 8158123456789012');
-    expect(findings.some((f) => f.ruleId === 'pii-bank-account-prefix')).toBe(true);
-    expect(findings.some((f) => f.ruleId === 'pii-bank-account-prefix' && f.secretValue === '8158123456789012')).toBe(true);
+    const findings = scan("acct 8158123456789012");
+    expect(findings.some((f) => f.ruleId === "pii-bank-account-prefix")).toBe(true);
+    expect(
+      findings.some(
+        (f) => f.ruleId === "pii-bank-account-prefix" && f.secretValue === "8158123456789012",
+      ),
+    ).toBe(true);
   });
-it("detects bank grouped", () => {
-    const findings = scan('acct 8158-1234-5678-9012');
-    expect(findings.some((f) => f.ruleId === 'pii-bank-account-prefix')).toBe(true);
-    expect(findings.some((f) => f.ruleId === 'pii-bank-account-prefix' && f.secretValue === '8158-1234-5678-9012')).toBe(true);
+  it("detects bank grouped", () => {
+    const findings = scan("acct 8158-1234-5678-9012");
+    expect(findings.some((f) => f.ruleId === "pii-bank-account-prefix")).toBe(true);
+    expect(
+      findings.some(
+        (f) => f.ruleId === "pii-bank-account-prefix" && f.secretValue === "8158-1234-5678-9012",
+      ),
+    ).toBe(true);
   });
-it("detects customer export shapes", () => {
-  const mac = "2600FC" + "90700DEC";
-  expect(scan(`modem ${mac} online`).some((f) => f.ruleId === "pii-customer-mac")).toBe(true);
-  expect(scan("contact JOHN.CFFERING at EXAMPLE dot COM").some((f) => f.ruleId === "pii-customer-email")).toBe(false);
-  const email = "JOHN" + ".CFFERING" + "@" + "EXAMPLE" + ".COM";
-  expect(scan(`mail ${email} sent`).some((f) => f.ruleId === "pii-customer-email")).toBe(true);
-  expect(scan("name DOE,JOHN Q here").some((f) => f.ruleId === "pii-customer-name")).toBe(true);
-  expect(scan("home_phone: 5550149876 ok").some((f) => f.ruleId === "pii-customer-phone")).toBe(true);
-  expect(scan("customer_id 1000000000000 done").some((f) => f.ruleId === "pii-customer-id")).toBe(true);
-  expect(scan("wo_nbr 10000000000000 done").some((f) => f.ruleId === "pii-customer-wo")).toBe(true);
-});
+  it("detects customer export shapes", () => {
+    const mac = "2600FC" + "90700DEC";
+    expect(scan(`modem ${mac} online`).some((f) => f.ruleId === "pii-customer-mac")).toBe(true);
+    expect(
+      scan("contact JOHN.CFFERING at EXAMPLE dot COM").some(
+        (f) => f.ruleId === "pii-customer-email",
+      ),
+    ).toBe(false);
+    const email = "JOHN" + ".CFFERING" + "@" + "EXAMPLE" + ".COM";
+    expect(scan(`mail ${email} sent`).some((f) => f.ruleId === "pii-customer-email")).toBe(true);
+    expect(scan("name DOE,JOHN Q here").some((f) => f.ruleId === "pii-customer-name")).toBe(true);
+    expect(scan("home_phone: 5550149876 ok").some((f) => f.ruleId === "pii-customer-phone")).toBe(
+      true,
+    );
+    expect(scan("customer_id 1000000000000 done").some((f) => f.ruleId === "pii-customer-id")).toBe(
+      true,
+    );
+    expect(scan("wo_nbr 10000000000000 done").some((f) => f.ruleId === "pii-customer-wo")).toBe(
+      true,
+    );
+  });
 
-it("rejects customer-rule lookalikes", () => {
-  for (const text of ["ID", "FAIL", "C", "a1b2c3d4e5f", "012345678901"]) {
-    expect(scan(`status ${text} ok`).some((f) => f.ruleId === "pii-customer-mac")).toBe(false);
-  }
-  expect(scan("Smith, John here").some((f) => f.ruleId === "pii-customer-name")).toBe(false);
-  expect(scan("NULL, NULL here").some((f) => f.ruleId === "pii-customer-name")).toBe(false);
-  expect(scan("ticket 5550149876 closed").some((f) => f.ruleId === "pii-customer-phone")).toBe(false);
-  expect(scan("total 1000000000000 units").some((f) => f.ruleId === "pii-customer-id")).toBe(false);
-  expect(scan("count 10000000000000 rows").some((f) => f.ruleId === "pii-customer-wo")).toBe(false);
-});
+  it("rejects customer-rule lookalikes", () => {
+    for (const text of ["ID", "FAIL", "C", "a1b2c3d4e5f", "012345678901"]) {
+      expect(scan(`status ${text} ok`).some((f) => f.ruleId === "pii-customer-mac")).toBe(false);
+    }
+    expect(scan("Smith, John here").some((f) => f.ruleId === "pii-customer-name")).toBe(false);
+    expect(scan("NULL, NULL here").some((f) => f.ruleId === "pii-customer-name")).toBe(false);
+    expect(scan("ticket 5550149876 closed").some((f) => f.ruleId === "pii-customer-phone")).toBe(
+      false,
+    );
+    expect(scan("total 1000000000000 units").some((f) => f.ruleId === "pii-customer-id")).toBe(
+      false,
+    );
+    expect(scan("count 10000000000000 rows").some((f) => f.ruleId === "pii-customer-wo")).toBe(
+      false,
+    );
+  });
 
-it("detects 11070 identifiers plain and grouped", () => {
+  it("detects 11070 identifiers plain and grouped", () => {
     const plain = "1107046800026";
     const plainFindings = scan(`ref ${plain} done`);
-    expect(plainFindings.some((f) => f.ruleId === 'pii-11070-identifier' && f.secretValue === plain)).toBe(true);
-    const grouped = '11070 4680 0026';
+    expect(
+      plainFindings.some((f) => f.ruleId === "pii-11070-identifier" && f.secretValue === plain),
+    ).toBe(true);
+    const grouped = "11070 4680 0026";
     const groupedFindings = scan(`ref ${grouped} done`);
-    expect(groupedFindings.some((f) => f.ruleId === 'pii-11070-identifier' && f.secretValue === grouped)).toBe(true);
+    expect(
+      groupedFindings.some((f) => f.ruleId === "pii-11070-identifier" && f.secretValue === grouped),
+    ).toBe(true);
   });
-it("rejects short 11070 lookalikes", () => {
+  it("rejects short 11070 lookalikes", () => {
     for (const text of ["version 11070 track", "id 11070123", "call 11070 now"]) {
-      expect(scan(text).some((f) => f.ruleId === 'pii-11070-identifier')).toBe(false);
+      expect(scan(text).some((f) => f.ruleId === "pii-11070-identifier")).toBe(false);
     }
   });
-it("detects labeled name", () => {
-    const findings = scan('Name: Jane Exampleperson');
-    expect(findings.some((f) => f.ruleId === 'pii-labeled-name')).toBe(true);
-    expect(findings.some((f) => f.ruleId === 'pii-labeled-name' && f.secretValue === 'Jane Exampleperson')).toBe(true);
+  it("detects labeled name", () => {
+    const findings = scan("Name: Jane Exampleperson");
+    expect(findings.some((f) => f.ruleId === "pii-labeled-name")).toBe(true);
+    expect(
+      findings.some(
+        (f) => f.ruleId === "pii-labeled-name" && f.secretValue === "Jane Exampleperson",
+      ),
+    ).toBe(true);
   });
-it("detects patient name", () => {
-    const findings = scan('patient: Ann Lee');
-    expect(findings.some((f) => f.ruleId === 'pii-labeled-name')).toBe(true);
-    expect(findings.some((f) => f.ruleId === 'pii-labeled-name' && f.secretValue === 'Ann Lee')).toBe(true);
+  it("detects patient name", () => {
+    const findings = scan("patient: Ann Lee");
+    expect(findings.some((f) => f.ruleId === "pii-labeled-name")).toBe(true);
+    expect(
+      findings.some((f) => f.ruleId === "pii-labeled-name" && f.secretValue === "Ann Lee"),
+    ).toBe(true);
   });
-it("detects street address", () => {
-    const findings = scan('ship to 123 Main St');
-    expect(findings.some((f) => f.ruleId === 'pii-street-address')).toBe(true);
-    expect(findings.some((f) => f.ruleId === 'pii-street-address' && f.secretValue === '123 Main St')).toBe(true);
+  it("detects street address", () => {
+    const findings = scan("ship to 123 Main St");
+    expect(findings.some((f) => f.ruleId === "pii-street-address")).toBe(true);
+    expect(
+      findings.some((f) => f.ruleId === "pii-street-address" && f.secretValue === "123 Main St"),
+    ).toBe(true);
   });
-it("detects avenue address", () => {
-    const findings = scan('unit 5 Park Avenue');
-    expect(findings.some((f) => f.ruleId === 'pii-street-address')).toBe(true);
-    expect(findings.some((f) => f.ruleId === 'pii-street-address' && f.secretValue === '5 Park Avenue')).toBe(true);
+  it("detects avenue address", () => {
+    const findings = scan("unit 5 Park Avenue");
+    expect(findings.some((f) => f.ruleId === "pii-street-address")).toBe(true);
+    expect(
+      findings.some((f) => f.ruleId === "pii-street-address" && f.secretValue === "5 Park Avenue"),
+    ).toBe(true);
   });
 
-it("detects coordinate pairs but not bare number pairs", () => {
-  for (const text of [
-    "meet at 40.7128, -74.0060",
-    "40°42'46\"N 74°00'22\"W",
-    "40°N, 74°W",
-  ]) {
-    expect(scan(text).some((f) => f.ruleId === "pii-geo-decimal" || f.ruleId === "pii-geo-dms")).toBe(true);
-  }
-  for (const text of ["options 1, 2, 3", "call 5, 6", "v1.2, 3.4", "200, 300"]) {
-    expect(scan(text).some((f) => f.ruleId === "pii-geo-decimal" || f.ruleId === "pii-geo-dms")).toBe(false);
-  }
-});
+  it("detects coordinate pairs but not bare number pairs", () => {
+    for (const text of ["meet at 40.7128, -74.0060", "40°42'46\"N 74°00'22\"W", "40°N, 74°W"]) {
+      expect(
+        scan(text).some((f) => f.ruleId === "pii-geo-decimal" || f.ruleId === "pii-geo-dms"),
+      ).toBe(true);
+    }
+    for (const text of ["options 1, 2, 3", "call 5, 6", "v1.2, 3.4", "200, 300"]) {
+      expect(
+        scan(text).some((f) => f.ruleId === "pii-geo-decimal" || f.ruleId === "pii-geo-dms"),
+      ).toBe(false);
+    }
+  });
 
-it("rejects prose lookalikes for inventory rules", () => {
+  it("rejects prose lookalikes for inventory rules", () => {
     for (const [text, id] of [
       [" Lake House retreat", "pii-labeled-name"],
       ["username = ordinary_handle", "pii-labeled-name"],
@@ -453,9 +488,7 @@ it("rejects prose lookalikes for inventory rules", () => {
   });
 
   it("still catches capitalized names behind identity labels", () => {
-    expect(
-      scan("name: Tessa Marsh").some((f) => f.ruleId === "pii-labeled-name"),
-    ).toBe(true);
+    expect(scan("name: Tessa Marsh").some((f) => f.ruleId === "pii-labeled-name")).toBe(true);
   });
 
   it("detects Tailscale keys and age secret keys", () => {
@@ -478,7 +511,9 @@ describe("bounded scanning", () => {
       "nothing sensitive here, just prose about lunch",
       "contact bob@example.com about it",
     ]) {
-      const plain = scan(text).map((f) => `${f.ruleId}=${f.secretValue}`).sort();
+      const plain = scan(text)
+        .map((f) => `${f.ruleId}=${f.secretValue}`)
+        .sort();
       const windowed = scanWindows(text);
       expect(windowed.trips).toEqual([]);
       expect(windowed.findings.map((f) => `${f.ruleId}=${f.secretValue}`).sort()).toEqual(plain);
@@ -538,7 +573,9 @@ describe("freeform name recall", () => {
       ["Mary McDonald signed off", "Mary McDonald"],
     ] as Array<[string, string]>) {
       const findings = scan(text);
-      expect(findings.some((f) => f.ruleId === "pii-gazetteer-name" && f.secretValue === value)).toBe(true);
+      expect(
+        findings.some((f) => f.ruleId === "pii-gazetteer-name" && f.secretValue === value),
+      ).toBe(true);
     }
   });
 
@@ -567,7 +604,11 @@ describe("freeform name recall", () => {
     const titled = scan("Please contact Dr. Elena Vasquez before noon");
     const hit = titled.find((f) => f.ruleId === "pii-titled-name");
     expect(hit?.secretValue).toBe("Elena Vasquez");
-    expect(scan("Mr Smith will join").some((f) => f.ruleId === "pii-titled-name" && f.secretValue === "Smith")).toBe(true);
+    expect(
+      scan("Mr Smith will join").some(
+        (f) => f.ruleId === "pii-titled-name" && f.secretValue === "Smith",
+      ),
+    ).toBe(true);
   });
 
   it("catches names behind sender-style labels", () => {
@@ -579,8 +620,12 @@ describe("freeform name recall", () => {
   it("documents dual-use residuals as limitations, not regressions", () => {
     // Common names that are also ordinary words fire on prose uses.
     // "Grace Hopper" is worth "Grace Period": fail-closed beats clever.
-    expect(scan("Grace Period ends Friday").some((f) => f.ruleId === "pii-gazetteer-name")).toBe(true);
-    expect(scan("Dr Pepper is in the fridge").some((f) => f.ruleId === "pii-titled-name")).toBe(true);
+    expect(scan("Grace Period ends Friday").some((f) => f.ruleId === "pii-gazetteer-name")).toBe(
+      true,
+    );
+    expect(scan("Dr Pepper is in the fridge").some((f) => f.ruleId === "pii-titled-name")).toBe(
+      true,
+    );
   });
 });
 
@@ -594,10 +639,12 @@ describe("placeholder words in user and host slots", () => {
       "chown user:group file",
       "postgres://user:password@db.internal.example/app",
       "Blocked by user: recursive delete (rm -r)",
-      "const user = await createUser({ name: \"Alice\" });",
+      'const user = await createUser({ name: "Alice" });',
       "rsync -a host: path",
     ]) {
-      const hits = scan(text).filter((f) => ["pii-user-at-host", "pii-labeled-user", "pii-labeled-host"].includes(f.ruleId));
+      const hits = scan(text).filter((f) =>
+        ["pii-user-at-host", "pii-labeled-user", "pii-labeled-host"].includes(f.ruleId),
+      );
       expect(hits.map((f) => f.secretValue)).toEqual([]);
     }
   });

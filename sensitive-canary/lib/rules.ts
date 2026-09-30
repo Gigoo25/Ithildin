@@ -139,9 +139,30 @@ export const MAX_INVENTORY_ENTRIES = 500;
 // Key names that pair with "Press" or "Click" in prose and never with a real
 // surname. The gazetteer rule compares its second word against this set.
 const KEY_WORDS = new Set([
-  "alt", "backspace", "cmd", "command", "control", "ctrl", "delete", "down",
-  "end", "enter", "esc", "escape", "home", "insert", "left", "option",
-  "pagedown", "pageup", "return", "right", "shift", "space", "tab", "up",
+  "alt",
+  "backspace",
+  "cmd",
+  "command",
+  "control",
+  "ctrl",
+  "delete",
+  "down",
+  "end",
+  "enter",
+  "esc",
+  "escape",
+  "home",
+  "insert",
+  "left",
+  "option",
+  "pagedown",
+  "pageup",
+  "return",
+  "right",
+  "shift",
+  "space",
+  "tab",
+  "up",
 ]);
 
 export function escapeRegExp(literal: string): string {
@@ -152,7 +173,9 @@ export function escapeRegExp(literal: string): string {
 // 's/./& /g'`, and a dump's line break plus its offset column. The two
 // alternatives start on disjoint characters and every run is bounded, so the
 // pattern cannot backtrack catastrophically.
-const SPACED_GAP = "(?:[ \\t]{1,8}(?:\\r?\\n(?:[0-9A-Fa-f]{6,16}:?)?[ \\t]{0,8})?|\\r?\\n(?:[0-9A-Fa-f]{6,16}:?)?[ \\t]{0,8})";
+const SPACED_GAP =
+  "(?:[ \\t]{1,8}(?:\\r?\\n(?:[0-9A-Fa-f]{6,16}:?)?[ " +
+  "\\t]{0,8})?|\\r?\\n(?:[0-9A-Fa-f]{6,16}:?)?[ \\t]{0,8})";
 const MIN_SPACED_CHARS = 3;
 
 // The value spelled one character at a time. Without it, `od -c` output
@@ -164,20 +187,25 @@ function spacedSource(literal: string): string | undefined {
 }
 
 export function compileInventoryEntry(entry: unknown): Rule {
-  if (typeof entry !== "object" || entry === null) throw new Error("inventory entry must be an object");
+  if (typeof entry !== "object" || entry === null)
+    throw new Error("inventory entry must be an object");
   const { id, literal, match, caseSensitive, label } = entry as Record<string, unknown>;
-  if (typeof id !== "string" || id.length === 0 || /\s/.test(id)) throw new Error('inventory entry needs a whitespace-free "id"');
-  if (typeof literal !== "string" || literal.trim().length === 0) throw new Error(`inventory "${String(id)}" has an empty literal`);
-  if (match !== "token" && match !== "phrase") throw new Error(`inventory "${String(id)}" needs match "token" or "phrase"`);
-  if (caseSensitive !== undefined && typeof caseSensitive !== "boolean") throw new Error(`inventory "${String(id)}" needs boolean caseSensitive`);
-  if (label !== undefined && (typeof label !== "string" || !ALIAS_LABEL.test(label))) throw new Error(`inventory "${String(id)}" needs a lowercase one-word label`);
+  if (typeof id !== "string" || id.length === 0 || /\s/.test(id))
+    throw new Error('inventory entry needs a whitespace-free "id"');
+  if (typeof literal !== "string" || literal.trim().length === 0)
+    throw new Error(`inventory "${String(id)}" has an empty literal`);
+  if (match !== "token" && match !== "phrase")
+    throw new Error(`inventory "${String(id)}" needs match "token" or "phrase"`);
+  if (caseSensitive !== undefined && typeof caseSensitive !== "boolean")
+    throw new Error(`inventory "${String(id)}" needs boolean caseSensitive`);
+  if (label !== undefined && (typeof label !== "string" || !ALIAS_LABEL.test(label)))
+    throw new Error(`inventory "${String(id)}" needs a lowercase one-word label`);
   const sensitive = caseSensitive ?? true;
   const spaced = spacedSource(literal);
-  const body = spaced === undefined ? escapeRegExp(literal) : `(?:${escapeRegExp(literal)}|${spaced})`;
+  const body =
+    spaced === undefined ? escapeRegExp(literal) : `(?:${escapeRegExp(literal)}|${spaced})`;
   // Unicode letter/number/underscore boundaries, not ASCII-only \b.
-  const source = match === "token"
-    ? `(?<![\\p{L}\\p{N}_])${body}(?![\\p{L}\\p{N}_])`
-    : body;
+  const source = match === "token" ? `(?<![\\p{L}\\p{N}_])${body}(?![\\p{L}\\p{N}_])` : body;
   return {
     id: `${INVENTORY_ID_PREFIX}${id}`,
     description: `Private inventory "${id}" (exact match)`,
@@ -245,8 +273,7 @@ const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_CONFIG_PATH = join(MODULE_DIR, "default-config.json");
 const { SENSITIVE_CANARY_CONFIG: userConfigPath } = process.env;
 const USER_CONFIG_PATH =
-  userConfigPath ??
-  join(homedir(), ".config", "sensitive-canary", "config.json");
+  userConfigPath ?? join(homedir(), ".config", "sensitive-canary", "config.json");
 // Generalize lists can live in their own file beside the config, so they can
 // be edited (and shared) without touching the private inventory.
 export const GENERALIZE_PATH =
@@ -288,25 +315,18 @@ function validateRuleConfig(rc: unknown): asserts rc is RuleConfig {
     throw new Error('missing or empty "regex" field');
   }
   if (category !== "secret" && category !== "pii") {
-    throw new Error(
-      `invalid "category" ${JSON.stringify(category)} (must be "secret" or "pii")`,
-    );
+    throw new Error(`invalid "category" ${JSON.stringify(category)} (must be "secret" or "pii")`);
   }
   if (flags != null && typeof flags !== "string") {
     throw new Error('"flags" must be a string');
   }
   if (
     secretGroup != null &&
-    (typeof secretGroup !== "number" ||
-      !Number.isInteger(secretGroup) ||
-      secretGroup < 0)
+    (typeof secretGroup !== "number" || !Number.isInteger(secretGroup) || secretGroup < 0)
   ) {
     throw new Error('"secretGroup" must be a non-negative integer');
   }
-  if (
-    entropyThreshold != null &&
-    (typeof entropyThreshold !== "number" || entropyThreshold < 0)
-  ) {
+  if (entropyThreshold != null && (typeof entropyThreshold !== "number" || entropyThreshold < 0)) {
     throw new Error('"entropyThreshold" must be a non-negative number');
   }
   if (validateName != null && typeof validateName !== "string") {
@@ -333,20 +353,16 @@ function validateRuleConfig(rc: unknown): asserts rc is RuleConfig {
   }
   if (
     contextWindow != null &&
-    (typeof contextWindow !== "number" ||
-      !Number.isInteger(contextWindow) ||
-      contextWindow < 1)
+    (typeof contextWindow !== "number" || !Number.isInteger(contextWindow) || contextWindow < 1)
   ) {
     throw new Error('"contextWindow" must be a positive integer');
   }
 
   // Cross-field: requireContext is meaningless without contextWords
-  if (
-    requireContext === true &&
-    (!Array.isArray(contextWords) || contextWords.length === 0)
-  ) {
+  if (requireContext === true && (!Array.isArray(contextWords) || contextWords.length === 0)) {
     throw new Error(
-      '"requireContext" is true but "contextWords" is empty — context gating would be disabled and the rule would always fire',
+      '"requireContext" is true but "contextWords" is empty — context gating would be disabled ' +
+        "and the rule would always fire",
     );
   }
 }
@@ -356,7 +372,8 @@ function validateRuleConfig(rc: unknown): asserts rc is RuleConfig {
 // fields so the caller (buildRules) can catch and warn per-rule.
 export function compileRule(rc: RuleConfig): Rule {
   validateRuleConfig(rc);
-  if (rc.label !== undefined && (typeof rc.label !== "string" || !ALIAS_LABEL.test(rc.label))) throw new Error("label must be one lowercase word");
+  if (rc.label !== undefined && (typeof rc.label !== "string" || !ALIAS_LABEL.test(rc.label)))
+    throw new Error("label must be one lowercase word");
   const { regex: source, flags, validate: validateName, ...rest } = rc;
   // matchAll requires the global flag. Make sure it is always present.
   const flagStr = flags ?? "g";
@@ -420,9 +437,7 @@ let configuredAliasKey: "session" | "shared" = "session";
 // `Number` rejects trailing junk that parseInt would silently drop.
 function parseScanBudget(value: unknown): number | null {
   const parsed = typeof value === "string" ? Number(value) : value;
-  return typeof parsed === "number" && Number.isInteger(parsed) && parsed >= 1
-    ? parsed
-    : null;
+  return typeof parsed === "number" && Number.isInteger(parsed) && parsed >= 1 ? parsed : null;
 }
 
 export interface UserSettings {
@@ -439,11 +454,19 @@ export interface UserSettings {
 // warning. `envBudget`: SENSITIVE_CANARY_SCAN_BUDGET_MS, which wins over the
 // file as the per-invocation override.
 export function readUserSettings(userConfig: unknown, envBudget: number | null): UserSettings {
-  const config = (userConfig && typeof userConfig === "object" ? userConfig : {}) as Partial<Record<keyof CanaryConfig, unknown>>;
-  const warn = (message: string) => process.stderr.write(`sensitive-canary: ${message}, ignoring\n`);
+  const config = (userConfig && typeof userConfig === "object" ? userConfig : {}) as Partial<
+    Record<keyof CanaryConfig, unknown>
+  >;
+  const warn = (message: string) =>
+    process.stderr.write(`sensitive-canary: ${message}, ignoring\n`);
   const settings: UserSettings = {
-    contextWindow: null, ruleConfigs: [], inventory: [], generalize: [],
-    aliasKey: "session", aliases: "stand-ins", scanBudgetMs: envBudget,
+    contextWindow: null,
+    ruleConfigs: [],
+    inventory: [],
+    generalize: [],
+    aliasKey: "session",
+    aliases: "stand-ins",
+    scanBudgetMs: envBudget,
   };
   const { contextWindow, rules, inventory, generalize, aliasKey, aliases, scanBudgetMs } = config;
   if (typeof contextWindow === "number" && Number.isInteger(contextWindow) && contextWindow >= 1) {
@@ -461,7 +484,8 @@ export function readUserSettings(userConfig: unknown, envBudget: number | null):
   else if (aliases != null) warn('aliases in user config must be "stand-ins" or "tokens"');
   if (envBudget === null) {
     settings.scanBudgetMs = parseScanBudget(scanBudgetMs);
-    if (settings.scanBudgetMs === null && scanBudgetMs != null) warn("invalid scanBudgetMs in user config");
+    if (settings.scanBudgetMs === null && scanBudgetMs != null)
+      warn("invalid scanBudgetMs in user config");
   }
   return settings;
 }
@@ -479,7 +503,9 @@ function buildRules(): Rule[] {
       defaultRules.push(compileRule(rc));
     } catch (e) {
       process.stderr.write(
-        `sensitive-canary: failed to compile built-in rule "${(rc as { id?: unknown })?.id ?? "(unknown)"}": ${e instanceof Error ? e.message : String(e)}\n`,
+        `sensitive-canary: failed to compile built-in rule ` +
+          `"${(rc as { id?: unknown })?.id ?? "(unknown)"}": ` +
+          `${e instanceof Error ? e.message : String(e)}\n`,
       );
     }
   }
@@ -503,43 +529,75 @@ export function compileInventoryList(entries: unknown[]): Rule[] {
   const out: Rule[] = [];
   const seen = new Set<string>();
   if (entries.length > MAX_INVENTORY_ENTRIES) {
-    process.stderr.write(`sensitive-canary: inventory has ${entries.length} entries (max ${MAX_INVENTORY_ENTRIES}), truncating\n`);
+    process.stderr.write(
+      `sensitive-canary: inventory has ${entries.length} entries (max ${MAX_INVENTORY_ENTRIES}), ` +
+        `truncating\n`,
+    );
   }
   for (const entry of entries.slice(0, MAX_INVENTORY_ENTRIES)) {
     try {
       const rule = compileInventoryEntry(entry);
       if (seen.has(rule.id)) {
-        process.stderr.write("sensitive-canary: duplicate inventory id rejected — keeping first entry\n");
+        process.stderr.write(
+          "sensitive-canary: duplicate inventory id rejected — keeping first entry\n",
+        );
       } else {
         seen.add(rule.id);
         out.push(rule);
       }
     } catch (e) {
-      process.stderr.write("sensitive-canary: invalid inventory entry rejected (details withheld)\n");
+      process.stderr.write(
+        "sensitive-canary: invalid inventory entry rejected (details withheld)\n",
+      );
     }
   }
   return out;
 }
 
 export function compileGeneralizeEntry(entry: unknown): Rule {
-  if (typeof entry !== "object" || entry === null) throw new Error("generalize entry must be an object");
+  if (typeof entry !== "object" || entry === null)
+    throw new Error("generalize entry must be an object");
   const { id, terms, replace, caseSensitive, scope } = entry as Record<string, unknown>;
-  if (typeof id !== "string" || !/^[A-Za-z0-9_-]+$/.test(id)) throw new Error('generalize entry needs an "id" of letters, digits, _ or -');
-  if (!Array.isArray(terms) || terms.length === 0 || terms.length > MAX_GENERALIZE_TERMS ||
-      terms.some((term) => typeof term !== "string" || term.trim().length === 0 || /[\n⟦⟧]/.test(term))) {
-    throw new Error(`generalize "${id}" needs 1-${MAX_GENERALIZE_TERMS} non-empty single-line terms`);
+  if (typeof id !== "string" || !/^[A-Za-z0-9_-]+$/.test(id))
+    throw new Error('generalize entry needs an "id" of letters, digits, _ or -');
+  if (
+    !Array.isArray(terms) ||
+    terms.length === 0 ||
+    terms.length > MAX_GENERALIZE_TERMS ||
+    terms.some(
+      (term) => typeof term !== "string" || term.trim().length === 0 || /[\n⟦⟧]/.test(term),
+    )
+  ) {
+    throw new Error(
+      `generalize "${id}" needs 1-${MAX_GENERALIZE_TERMS} non-empty single-line terms`,
+    );
   }
-  if (typeof replace !== "string" || replace.trim().length === 0 || replace.length > 80 || /[\n⟦⟧]/.test(replace)) {
+  if (
+    typeof replace !== "string" ||
+    replace.trim().length === 0 ||
+    replace.length > 80 ||
+    /[\n⟦⟧]/.test(replace)
+  ) {
     throw new Error(`generalize "${id}" needs a single-line replace of at most 80 characters`);
   }
-  if (caseSensitive !== undefined && typeof caseSensitive !== "boolean") throw new Error(`generalize "${id}" needs boolean caseSensitive`);
-  if (scope !== undefined && scope !== "everywhere" && scope !== "prompts") throw new Error(`generalize "${id}" needs scope "everywhere" or "prompts"`);
+  if (caseSensitive !== undefined && typeof caseSensitive !== "boolean")
+    throw new Error(`generalize "${id}" needs boolean caseSensitive`);
+  if (scope !== undefined && scope !== "everywhere" && scope !== "prompts")
+    throw new Error(`generalize "${id}" needs scope "everywhere" or "prompts"`);
   // Longest first, so "chronic migraine" wins over "migraine".
-  const body = [...new Set(terms as string[])].sort((left, right) => right.length - left.length).map((term) => escapeRegExp(term.trim())).join("|");
+  const body = [...new Set(terms as string[])]
+    .sort((left, right) => right.length - left.length)
+    .map((term) => escapeRegExp(term.trim()))
+    .join("|");
   return {
     id: `${GENERALIZE_ID_PREFIX}${id}`,
     description: `Generalized wording "${id}"`,
-    regex: ensureIndices(new RegExp(`(?<![\\p{L}\\p{N}_])(?:${body})(?![\\p{L}\\p{N}_])`, caseSensitive === true ? "gu" : "giu")),
+    regex: ensureIndices(
+      new RegExp(
+        `(?<![\\p{L}\\p{N}_])(?:${body})(?![\\p{L}\\p{N}_])`,
+        caseSensitive === true ? "gu" : "giu",
+      ),
+    ),
     category: "pii",
     generalize: replace.trim(),
     generalizeScope: scope === "prompts" ? "prompts" : "everywhere",
@@ -550,7 +608,9 @@ export function compileGeneralizeEntry(entry: unknown): Rule {
 // `parsed`: the file's JSON, undefined when there is no file.
 export function generalizeList(parsed: unknown): unknown[] {
   if (parsed === undefined) return [];
-  const list = Array.isArray(parsed) ? parsed : (parsed as { generalize?: unknown } | null)?.generalize;
+  const list = Array.isArray(parsed)
+    ? parsed
+    : (parsed as { generalize?: unknown } | null)?.generalize;
   if (Array.isArray(list)) return list;
   process.stderr.write("sensitive-canary: generalize file must hold an array, ignoring\n");
   return [];
@@ -563,13 +623,17 @@ export function compileGeneralizeList(entries: unknown[]): Rule[] {
     try {
       const rule = compileGeneralizeEntry(entry);
       if (seen.has(rule.id)) {
-        process.stderr.write("sensitive-canary: duplicate generalize id rejected — keeping first entry\n");
+        process.stderr.write(
+          "sensitive-canary: duplicate generalize id rejected — keeping first entry\n",
+        );
         continue;
       }
       seen.add(rule.id);
       out.push(rule);
     } catch {
-      process.stderr.write("sensitive-canary: invalid generalize entry rejected (details withheld)\n");
+      process.stderr.write(
+        "sensitive-canary: invalid generalize entry rejected (details withheld)\n",
+      );
     }
   }
   return out;
@@ -614,20 +678,46 @@ const NIX_ATTR_LABELS: ReadonlySet<string> = new Set([
 // Type names that follow a label in annotations (`host: string`,
 // `user: str`), which the labeled host/username rules would otherwise take
 // for values.
-const TYPE_NAMES = /^(?:string|str|number|int|integer|float|double|bool|boolean|any|unknown|never|void|object|bytes|dict|list|tuple|char|symbol|bigint|undefined|option|optional|vec|array|record|promise|map|set|i8|i16|i32|i64|u8|u16|u32|u64|usize|isize|f32|f64)$/i;
+const TYPE_NAMES = new RegExp(
+  String.raw`^(?:string|str|number|int|integer|float|double|bool|boolean|any|unknown|never|` +
+    String.raw`void|object|bytes|dict|list|tuple|char|symbol|bigint|undefined|option|` +
+    String.raw`optional|vec|array|record|promise|map|set|i8|i16|i32|i64|u8|u16|u32|u64|usize|` +
+    String.raw`isize|f32|f64)$`,
+  "i",
+);
+
+// Words after a host label that are not host names: generic nouns, English
+// contraction stems (`host: don't`) and literals.
+const HOST_STEMS = new RegExp(
+  String.raw`^(?:localhost|host|hosts|hostname|hostnames|server|servers|machine|machines|` +
+    String.raw`database|db|example|test|testing|local|default|none|null|unknown|url|uri|don|` +
+    String.raw`can|won|isn|aren|wasn|weren|doesn|didn|hasn|haven|couldn|wouldn|shouldn|` +
+    String.raw`mustn|needn|shan|mayn|oughtn|daren|true|false|yes|no|on|off)$`,
+  "i",
+);
 
 // Words that fill a user or host slot in docs, code and command templates
 // (`user@host`, `host:path`, `chown user:group`, `user:password@`, `git@`,
 // `const user = await …`), never an identity. One false hit here is not
 // local: a matched word is learned and redacted everywhere after it.
-const PLACEHOLDER_NAMES = /^(?:user|users|username|login|owner|name|me|you|someone|anonymous|guest|nobody|root|admin|git|group|password|passwd|pass|secret|token|email|mail|noreply|no-reply|path|paths|port|dir|file|files|addr|address|ip|domain|remote|target|dest|destination|await|async|new|this|self|typeof|function|require|import)$/i;
+const PLACEHOLDER_NAMES = new RegExp(
+  String.raw`^(?:user|users|username|login|owner|name|me|you|someone|anonymous|guest|` +
+    String.raw`nobody|root|admin|git|group|password|passwd|pass|secret|token|email|mail|` +
+    String.raw`noreply|no-reply|path|paths|port|dir|file|files|addr|address|ip|domain|remote|` +
+    String.raw`target|dest|destination|await|async|new|this|self|typeof|function|require|` +
+    String.raw`import)$`,
+  "i",
+);
 
 const LOCAL_RULES: Rule[] = [
   {
     id: "generic-secret",
     description: "Generic API Key / Secret",
-    regex:
-      /(api[_-]?key|secret[_-]?key|master[_-]?key|access[_-]?token|api[_-]?secret)["']?\s*[:=]\s*["']?([A-Za-z0-9\-_.]{20,})/gi,
+    regex: new RegExp(
+      String.raw`(api[_-]?key|secret[_-]?key|master[_-]?key|access[_-]?token|` +
+        String.raw`api[_-]?secret)["']?\s*[:=]\s*["']?([A-Za-z0-9\-_.]{20,})`,
+      "gi",
+    ),
     secretGroup: 2,
     entropyThreshold: 3.5,
     category: "secret",
@@ -783,19 +873,25 @@ const LOCAL_RULES: Rule[] = [
   {
     id: "anchored-entropy",
     description: "High-Entropy Value in Secret-Labeled Field",
-    regex:
-      /\b(?:[A-Za-z0-9_-]*(?:secret|token|password|passwd|credential)|[A-Za-z0-9_-]*(?:(?:api|private|access)[_-]?key|[_-]key)|key)["']?\s*[:=]\s*["']?([A-Za-z0-9+/=_.-]{20,})/gi,
+    regex: new RegExp(
+      String.raw`\b(?:[A-Za-z0-9_-]*(?:secret|token|password|passwd|credential)|` +
+        String.raw`[A-Za-z0-9_-]*(?:(?:api|private|access)[_-]?key|[_-]key)|` +
+        String.raw`key)["']?\s*[:=]\s*["']?([A-Za-z0-9+/=_.-]{20,})`,
+      "gi",
+    ),
     secretGroup: 1,
     entropyThreshold: 3.5,
-    validate: (value: string) =>
-      !/^[0-9a-f]{32,}$/i.test(value) && /[0-9A-Z]/.test(value),
+    validate: (value: string) => !/^[0-9a-f]{32,}$/i.test(value) && /[0-9A-Z]/.test(value),
     category: "secret",
   },
   {
     id: "pii-ipv4",
     description: "IPv4 Address (private range)",
-    regex:
-      /\b(10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})\b/g,
+    regex: new RegExp(
+      String.raw`\b(10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|` +
+        String.raw`3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})\b`,
+      "g",
+    ),
     category: "pii",
   },
   // Fleet inventory PII: exact host/user names from this repo's four hosts.
@@ -839,7 +935,8 @@ const LOCAL_RULES: Rule[] = [
     description: "Internal hostname (generic)",
     // Flat quantifiers only: the nested-label form catastrophized on
     // dot-chains (6.5s per 40KB). Structure is validated in code instead.
-    regex: /\b([A-Za-z0-9][A-Za-z0-9.-]{0,300}\.(?:local|lan|home|internal|corp|intranet|ts\.net))\b/gi,
+    regex:
+      /\b([A-Za-z0-9][A-Za-z0-9.-]{0,300}\.(?:local|lan|home|internal|corp|intranet|ts\.net))\b/gi,
     validate: (value: string) => {
       // Nix attribute paths wear the same shape (config.home, env.local):
       // refuse matches built from Nix-ecosystem labels.
@@ -868,8 +965,7 @@ const LOCAL_RULES: Rule[] = [
     description: "Bare public IPv4 on its own line",
     regex: /^(\d{1,3}(?:\.\d{1,3}){3})\r?$/gim,
     validate: (value: string) =>
-      value.split(".").every((octet) => Number(octet) <= 255) &&
-      !isReservedIpv4(value),
+      value.split(".").every((octet) => Number(octet) <= 255) && !isReservedIpv4(value),
     category: "pii",
   },
   {
@@ -948,7 +1044,19 @@ const LOCAL_RULES: Rule[] = [
     description: "Customer US phone (10 digits) near a phone label",
     regex: /\b\d{3}[\s.-]?\d{3}[\s.-]?\d{4}\b/g,
     requireContext: true,
-    contextWords: ["home_phone", "mobile_phone", "business_phone", "call_first_phone", "cell_phone", "work_phone", "phone", "mobile", "cell", "home", "tel"],
+    contextWords: [
+      "home_phone",
+      "mobile_phone",
+      "business_phone",
+      "call_first_phone",
+      "cell_phone",
+      "work_phone",
+      "phone",
+      "mobile",
+      "cell",
+      "home",
+      "tel",
+    ],
     category: "pii",
   },
   {
@@ -956,7 +1064,16 @@ const LOCAL_RULES: Rule[] = [
     description: "Customer ID (13 digits) near an account/customer label",
     regex: /\b\d{13}\b/g,
     requireContext: true,
-    contextWords: ["customer_id", "cu_customer_id", "account_number", "account", "acct", "customer", "hse", "cust_id"],
+    contextWords: [
+      "customer_id",
+      "cu_customer_id",
+      "account_number",
+      "account",
+      "acct",
+      "customer",
+      "hse",
+      "cust_id",
+    ],
     category: "pii",
   },
   {
@@ -964,7 +1081,19 @@ const LOCAL_RULES: Rule[] = [
     description: "Work/order number (14-20 digits) near a work/order label",
     regex: /\b\d{14,20}\b/g,
     requireContext: true,
-    contextWords: ["work_order_number", "wo_nbr", "order_num", "woj_job_number", "work_order", "work", "order", "job", "wo", "job_number", "wo_number"],
+    contextWords: [
+      "work_order_number",
+      "wo_nbr",
+      "order_num",
+      "woj_job_number",
+      "work_order",
+      "work",
+      "order",
+      "job",
+      "wo",
+      "job_number",
+      "wo_number",
+    ],
     category: "pii",
   },
   // A bare capitalized pair ("Lake House") is prose as often as a name,
@@ -973,7 +1102,12 @@ const LOCAL_RULES: Rule[] = [
   {
     id: "pii-labeled-name",
     description: "Personal name behind an identity label",
-    regex: /(?:\bname|\bfull name|\bpatient|\bcustomer|\bcontact|\battn|\bauthor|\bsender|\brecipient|\bregistrant|\bsigner|\bfrom|\bto|\bcc)\s*[:=]\s*([A-Z][a-z]+(?:[ -][A-Z][a-z.]+){1,2})/gi,
+    regex: new RegExp(
+      String.raw`(?:\bname|\bfull name|\bpatient|\bcustomer|\bcontact|\battn|\bauthor|` +
+        String.raw`\bsender|\brecipient|\bregistrant|\bsigner|\bfrom|\bto|` +
+        String.raw`\bcc)\s*[:=]\s*([A-Z][a-z]+(?:[ -][A-Z][a-z.]+){1,2})`,
+      "gi",
+    ),
     secretGroup: 1,
     category: "pii",
     // The "i" flag makes the value pattern case-insensitive too, so a YAML
@@ -988,7 +1122,11 @@ const LOCAL_RULES: Rule[] = [
   {
     id: "pii-titled-name",
     description: "Personal name behind a title (Mr/Mrs/Ms/Dr/Prof)",
-    regex: /(?:\bMr\.?|\bMrs\.?|\bMs\.?|\bMiss\b|\bDr\.?|\bProf\.?)\s+([A-Z][A-Za-z]{1,24}(?:[ -][A-Z][A-Za-z'.-]{0,28}[A-Za-z]){0,2})/g,
+    regex: new RegExp(
+      String.raw`(?:\bMr\.?|\bMrs\.?|\bMs\.?|\bMiss\b|\bDr\.?|\bProf\.?)\s+([A-Z][A-Za-z]{1` +
+        String.raw`,24}(?:[ -][A-Z][A-Za-z'.-]{0,28}[A-Za-z]){0,2})`,
+      "g",
+    ),
     secretGroup: 1,
     category: "pii",
   },
@@ -1002,7 +1140,11 @@ const LOCAL_RULES: Rule[] = [
   {
     id: "pii-gazetteer-name",
     description: "Personal name starting with a gazetteer first name",
-    regex: /\b([A-Z][A-Za-z]{1,24}(?:[ -][A-Z][A-Za-z'.-]{1,29}){0,1}(?:[ -][A-Z][A-Za-z'.-]{0,28}[A-Za-z]))(?![A-Za-z'.-]*\+)/g,
+    regex: new RegExp(
+      String.raw`\b([A-Z][A-Za-z]{1,24}(?:[ -][A-Z][A-Za-z'.-]{1,29}){0,1}(?:[ -][A-Z][A-Za` +
+        String.raw`-z'.-]{0,28}[A-Za-z]))(?![A-Za-z'.-]*\+)`,
+      "g",
+    ),
     category: "pii",
     validate: (value: string) => {
       if (!FIRST_NAMES.has(value.split(/[ -]/)[0]!.toLowerCase())) return false;
@@ -1026,26 +1168,41 @@ const LOCAL_RULES: Rule[] = [
     description: "Lat/long decimal pair",
     regex: /\b(-?\d{1,3}(?:\.\d+)?)\s*°?\s*([NS])?[\s,;]+(-?\d{1,3}(?:\.\d+)?)\s*°?\s*([EW])?\b/gi,
     validate: (value: string) => {
-      const match = /^(-?\d{1,3}(?:\.\d+)?)\s*°?\s*([NS])?[\s,;]+(-?\d{1,3}(?:\.\d+)?)\s*°?\s*([EW])?$/i.exec(value);
+      const match =
+        /^(-?\d{1,3}(?:\.\d+)?)\s*°?\s*([NS])?[\s,;]+(-?\d{1,3}(?:\.\d+)?)\s*°?\s*([EW])?$/i.exec(
+          value,
+        );
       if (!match) return false;
       const [, latRaw = "", ns, lonRaw = "", ew] = match;
       if (Math.abs(Number(latRaw)) > 90 || Math.abs(Number(lonRaw)) > 180) return false;
       const frac = (part: string): boolean => part.includes(".");
       const marked = value.includes("°") || ns !== undefined || ew !== undefined;
-      return (frac(latRaw) && frac(lonRaw)) || (marked && (frac(latRaw) || frac(lonRaw) || (!!ns && !!ew)));
+      return (
+        (frac(latRaw) && frac(lonRaw)) ||
+        (marked && (frac(latRaw) || frac(lonRaw) || (!!ns && !!ew)))
+      );
     },
     category: "pii",
   },
   {
     id: "pii-geo-dms",
     description: "Lat/long degrees-minutes-seconds",
-    regex: /\b\d{1,3}°\s*\d{1,2}(?:\.\d+)?'\s*\d{1,2}(?:\.\d+)?"\s*[NS]\s*,?\s*\d{1,3}°\s*\d{1,2}(?:\.\d+)?'\s*\d{1,2}(?:\.\d+)?"\s*[EW]\b/gi,
+    regex: new RegExp(
+      String.raw`\b\d{1,3}°\s*\d{1,2}(?:\.\d+)?'\s*\d{1,2}(?:\.\d+)?"\s*[NS]\s*,?\s*\d{1,3}` +
+        String.raw`°\s*\d{1,2}(?:\.\d+)?'\s*\d{1,2}(?:\.\d+)?"\s*[EW]\b`,
+      "gi",
+    ),
     category: "pii",
   },
   {
     id: "pii-street-address",
     description: "US street address",
-    regex: /\b\d{1,5}[A-Za-z]?\s+[A-Za-z0-9][\w.'-]*(?:\s+[A-Za-z0-9][\w.'-]*){0,3}\s+(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Lane|Ln|Drive|Dr|Court|Ct|Circle|Cir|Parkway|Pkwy|Terrace|Place|Pl|Plaza)\.?\b/g,
+    regex: new RegExp(
+      String.raw`\b\d{1,5}[A-Za-z]?\s+[A-Za-z0-9][\w.'-]*(?:\s+[A-Za-z0-9][\w.'-]*){0,3}\s+` +
+        String.raw`(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Lane|Ln|Drive|Dr|Court|Ct|C` +
+        String.raw`ircle|Cir|Parkway|Pkwy|Terrace|Place|Pl|Plaza)\.?\b`,
+      "g",
+    ),
     category: "pii",
   },
   {
@@ -1053,7 +1210,8 @@ const LOCAL_RULES: Rule[] = [
     description: "Username in user@host address (generic)",
     // The host must contain a letter and must not be a version pin:
     // npm `repo@v1` / `bar@1.0.0` are packages, not addresses.
-    regex: /\b([a-z_][a-z0-9_.-]{0,30}[a-z0-9_-]?)@(?![Vv]?\d+(\.\d+)*\b)(?=[A-Za-z0-9.-]*[A-Za-z])/gi,
+    regex:
+      /\b([a-z_][a-z0-9_.-]{0,30}[a-z0-9_-]?)@(?![Vv]?\d+(\.\d+)*\b)(?=[A-Za-z0-9.-]*[A-Za-z])/gi,
     secretGroup: 1,
     validate: (value: string) => !PLACEHOLDER_NAMES.test(value),
     category: "pii",
@@ -1063,7 +1221,12 @@ const LOCAL_RULES: Rule[] = [
     description: "Username in labeled assignment (generic)",
     // The value ends the phrase: `user: recursive delete` is prose and
     // `user = await createUser()` is code.
-    regex: /(?:\buser(?:name)?|\blogin|\bowner)\s*[:=]\s*["']?([A-Za-z0-9._-]{3,32})(?![A-Za-z0-9._-]|[ \t]+[A-Za-z(])/gi,
+    regex: new RegExp(
+      String.raw`(?:\buser(?:name)?|\blogin|` +
+        String.raw`\bowner)\s*[:=]\s*["']?([A-Za-z0-9._-]{3,32})(?![A-Za-z0-9._-]|` +
+        String.raw`[ \t]+[A-Za-z(])`,
+      "gi",
+    ),
     secretGroup: 1,
     // Common username syntax: lowercase POSIX-style. This keeps display
     // names ("Jane") and booleans out without a per-word denylist.
@@ -1081,15 +1244,17 @@ const LOCAL_RULES: Rule[] = [
     // is public knowledge, not PII, and the trailing guard stops the match
     // from firing on its first label. Internal FQDNs are already covered
     // by pii-internal-host regardless of label.
-    regex: /(?:\bhost(?:name)?|\bserver|\bmachine)\s*[:=]\s*["']?([A-Za-z0-9][A-Za-z0-9-]{0,61}[A-Za-z0-9])(?![\w.\-(<\[])/gi,
+    regex: new RegExp(
+      String.raw`(?:\bhost(?:name)?|\bserver|\bmachine)\s*[:=]\s*["']?([A-Za-z0-9][A-Za-z0-` +
+        String.raw`9-]{0,61}[A-Za-z0-9])(?![\w.\-(<\[])`,
+      "gi",
+    ),
     secretGroup: 1,
     // Two-character minimum drops Nix lambda params (`host: u:`). The stem
     // list drops English contractions (`host: don't`) and bare references,
     // TYPE_NAMES drops annotations, and the `<` / `[` guard drops generics.
     validate: (value: string) =>
-      !TYPE_NAMES.test(value) &&
-      !/^(?:localhost|host|hosts|hostname|hostnames|server|servers|machine|machines|database|db|example|test|testing|local|default|none|null|unknown|url|uri|don|can|won|isn|aren|wasn|weren|doesn|didn|hasn|haven|couldn|wouldn|shouldn|mustn|needn|shan|mayn|oughtn|daren|true|false|yes|no|on|off)$/i.test(value) &&
-      !PLACEHOLDER_NAMES.test(value),
+      !TYPE_NAMES.test(value) && !HOST_STEMS.test(value) && !PLACEHOLDER_NAMES.test(value),
     category: "pii",
   },
   {
@@ -1098,7 +1263,18 @@ const LOCAL_RULES: Rule[] = [
     regex: /\brob\b/g,
     category: "pii",
     requireContext: true,
-    contextWords: ["user", "username", "login", "home", "owner", "account", "author", "email", "ssh", "host"],
+    contextWords: [
+      "user",
+      "username",
+      "login",
+      "home",
+      "owner",
+      "account",
+      "author",
+      "email",
+      "ssh",
+      "host",
+    ],
     contextWindow: 8,
   },
 ];
@@ -1111,12 +1287,11 @@ export function applyUserOverrides(base: Rule[], userConfigs: RuleConfig[]): Rul
     try {
       const rule = compileRule(rc);
       if (rule.id.startsWith(INVENTORY_ID_PREFIX)) throw new Error("reserved inventory id");
-      if (base.find(original => original.id === rule.id)?.validate && !rule.validate) throw new Error("override drops validator");
+      if (base.find((original) => original.id === rule.id)?.validate && !rule.validate)
+        throw new Error("override drops validator");
       compiled.push(rule);
     } catch (e) {
-      process.stderr.write(
-        "sensitive-canary: invalid user rule rejected (details withheld)\n",
-      );
+      process.stderr.write("sensitive-canary: invalid user rule rejected (details withheld)\n");
     }
   }
   const byId = new Map<string, Rule>();
@@ -1134,9 +1309,7 @@ export function applyUserOverrides(base: Rule[], userConfigs: RuleConfig[]): Rul
   for (const original of base) {
     const override = effective.get(original.id);
     if (override && original.validate && !override.validate) {
-      process.stderr.write(
-        "sensitive-canary: user override drops validator — keeping built-in\n",
-      );
+      process.stderr.write("sensitive-canary: user override drops validator — keeping built-in\n");
       effective.delete(original.id);
     }
   }
@@ -1215,16 +1388,27 @@ export function ruleAliasLabel(ruleId: string): string | undefined {
 }
 
 export function ruleGeneralization(ruleId: string): string | undefined {
-  return ruleId.startsWith(GENERALIZE_ID_PREFIX) ? activeRules().find((rule) => rule.id === ruleId)?.generalize : undefined;
+  return ruleId.startsWith(GENERALIZE_ID_PREFIX)
+    ? activeRules().find((rule) => rule.id === ruleId)?.generalize
+    : undefined;
 }
 
 export function isPromptOnlyRule(ruleId: string): boolean {
-  return ruleId.startsWith(GENERALIZE_ID_PREFIX) && activeRules().find((rule) => rule.id === ruleId)?.generalizeScope === "prompts";
+  return (
+    ruleId.startsWith(GENERALIZE_ID_PREFIX) &&
+    activeRules().find((rule) => rule.id === ruleId)?.generalizeScope === "prompts"
+  );
 }
 
-export function inventoryLiterals(): Array<{ ruleId: string; literal: string; label?: string | undefined }> {
+export function inventoryLiterals(): Array<{
+  ruleId: string;
+  literal: string;
+  label?: string | undefined;
+}> {
   return activeRules().flatMap((rule) =>
-    rule.inventoryLiteral === undefined ? [] : [{ ruleId: rule.id, literal: rule.inventoryLiteral, label: rule.label }],
+    rule.inventoryLiteral === undefined
+      ? []
+      : [{ ruleId: rule.id, literal: rule.inventoryLiteral, label: rule.label }],
   );
 }
 
@@ -1283,8 +1467,7 @@ let activeScanBudgetMs = configuredScanBudgetMs ?? DEFAULT_SCAN_BUDGET_MS;
 
 // `null` restores the default.
 export function setScanBudgetMs(totalMs: number | null): void {
-  activeScanBudgetMs =
-    totalMs === null ? DEFAULT_SCAN_BUDGET_MS : Math.max(1, Math.floor(totalMs));
+  activeScanBudgetMs = totalMs === null ? DEFAULT_SCAN_BUDGET_MS : Math.max(1, Math.floor(totalMs));
 }
 
 export function currentScanBudgetMs(): number {
@@ -1293,9 +1476,7 @@ export function currentScanBudgetMs(): number {
 
 export class ScanBudgetExceeded extends Error {
   constructor(ruleId: string, elapsed: number) {
-    super(
-      `the scan passed ${activeScanBudgetMs}ms (${elapsed}ms at rule "${ruleId}")`,
-    );
+    super(`the scan passed ${activeScanBudgetMs}ms (${elapsed}ms at rule "${ruleId}")`);
     this.name = "ScanBudgetExceeded";
   }
 }
@@ -1368,8 +1549,7 @@ export function scan(
   categories: ReadonlySet<Category> = ALL_CATEGORIES,
 ): LocatedFinding[] {
   const remaining = remainingBudget();
-  if (remaining <= 0)
-    throw new ScanBudgetExceeded("this call's total", activeScanBudgetMs);
+  if (remaining <= 0) throw new ScanBudgetExceeded("this call's total", activeScanBudgetMs);
   return runInterruptibly(
     () => scanUninterrupted(text, categories, remaining),
     remaining + HARD_LIMIT_SLACK_MS,
@@ -1382,8 +1562,7 @@ export function scan(
 function scanRule(rule: Rule, text: string): LocatedFinding[] {
   const findings: LocatedFinding[] = [];
   for (const match of text.matchAll(rule.regex)) {
-    const secretValue =
-      rule.secretGroup != null ? match[rule.secretGroup] : match[0];
+    const secretValue = rule.secretGroup != null ? match[rule.secretGroup] : match[0];
 
     if (!secretValue) continue;
     // Both the captured value and the whole match: a rule with a
@@ -1409,11 +1588,7 @@ function scanRule(rule: Rule, text: string): LocatedFinding[] {
             keyDescribesRatherThanHolds(match[0]))))
     )
       continue;
-    if (
-      rule.entropyThreshold != null &&
-      entropy(secretValue) < rule.entropyThreshold
-    )
-      continue;
+    if (rule.entropyThreshold != null && entropy(secretValue) < rule.entropyThreshold) continue;
     if (rule.validate != null && !rule.validate(secretValue)) continue;
 
     const hasContext =
@@ -1595,18 +1770,20 @@ export function activeRulesFingerprint(): string {
   if (rulesFingerprint !== null) return rulesFingerprint;
   const parts = [`v${WINDOW_CACHE_VERSION}`];
   for (const rule of activeRules()) {
-    parts.push([
-      rule.id,
-      rule.category,
-      rule.regex.source,
-      rule.regex.flags,
-      String(rule.secretGroup ?? ""),
-      String(rule.entropyThreshold ?? ""),
-      rule.requireContext ? "1" : "0",
-      (rule.contextWords ?? []).join("\u0001"),
-      (rule.excludeContext ?? []).join("\u0001"),
-      rule.validate ? "1" : "0",
-    ].join("\u0002"));
+    parts.push(
+      [
+        rule.id,
+        rule.category,
+        rule.regex.source,
+        rule.regex.flags,
+        String(rule.secretGroup ?? ""),
+        String(rule.entropyThreshold ?? ""),
+        rule.requireContext ? "1" : "0",
+        (rule.contextWords ?? []).join("\u0001"),
+        (rule.excludeContext ?? []).join("\u0001"),
+        rule.validate ? "1" : "0",
+      ].join("\u0002"),
+    );
   }
   rulesFingerprint = createHash("sha256").update(parts.join("\u0003")).digest("hex");
   return rulesFingerprint;
@@ -1788,7 +1965,11 @@ export function scanWindows(
     const cached = windowCacheGet(sliceText, categories);
     if (cached !== null) {
       for (const finding of cached) {
-        findings.push({ ...finding, start: finding.start + slice.start, end: finding.end + slice.start });
+        findings.push({
+          ...finding,
+          start: finding.start + slice.start,
+          end: finding.end + slice.start,
+        });
       }
       consecutiveTrips = 0;
       continue;
@@ -1811,7 +1992,11 @@ export function scanWindows(
     const sliceFindings: LocatedFinding[] = [];
     const flushSlice = () => {
       for (const finding of sliceFindings) {
-        findings.push({ ...finding, start: finding.start + slice.start, end: finding.end + slice.start });
+        findings.push({
+          ...finding,
+          start: finding.start + slice.start,
+          end: finding.end + slice.start,
+        });
       }
     };
     for (const rule of rules) {
@@ -1825,7 +2010,10 @@ export function scanWindows(
       try {
         // The comfort floor never overrides the remaining envelope. V8 can
         // overshoot, so also check between rules, not only between windows.
-        const located = runInterruptibly(() => scanRule(rule, sliceText), Math.min(ruleCap, ruleRemaining));
+        const located = runInterruptibly(
+          () => scanRule(rule, sliceText),
+          Math.min(ruleCap, ruleRemaining),
+        );
         for (const f of located) sliceFindings.push(f);
       } catch (error) {
         if (error instanceof ScanBudgetExceeded) {

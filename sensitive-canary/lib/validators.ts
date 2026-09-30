@@ -173,11 +173,7 @@ export function validateCodiceFiscale(input: string): boolean {
   // of them issued to real people. The check character below needs no change:
   // it is defined over the substituted fifteen, and the odd/even tables
   // already carry letters.
-  if (
-    !/^[A-Z]{6}[0-9LMNPQRSTUV]{2}[A-Z][0-9LMNPQRSTUV]{2}[A-Z][0-9LMNPQRSTUV]{3}[A-Z]$/.test(
-      cf,
-    )
-  )
+  if (!/^[A-Z]{6}[0-9LMNPQRSTUV]{2}[A-Z][0-9LMNPQRSTUV]{2}[A-Z][0-9LMNPQRSTUV]{3}[A-Z]$/.test(cf))
     return false;
 
   let sum = 0;
@@ -357,10 +353,7 @@ export function isReservedIpv6(ip: string): boolean {
   } else {
     const leftRaw = halves[0] ? halves[0].split(":") : [];
     const rightRaw = halves[1] ? halves[1].split(":") : [];
-    if (
-      leftRaw.some((g) => !isHexGroup(g)) ||
-      rightRaw.some((g) => !isHexGroup(g))
-    ) {
+    if (leftRaw.some((g) => !isHexGroup(g)) || rightRaw.some((g) => !isHexGroup(g))) {
       return true;
     }
     // Too many groups to fit in 128 bits — malformed. A "::" that compresses
@@ -423,8 +416,6 @@ const VALIDATORS: Readonly<Record<string, (str: string) => boolean>> = {
   "public-ipv6": (ip: string) => !isReservedIpv6(ip),
 };
 
-export function getValidator(
-  name: string,
-): ((str: string) => boolean) | undefined {
+export function getValidator(name: string): ((str: string) => boolean) | undefined {
   return VALIDATORS[name];
 }

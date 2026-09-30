@@ -30,21 +30,26 @@ export interface Message {
 // A list of names is a list, and the runtime is free to add to it. The
 // transcript reader asks `origin.kind` instead, which answers the question
 // directly. This is what covers the same lines when the field is not there.
-export const SYNTHETIC_ELEMENT_NAMES =
-  "local-command-stdout|local-command-stderr|command-name|command-message|command-args|bash-input|bash-output|bash-stdout|bash-stderr|system-reminder|task-notification";
+export const SYNTHETIC_ELEMENT_NAMES = [
+  "local-command-stdout",
+  "local-command-stderr",
+  "command-name",
+  "command-message",
+  "command-args",
+  "bash-input",
+  "bash-output",
+  "bash-stdout",
+  "bash-stderr",
+  "system-reminder",
+  "task-notification",
+].join("|");
 
-const SYNTHETIC_USER_ELEMENTS = new RegExp(
-  `<(${SYNTHETIC_ELEMENT_NAMES})>[\\s\\S]*?<\\/\\1>`,
-  "g",
-);
+const SYNTHETIC_USER_ELEMENTS = new RegExp(`<(${SYNTHETIC_ELEMENT_NAMES})>[\\s\\S]*?<\\/\\1>`, "g");
 
 // An opening tag with nothing closing it takes the rest of the message with it.
 // Pairs alone would have left an unclosed one — a truncated capture, or output
 // that happens to contain the tag — reading as the user speaking.
-const UNCLOSED_SYNTHETIC_ELEMENT = new RegExp(
-  `<(?:${SYNTHETIC_ELEMENT_NAMES})>[\\s\\S]*$`,
-  "g",
-);
+const UNCLOSED_SYNTHETIC_ELEMENT = new RegExp(`<(?:${SYNTHETIC_ELEMENT_NAMES})>[\\s\\S]*$`, "g");
 
 // Text inside a fence is being quoted, not issued: a pasted log or diff that
 // happens to contain the tag is not the user asking for it.
@@ -122,10 +127,7 @@ export function resolveTagPriority(prompt: string): {
   return { effectiveAllow, effectiveMask };
 }
 
-export function applyAllowTags(
-  findings: Finding[],
-  allowTags: Set<string>,
-): Finding[] {
+export function applyAllowTags(findings: Finding[], allowTags: Set<string>): Finding[] {
   if (allowTags.size === 0) return findings;
   if (allowTags.has("all")) return [];
   return findings.filter((f) => !allowTags.has(f.category));

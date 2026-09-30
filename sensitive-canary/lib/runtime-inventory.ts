@@ -63,10 +63,31 @@ const GENERIC = new Set([
 
 // Public forges and SSH endpoints: naming them reveals nothing about you.
 const PUBLIC_HOSTS = new Set([
-  "github.com", "ssh.github.com", "gist.github.com", "gitlab.com", "altssh.gitlab.com", "bitbucket.org", "altssh.bitbucket.org",
-  "codeberg.org", "gitea.com", "sr.ht", "git.sr.ht", "notabug.org", "launchpad.net", "git.launchpad.net",
-  "ssh.dev.azure.com", "vs-ssh.visualstudio.com", "dev.azure.com", "source.developers.google.com",
-  "huggingface.co", "hf.co", "aur.archlinux.org", "salsa.debian.org", "gitlab.gnome.org", "invent.kde.org", "git.kernel.org",
+  "github.com",
+  "ssh.github.com",
+  "gist.github.com",
+  "gitlab.com",
+  "altssh.gitlab.com",
+  "bitbucket.org",
+  "altssh.bitbucket.org",
+  "codeberg.org",
+  "gitea.com",
+  "sr.ht",
+  "git.sr.ht",
+  "notabug.org",
+  "launchpad.net",
+  "git.launchpad.net",
+  "ssh.dev.azure.com",
+  "vs-ssh.visualstudio.com",
+  "dev.azure.com",
+  "source.developers.google.com",
+  "huggingface.co",
+  "hf.co",
+  "aur.archlinux.org",
+  "salsa.debian.org",
+  "gitlab.gnome.org",
+  "invent.kde.org",
+  "git.kernel.org",
 ]);
 
 // Upper bound per source, so a huge generated SSH config cannot flood the
@@ -162,14 +183,21 @@ export function collectRuntimeIdentity(identity: RuntimeIdentity): InventoryEntr
   const home = identity.homedir?.trim();
   if (home && !isEphemeralHome(home)) {
     add("runtime-home", home, "phrase");
-    add("runtime-home-user", home.replace(/[\\/]+$/, "").split(/[\\/]/).pop());
+    add(
+      "runtime-home-user",
+      home
+        .replace(/[\\/]+$/, "")
+        .split(/[\\/]/)
+        .pop(),
+    );
   }
 
   const gitName = identity.gitName?.trim();
   if (gitName && gitName.includes(" ")) add("runtime-git-name", gitName, "phrase");
   else add("runtime-git-name", gitName);
   const gitEmail = identity.gitEmail?.trim();
-  if (gitEmail && !gitEmail.toLowerCase().endsWith("@example.com")) add("runtime-git-email", gitEmail);
+  if (gitEmail && !gitEmail.toLowerCase().endsWith("@example.com"))
+    add("runtime-git-email", gitEmail);
 
   // Infrastructure names. Hostnames match case-insensitively (DNS does).
   const addHosts = (prefix: string, hosts: string[] | undefined) => {
@@ -179,9 +207,14 @@ export function collectRuntimeIdentity(identity: RuntimeIdentity): InventoryEntr
       const host = raw.trim().replace(/\.$/, "");
       if (!host || PUBLIC_HOSTS.has(host.toLowerCase()) || !usableLiteral(host)) continue;
       n++;
-      const kind = /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host) ? "ip" : host.includes(":") ? "ipv6" : "host";
+      const kind = /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host)
+        ? "ip"
+        : host.includes(":")
+          ? "ipv6"
+          : "host";
       addCaseless(`${prefix}-${kind}-${n}`, host);
-      if (kind === "host" && host.includes(".")) addCaseless(`${prefix}-host-short-${n}`, host.slice(0, host.indexOf(".")));
+      if (kind === "host" && host.includes("."))
+        addCaseless(`${prefix}-host-short-${n}`, host.slice(0, host.indexOf(".")));
     }
   };
   const addCaseless = (id: string, literal: string) => {
@@ -201,11 +234,12 @@ export function collectRuntimeIdentity(identity: RuntimeIdentity): InventoryEntr
     add(`runtime-ssh-user-${users}`, user);
   }
 
-
   return out;
 }
 
-export function identityFromGit(get: (key: string) => string | undefined = readGitConfig): Pick<RuntimeIdentity, "gitName" | "gitEmail"> {
+export function identityFromGit(
+  get: (key: string) => string | undefined = readGitConfig,
+): Pick<RuntimeIdentity, "gitName" | "gitEmail"> {
   return { gitName: get("user.name"), gitEmail: get("user.email") };
 }
 
@@ -248,7 +282,10 @@ export function identityFromSsh(
       const match = /^(\S+?)(?:\s*=\s*|\s+)(.+)$/.exec(line);
       if (!match) continue;
       const keyword = (match[1] ?? "").toLowerCase();
-      const values = (match[2] ?? "").split(/\s+/).map((value) => value.replace(/^"(.*)"$/, "$1")).filter(Boolean);
+      const values = (match[2] ?? "")
+        .split(/\s+/)
+        .map((value) => value.replace(/^"(.*)"$/, "$1"))
+        .filter(Boolean);
       if (keyword === "host") {
         for (const value of values) if (!/[*?!%]/.test(value)) hosts.push(value);
       } else if (keyword === "hostname") {
@@ -257,11 +294,22 @@ export function identityFromSsh(
         if (values[0] && !values[0].includes("%")) users.push(values[0]);
       } else if (keyword === "include") {
         for (const value of values) {
-          const target = value.startsWith("~/") ? path.join(home, value.slice(2)) : path.resolve(sshDir, value);
+          const target = value.startsWith("~/")
+            ? path.join(home, value.slice(2))
+            : path.resolve(sshDir, value);
           const base = path.basename(target);
-          if (!/[*?]/.test(base)) { visit(target, depth + 1); continue; }
-          const pattern = new RegExp(`^${base.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".")}$`);
-          for (const name of list(path.dirname(target)).sort()) if (pattern.test(name)) visit(path.join(path.dirname(target), name), depth + 1);
+          if (!/[*?]/.test(base)) {
+            visit(target, depth + 1);
+            continue;
+          }
+          const pattern = new RegExp(
+            `^${base
+              .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+              .replace(/\*/g, ".*")
+              .replace(/\?/g, ".")}$`,
+          );
+          for (const name of list(path.dirname(target)).sort())
+            if (pattern.test(name)) visit(path.join(path.dirname(target), name), depth + 1);
         }
       }
     }
@@ -284,7 +332,12 @@ export function identityFromGitRemotes(
   cwd = process.cwd(),
   urls: () => string[] = () => readGitRemoteUrls(cwd),
 ): Pick<RuntimeIdentity, "gitHosts"> {
-  return { gitHosts: urls().flatMap((url) => { const host = gitRemoteHost(url); return host ? [host] : []; }) };
+  return {
+    gitHosts: urls().flatMap((url) => {
+      const host = gitRemoteHost(url);
+      return host ? [host] : [];
+    }),
+  };
 }
 
 function readGitRemoteUrls(cwd: string): string[] {
@@ -296,7 +349,10 @@ function readGitRemoteUrls(cwd: string): string[] {
       stdio: ["ignore", "pipe", "ignore"],
     });
     if (result.status !== 0) return [];
-    return result.stdout.split("\n").flatMap((line) => { const url = line.split(/\s+/)[1]; return url ? [url] : []; });
+    return result.stdout.split("\n").flatMap((line) => {
+      const url = line.split(/\s+/)[1];
+      return url ? [url] : [];
+    });
   } catch {
     return [];
   }

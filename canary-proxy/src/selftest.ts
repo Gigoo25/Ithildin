@@ -37,7 +37,9 @@ export function syntheticValues(): Record<"aws" | "token" | "email", string> {
 
 // `makeHandler`: a proxy handler over the given upstream, built the way the
 // server builds its own.
-export async function selfTest(makeHandler: (fetchUpstream: typeof fetch) => Handler): Promise<SelfTest> {
+export async function selfTest(
+  makeHandler: (fetchUpstream: typeof fetch) => Handler,
+): Promise<SelfTest> {
   const started = performance.now();
   const failures: string[] = [];
   const values = syntheticValues();
@@ -47,27 +49,57 @@ export async function selfTest(makeHandler: (fetchUpstream: typeof fetch) => Han
     forwarded = String(init?.body ?? "");
     standIn = /<<([^<>]*)>>/.exec(forwarded)?.[1] ?? "";
     return Response.json({
-      id: "msg_selftest", type: "message", role: "assistant", model: "selftest", stop_reason: "tool_use",
-      content: [{ type: "tool_use", id: "toolu_selftest", name: "Bash", input: { command: `echo ${standIn}` } }],
+      id: "msg_selftest",
+      type: "message",
+      role: "assistant",
+      model: "selftest",
+      stop_reason: "tool_use",
+      content: [
+        {
+          type: "tool_use",
+          id: "toolu_selftest",
+          name: "Bash",
+          input: { command: `echo ${standIn}` },
+        },
+      ],
       usage: { input_tokens: 0, output_tokens: 0 },
     });
   }) as unknown as typeof fetch;
   try {
-    const body = { model: "selftest", max_tokens: 1, messages: [{ role: "user", content: `self-test ${values.aws} ${values.token} <<${values.email}>>` }] };
-    const response = await makeHandler(upstream)(new Request("http://127.0.0.1/anthropic/v1/messages", {
-      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
-    }));
+    const body = {
+      model: "selftest",
+      max_tokens: 1,
+      messages: [
+        { role: "user", content: `self-test ${values.aws} ${values.token} <<${values.email}>>` },
+      ],
+    };
+    const response = await makeHandler(upstream)(
+      new Request("http://127.0.0.1/anthropic/v1/messages", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+    );
     if (forwarded === "") failures.push(`request not forwarded (status ${response.status})`);
     for (const [name, value] of Object.entries(values)) {
       if (forwarded.includes(value)) failures.push(`${name} reached the provider`);
     }
-    if (forwarded !== "" && (standIn === "" || standIn === values.email)) failures.push("email got no stand-in");
+    if (forwarded !== "" && (standIn === "" || standIn === values.email))
+      failures.push("email got no stand-in");
     const reply = (await response.json()) as { content?: Array<{ input?: { command?: unknown } }> };
-    if (aliasStyle() === "stand-ins" && reply.content?.[0]?.input?.command !== `echo ${values.email}`) {
+    if (
+      aliasStyle() === "stand-ins" &&
+      reply.content?.[0]?.input?.command !== `echo ${values.email}`
+    ) {
       failures.push("tool call not swapped back");
     }
   } catch (error) {
     failures.push(`self-test threw ${(error as Error).name}`);
   }
-  return { ok: failures.length === 0, at: new Date().toISOString(), ms: Math.round(performance.now() - started), failures };
+  return {
+    ok: failures.length === 0,
+    at: new Date().toISOString(),
+    ms: Math.round(performance.now() - started),
+    failures,
+  };
 }

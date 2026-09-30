@@ -29,31 +29,229 @@
 // those hold only three /24s, too few to keep one stand-in per subnet.
 
 import { createHmac, randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { FIRST_NAMES } from "./first-names.ts";
 
-export type AliasKind = "host" | "user" | "email" | "user-at-host" | "home" | "ipv4" | "ipv6" | "mac" | "label";
+export type AliasKind =
+  "host" | "user" | "email" | "user-at-host" | "home" | "ipv4" | "ipv6" | "mac" | "label";
 
 // Hostname and email-domain words that describe a role or a place, not an
 // owner. They survive aliasing because they carry the meaning.
 const ROLE_WORDS = new Set([
-  "prod", "production", "prd", "stage", "staging", "stg", "dev", "devel", "development", "test", "testing", "qa", "uat", "sandbox", "demo", "preview",
-  "db", "pg", "postgres", "postgresql", "mysql", "mariadb", "redis", "mongo", "mongodb", "elastic", "es", "kafka", "rabbitmq", "mq", "cache", "memcached",
-  "web", "www", "api", "app", "apps", "svc", "service", "backend", "frontend", "admin", "auth", "sso", "idp", "ldap", "vault", "secrets",
-  "lb", "proxy", "gw", "gateway", "ingress", "edge", "cdn", "static", "media", "files", "assets", "upload", "download",
-  "vpn", "wg", "bastion", "jump", "ssh", "ftp", "sftp", "mail", "smtp", "imap", "mx", "ns", "dns", "ntp", "dhcp",
-  "git", "ci", "cd", "build", "builder", "runner", "worker", "workers", "job", "jobs", "cron", "queue", "scheduler",
-  "node", "nodes", "master", "primary", "secondary", "replica", "standby", "backup", "archive", "restore",
-  "monitor", "monitoring", "metrics", "grafana", "prometheus", "alert", "alerts", "log", "logs", "logging", "trace", "tracing",
-  "nas", "san", "storage", "s3", "minio", "k8s", "kube", "kubernetes", "cluster", "control", "docker", "registry", "vm", "host", "hv",
-  "router", "switch", "ap", "wifi", "printer", "camera", "iot", "home", "office", "lab", "desktop", "laptop", "workstation", "server", "srv",
-  "internal", "int", "ext", "external", "corp", "lan", "local", "localdomain", "private", "public", "arpa", "intranet",
-  "eu", "us", "uk", "de", "fr", "ca", "au", "jp", "cn", "in", "br", "asia", "emea", "apac", "amer",
-  "east", "west", "north", "south", "central", "use1", "use2", "usw1", "usw2", "euw1", "euc1",
-  "com", "net", "org", "io", "co", "info", "biz", "cloud", "tech", "online", "site",
-  "gmail", "googlemail", "outlook", "hotmail", "live", "yahoo", "icloud", "me", "proton", "protonmail", "pm", "fastmail", "gmx", "aol",
+  "prod",
+  "production",
+  "prd",
+  "stage",
+  "staging",
+  "stg",
+  "dev",
+  "devel",
+  "development",
+  "test",
+  "testing",
+  "qa",
+  "uat",
+  "sandbox",
+  "demo",
+  "preview",
+  "db",
+  "pg",
+  "postgres",
+  "postgresql",
+  "mysql",
+  "mariadb",
+  "redis",
+  "mongo",
+  "mongodb",
+  "elastic",
+  "es",
+  "kafka",
+  "rabbitmq",
+  "mq",
+  "cache",
+  "memcached",
+  "web",
+  "www",
+  "api",
+  "app",
+  "apps",
+  "svc",
+  "service",
+  "backend",
+  "frontend",
+  "admin",
+  "auth",
+  "sso",
+  "idp",
+  "ldap",
+  "vault",
+  "secrets",
+  "lb",
+  "proxy",
+  "gw",
+  "gateway",
+  "ingress",
+  "edge",
+  "cdn",
+  "static",
+  "media",
+  "files",
+  "assets",
+  "upload",
+  "download",
+  "vpn",
+  "wg",
+  "bastion",
+  "jump",
+  "ssh",
+  "ftp",
+  "sftp",
+  "mail",
+  "smtp",
+  "imap",
+  "mx",
+  "ns",
+  "dns",
+  "ntp",
+  "dhcp",
+  "git",
+  "ci",
+  "cd",
+  "build",
+  "builder",
+  "runner",
+  "worker",
+  "workers",
+  "job",
+  "jobs",
+  "cron",
+  "queue",
+  "scheduler",
+  "node",
+  "nodes",
+  "master",
+  "primary",
+  "secondary",
+  "replica",
+  "standby",
+  "backup",
+  "archive",
+  "restore",
+  "monitor",
+  "monitoring",
+  "metrics",
+  "grafana",
+  "prometheus",
+  "alert",
+  "alerts",
+  "log",
+  "logs",
+  "logging",
+  "trace",
+  "tracing",
+  "nas",
+  "san",
+  "storage",
+  "s3",
+  "minio",
+  "k8s",
+  "kube",
+  "kubernetes",
+  "cluster",
+  "control",
+  "docker",
+  "registry",
+  "vm",
+  "host",
+  "hv",
+  "router",
+  "switch",
+  "ap",
+  "wifi",
+  "printer",
+  "camera",
+  "iot",
+  "home",
+  "office",
+  "lab",
+  "desktop",
+  "laptop",
+  "workstation",
+  "server",
+  "srv",
+  "internal",
+  "int",
+  "ext",
+  "external",
+  "corp",
+  "lan",
+  "local",
+  "localdomain",
+  "private",
+  "public",
+  "arpa",
+  "intranet",
+  "eu",
+  "us",
+  "uk",
+  "de",
+  "fr",
+  "ca",
+  "au",
+  "jp",
+  "cn",
+  "in",
+  "br",
+  "asia",
+  "emea",
+  "apac",
+  "amer",
+  "east",
+  "west",
+  "north",
+  "south",
+  "central",
+  "use1",
+  "use2",
+  "usw1",
+  "usw2",
+  "euw1",
+  "euc1",
+  "com",
+  "net",
+  "org",
+  "io",
+  "co",
+  "info",
+  "biz",
+  "cloud",
+  "tech",
+  "online",
+  "site",
+  "gmail",
+  "googlemail",
+  "outlook",
+  "hotmail",
+  "live",
+  "yahoo",
+  "icloud",
+  "me",
+  "proton",
+  "protonmail",
+  "pm",
+  "fastmail",
+  "gmx",
+  "aol",
 ]);
 
 // Built-in rule ids that name a person, an account, a place: the label that
@@ -98,7 +296,24 @@ function labelForRule(ruleId: string, custom: string | undefined): string {
 // known label (so branch names like feature-123456 never match), and
 // .example must be the final label after a hashed one (so www.example.com
 // and .env.example never match).
-const BUILTIN_LABELS = ["user", "host", "person", "ssid", "phone", "address", "geo", "postal", "card", "account", "machine", "id", "pii", "ip", "mac", "email"];
+const BUILTIN_LABELS = [
+  "user",
+  "host",
+  "person",
+  "ssid",
+  "phone",
+  "address",
+  "geo",
+  "postal",
+  "card",
+  "account",
+  "machine",
+  "id",
+  "pii",
+  "ip",
+  "mac",
+  "email",
+];
 const labels = new Set(BUILTIN_LABELS);
 let shapes: RegExp[] = [];
 let spans = /$^/g;
@@ -106,7 +321,13 @@ let spans = /$^/g;
 function compileShapes(): void {
   const labelled = `\\b(?:${[...labels].join("|")})-[0-9a-f]{6}\\b`;
   // Longest shape first, so host-3c9d0e.example is one span, not two.
-  const sources = ["\\b[a-z0-9.-]*(?<![a-z0-9])(?:n|host-)[0-9a-f]{6}(?![a-z0-9])[a-z0-9.-]*\\.example(?![\\w-]|\\.[\\w-])", labelled, "\\bn[0-9a-f]{6}\\b", "\\b24[0-7](?:\\.\\d{1,3}){3}\\b"];
+  const sources = [
+    "\\b[a-z0-9.-]*(?<![a-z0-9])(?:n|host-)[0-9a-f]{6}(?![a-z0-9])" +
+      "[a-z0-9.-]*\\.example(?![\\w-]|\\.[\\w-])",
+    labelled,
+    "\\bn[0-9a-f]{6}\\b",
+    "\\b24[0-7](?:\\.\\d{1,3}){3}\\b",
+  ];
   shapes = sources.map((source) => new RegExp(source));
   spans = new RegExp(sources.join("|"), "g");
 }
@@ -135,7 +356,11 @@ export function aliasSpans(text: string): string[] {
 }
 
 export function aliasMatches(text: string): Array<{ text: string; start: number; end: number }> {
-  return [...text.matchAll(spans)].map((match) => ({ text: match[0], start: match.index, end: match.index + match[0].length }));
+  return [...text.matchAll(spans)].map((match) => ({
+    text: match[0],
+    start: match.index,
+    end: match.index + match[0].length,
+  }));
 }
 
 // True when the whole value is stand-ins. An email counts when its local
@@ -147,8 +372,10 @@ export function isAliasValue(text: string): boolean {
 }
 
 export function aliasKeyPath(): string {
-  if (process.env.SENSITIVE_CANARY_ALIAS_KEY_FILE) return process.env.SENSITIVE_CANARY_ALIAS_KEY_FILE;
-  const state = process.env.XDG_STATE_HOME || path.join(process.env.HOME || os.homedir(), ".local", "state");
+  if (process.env.SENSITIVE_CANARY_ALIAS_KEY_FILE)
+    return process.env.SENSITIVE_CANARY_ALIAS_KEY_FILE;
+  const state =
+    process.env.XDG_STATE_HOME || path.join(process.env.HOME || os.homedir(), ".local", "state");
   return path.join(state, "sensitive-canary", "alias-key");
 }
 
@@ -165,11 +392,17 @@ export function loadAliasKey(file = aliasKeyPath()): Buffer {
       }
       return Buffer.from(text, "hex");
     }
-    process.stderr.write("sensitive-canary: alias key file is malformed; stand-ins will not be stable across sessions\n");
+    process.stderr.write(
+      "sensitive-canary: alias key file is malformed; stand-ins will not be stable across " +
+        "sessions\n",
+    );
     return randomBytes(32);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-      process.stderr.write("sensitive-canary: alias key file is unreadable; stand-ins will not be stable across sessions\n");
+      process.stderr.write(
+        "sensitive-canary: alias key file is unreadable; stand-ins will not be stable across " +
+          "sessions\n",
+      );
       return randomBytes(32);
     }
   }
@@ -186,7 +419,10 @@ export function loadAliasKey(file = aliasKeyPath()): Buffer {
     } catch {
       //
     }
-    process.stderr.write("sensitive-canary: cannot create alias key file; stand-ins will not be stable across sessions\n");
+    process.stderr.write(
+      "sensitive-canary: cannot create alias key file; stand-ins will not be stable across " +
+        "sessions\n",
+    );
     return key;
   }
 }
@@ -209,7 +445,8 @@ export function sessionAliasKey(sessionFile: string | undefined, inheritFrom?: s
   if (inheritFrom && !existsSync(file)) {
     try {
       const parent = readFileSync(`${inheritFrom}${SESSION_KEY_SUFFIX}`, "utf8").trim();
-      if (/^[0-9a-f]{64}$/.test(parent)) writeFileSync(file, `${parent}\n`, { mode: 0o600, flag: "wx" });
+      if (/^[0-9a-f]{64}$/.test(parent))
+        writeFileSync(file, `${parent}\n`, { mode: 0o600, flag: "wx" });
     } catch {
       // No parent key (it predates per-session keys): start a fresh one.
     }
@@ -224,18 +461,216 @@ const CONSONANTS = "bcdfghjklmnprstvwz";
 // Candidates that read as ordinary words or code are skipped: swap-back would
 // turn every later use of the word into the real value.
 const COMMON_WORDS = new Set([
-  "a", "an", "and", "are", "as", "at", "be", "but", "by", "can", "do", "for", "from", "go", "had", "has", "have", "he", "her", "him", "his",
-  "if", "in", "into", "is", "it", "its", "me", "my", "no", "not", "of", "on", "or", "our", "out", "so", "the", "to", "up", "us", "was", "we",
-  "who", "why", "yes", "you", "all", "any", "bad", "big", "bit", "box", "bug", "bus", "car", "cat", "cup", "cut", "day", "dog", "end", "few",
-  "fix", "fun", "get", "got", "hit", "hot", "job", "key", "kid", "let", "lot", "low", "man", "map", "may", "mix", "net", "new", "now", "odd",
-  "off", "old", "one", "own", "pay", "pet", "put", "red", "run", "sad", "saw", "say", "see", "set", "she", "sit", "six", "sun", "tag", "tax",
-  "ten", "top", "try", "two", "use", "var", "via", "war", "way", "web", "wet", "win", "yet", "zip", "base", "bash", "body", "book", "call",
-  "case", "char", "code", "data", "date", "done", "else", "enum", "file", "find", "form", "func", "game", "hash", "head", "home", "item",
-  "join", "json", "kind", "last", "line", "link", "list", "load", "lock", "long", "loop", "main", "make", "mode", "name", "next", "node",
-  "none", "note", "null", "open", "page", "part", "path", "pipe", "plan", "port", "post", "pull", "push", "read", "rule", "safe", "save",
-  "self", "send", "show", "side", "size", "some", "sort", "step", "stop", "sure", "sync", "take", "task", "test", "text", "that", "then",
-  "this", "time", "todo", "tool", "tree", "true", "type", "unit", "user", "view", "void", "wait", "want", "what", "when", "with", "word",
-  "work", "yaml", "zero",
+  "a",
+  "an",
+  "and",
+  "are",
+  "as",
+  "at",
+  "be",
+  "but",
+  "by",
+  "can",
+  "do",
+  "for",
+  "from",
+  "go",
+  "had",
+  "has",
+  "have",
+  "he",
+  "her",
+  "him",
+  "his",
+  "if",
+  "in",
+  "into",
+  "is",
+  "it",
+  "its",
+  "me",
+  "my",
+  "no",
+  "not",
+  "of",
+  "on",
+  "or",
+  "our",
+  "out",
+  "so",
+  "the",
+  "to",
+  "up",
+  "us",
+  "was",
+  "we",
+  "who",
+  "why",
+  "yes",
+  "you",
+  "all",
+  "any",
+  "bad",
+  "big",
+  "bit",
+  "box",
+  "bug",
+  "bus",
+  "car",
+  "cat",
+  "cup",
+  "cut",
+  "day",
+  "dog",
+  "end",
+  "few",
+  "fix",
+  "fun",
+  "get",
+  "got",
+  "hit",
+  "hot",
+  "job",
+  "key",
+  "kid",
+  "let",
+  "lot",
+  "low",
+  "man",
+  "map",
+  "may",
+  "mix",
+  "net",
+  "new",
+  "now",
+  "odd",
+  "off",
+  "old",
+  "one",
+  "own",
+  "pay",
+  "pet",
+  "put",
+  "red",
+  "run",
+  "sad",
+  "saw",
+  "say",
+  "see",
+  "set",
+  "she",
+  "sit",
+  "six",
+  "sun",
+  "tag",
+  "tax",
+  "ten",
+  "top",
+  "try",
+  "two",
+  "use",
+  "var",
+  "via",
+  "war",
+  "way",
+  "web",
+  "wet",
+  "win",
+  "yet",
+  "zip",
+  "base",
+  "bash",
+  "body",
+  "book",
+  "call",
+  "case",
+  "char",
+  "code",
+  "data",
+  "date",
+  "done",
+  "else",
+  "enum",
+  "file",
+  "find",
+  "form",
+  "func",
+  "game",
+  "hash",
+  "head",
+  "home",
+  "item",
+  "join",
+  "json",
+  "kind",
+  "last",
+  "line",
+  "link",
+  "list",
+  "load",
+  "lock",
+  "long",
+  "loop",
+  "main",
+  "make",
+  "mode",
+  "name",
+  "next",
+  "node",
+  "none",
+  "note",
+  "null",
+  "open",
+  "page",
+  "part",
+  "path",
+  "pipe",
+  "plan",
+  "port",
+  "post",
+  "pull",
+  "push",
+  "read",
+  "rule",
+  "safe",
+  "save",
+  "self",
+  "send",
+  "show",
+  "side",
+  "size",
+  "some",
+  "sort",
+  "step",
+  "stop",
+  "sure",
+  "sync",
+  "take",
+  "task",
+  "test",
+  "text",
+  "that",
+  "then",
+  "this",
+  "time",
+  "todo",
+  "tool",
+  "tree",
+  "true",
+  "type",
+  "unit",
+  "user",
+  "view",
+  "void",
+  "wait",
+  "want",
+  "what",
+  "when",
+  "with",
+  "word",
+  "work",
+  "yaml",
+  "zero",
 ]);
 const MAX_TRIES = 32;
 const MAX_COUNTERS = 200_000;
@@ -295,7 +730,10 @@ export class AliasBook {
   }
 
   private hex(kind: string, value: string, digits = 6): string {
-    return createHmac("sha256", this.key).update(`${kind}\0${value}`).digest("hex").slice(0, digits);
+    return createHmac("sha256", this.key)
+      .update(`${kind}\0${value}`)
+      .digest("hex")
+      .slice(0, digits);
   }
 
   private bits(kind: string, value: string, count: number): number {
@@ -310,7 +748,9 @@ export class AliasBook {
     let at = 0;
     return () => {
       if (at >= buffer.length) {
-        buffer = createHmac("sha256", this.key).update(`${kind}\0${value}\0${attempt}\0${block++}`).digest();
+        buffer = createHmac("sha256", this.key)
+          .update(`${kind}\0${value}\0${attempt}\0${block++}`)
+          .digest();
         at = 0;
       }
       return buffer[at++]!;
@@ -326,22 +766,38 @@ export class AliasBook {
   }
 
   private avoided(candidate: string): boolean {
-    const tokens = candidate.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+    const tokens = candidate
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter(Boolean);
     if (tokens.length === 0) return true;
     if (tokens.length === 1 && COMMON_WORDS.has(tokens[0]!)) return true;
     if (!this.corpus) return false;
-    this.corpusTokens ??= new Set(this.corpus().toLowerCase().split(/[^a-z0-9]+/));
+    this.corpusTokens ??= new Set(
+      this.corpus()
+        .toLowerCase()
+        .split(/[^a-z0-9]+/),
+    );
     return tokens.every((token) => this.corpusTokens!.has(token));
   }
 
   private taken(candidate: string, value: string): boolean {
     const known = this.reverse.get(candidate);
-    if (known !== undefined && (known === null || known.value.toLowerCase() !== value.toLowerCase())) return true;
+    if (
+      known !== undefined &&
+      (known === null || known.value.toLowerCase() !== value.toLowerCase())
+    )
+      return true;
     const part = this.parts.get(candidate);
     return part !== undefined && part !== value.toLowerCase();
   }
 
-  private mint(kind: string, value: string, make: (attempt: number) => string, fallback: () => string): string {
+  private mint(
+    kind: string,
+    value: string,
+    make: (attempt: number) => string,
+    fallback: () => string,
+  ): string {
     const memo = `${kind}\0${value}`;
     const known = this.minted.get(memo);
     if (known !== undefined) return known;
@@ -376,7 +832,8 @@ export class AliasBook {
     let index = 0;
     return value.replace(/[A-Za-z]+|[0-9]+/g, (run) => {
       const at = index++;
-      if (/[0-9]/.test(run[0]!)) return shaped(run, this.bytes(`${kind}:digits`, `${value}\0${at}`, attempt));
+      if (/[0-9]/.test(run[0]!))
+        return shaped(run, this.bytes(`${kind}:digits`, `${value}\0${at}`, attempt));
       if (names && run.length >= 2) return this.name(run, attempt);
       return shaped(run, this.bytes(`${kind}:letters`, run.toLowerCase(), attempt));
     });
@@ -386,20 +843,29 @@ export class AliasBook {
     NAMES ??= [...FIRST_NAMES];
     const next = this.bytes("name", word.toLowerCase(), attempt);
     let picked = word.toLowerCase();
-    while (picked === word.toLowerCase()) picked = NAMES[((next() << 16) | (next() << 8) | next()) % NAMES.length]!;
+    while (picked === word.toLowerCase())
+      picked = NAMES[((next() << 16) | (next() << 8) | next()) % NAMES.length]!;
     return caseLike(picked, word);
   }
 
   // `force`: role words too, for a host that is nothing but role words.
   private part(word: string, force = false): string {
     const lower = word.toLowerCase();
-    if (!force && (word.length <= 1 || ROLE_WORDS.has(lower) || /^\d+[a-z]?$/.test(lower))) return lower;
+    if (!force && (word.length <= 1 || ROLE_WORDS.has(lower) || /^\d+[a-z]?$/.test(lower)))
+      return lower;
     // Four letters at least: a two-letter part would be swapped back inside
     // any dotted name that used it (a file extension).
-    const out = this.mint("part", lower, (attempt) => {
-      const base = this.lookalike("part", lower, attempt);
-      return base.length >= 4 ? base : base + shaped("bab".slice(0, 4 - base.length), this.bytes("part:pad", lower, attempt));
-    }, () => `n${this.hex("part", lower)}`);
+    const out = this.mint(
+      "part",
+      lower,
+      (attempt) => {
+        const base = this.lookalike("part", lower, attempt);
+        return base.length >= 4
+          ? base
+          : base + shaped("bab".slice(0, 4 - base.length), this.bytes("part:pad", lower, attempt));
+      },
+      () => `n${this.hex("part", lower)}`,
+    );
     remember(this.parts, out, lower);
     this.pattern = undefined;
     this.glued = undefined;
@@ -407,13 +873,19 @@ export class AliasBook {
   }
 
   private dnsLabel(label: string, force = false): string {
-    return label.split(/([-_])/).map((piece, index) => (index % 2 === 1 ? piece : this.part(piece, force))).join("");
+    return label
+      .split(/([-_])/)
+      .map((piece, index) => (index % 2 === 1 ? piece : this.part(piece, force)))
+      .join("");
   }
 
   // Role and public words stay (gmail.com, corp.internal), so a domain that
   // is nothing but those comes back unchanged.
   private domain(domain: string): string {
-    return domain.split(".").map((label) => this.dnsLabel(label)).join(".");
+    return domain
+      .split(".")
+      .map((label) => this.dnsLabel(label))
+      .join(".");
   }
 
   host(value: string): string {
@@ -427,7 +899,12 @@ export class AliasBook {
 
   user(value: string): string {
     const lower = value.toLowerCase();
-    return this.mint("user", lower, (attempt) => this.lookalike("user", lower, attempt), () => `user-${this.hex("user", lower)}`);
+    return this.mint(
+      "user",
+      lower,
+      (attempt) => this.lookalike("user", lower, attempt),
+      () => `user-${this.hex("user", lower)}`,
+    );
   }
 
   email(value: string): string {
@@ -438,7 +915,11 @@ export class AliasBook {
 
   ipv4(value: string): string | undefined {
     const octets = value.split(".");
-    if (octets.length !== 4 || octets.some((octet) => !/^\d{1,3}$/.test(octet) || Number(octet) > 255)) return;
+    if (
+      octets.length !== 4 ||
+      octets.some((octet) => !/^\d{1,3}$/.test(octet) || Number(octet) > 255)
+    )
+      return;
     // One stand-in /24 per real /24; the host octet carries no identity alone.
     const prefix = octets.slice(0, 3).map(Number).join(".");
     const slot = this.bits("ipv4", prefix, 19);
@@ -454,7 +935,14 @@ export class AliasBook {
     // ids embed the MAC address.
     const prefix = this.hex("ipv6-prefix", groups.slice(0, 4).join(":"), 8);
     const iid = this.hex("ipv6-iid", groups.join(":"), 16);
-    const hextets = [prefix.slice(0, 4), prefix.slice(4, 8), iid.slice(0, 4), iid.slice(4, 8), iid.slice(8, 12), iid.slice(12, 16)];
+    const hextets = [
+      prefix.slice(0, 4),
+      prefix.slice(4, 8),
+      iid.slice(0, 4),
+      iid.slice(4, 8),
+      iid.slice(8, 12),
+      iid.slice(12, 16),
+    ];
     return `2001:db8:${hextets.map((hextet) => hextet.replace(/^0+(?=.)/, "")).join(":")}`;
   }
 
@@ -479,7 +967,12 @@ export class AliasBook {
   // become other first names.
   label(label: string, value: string): string {
     const kind = `label:${label}`;
-    return this.mint(kind, value, (attempt) => this.lookalike(kind, value, attempt, label === "person"), () => `${label}-${this.hex(kind, value)}`);
+    return this.mint(
+      kind,
+      value,
+      (attempt) => this.lookalike(kind, value, attempt, label === "person"),
+      () => `${label}-${this.hex(kind, value)}`,
+    );
   }
 
   // The stand-in for one finding. Unparseable network values fall back to a
@@ -488,25 +981,44 @@ export class AliasBook {
     const kind = aliasKind(ruleId);
     let out: string | undefined;
     switch (kind) {
-      case "host": out = this.host(value); break;
-      case "user": out = this.user(value); break;
-      case "email": out = this.email(value); break;
-      case "home": out = this.home(value); break;
-      case "ipv4": out = this.ipv4(value) ?? this.label("ip", value); break;
-      case "ipv6": out = this.ipv6(value) ?? this.label("ip", value); break;
-      case "mac": out = this.mac(value) ?? this.label("mac", value); break;
+      case "host":
+        out = this.host(value);
+        break;
+      case "user":
+        out = this.user(value);
+        break;
+      case "email":
+        out = this.email(value);
+        break;
+      case "home":
+        out = this.home(value);
+        break;
+      case "ipv4":
+        out = this.ipv4(value) ?? this.label("ip", value);
+        break;
+      case "ipv6":
+        out = this.ipv6(value) ?? this.label("ip", value);
+        break;
+      case "mac":
+        out = this.mac(value) ?? this.label("mac", value);
+        break;
       case "user-at-host": {
         const at = value.indexOf("@");
-        out = at > 0 ? `${this.user(value.slice(0, at))}@${this.host(value.slice(at + 1))}` : this.user(value);
+        out =
+          at > 0
+            ? `${this.user(value.slice(0, at))}@${this.host(value.slice(at + 1))}`
+            : this.user(value);
         break;
       }
-      default: out = this.label(labelForRule(ruleId, customLabel), value);
+      default:
+        out = this.label(labelForRule(ruleId, customLabel), value);
     }
     this.record(out, value, ruleId);
     // A composite's pieces resolve on their own too (the user of an email).
     if (kind === "email" || kind === "user-at-host") {
       const at = value.lastIndexOf("@");
-      if (at > 0) this.record(this.user(value.slice(0, at)), value.slice(0, at), "pii-swapback-user");
+      if (at > 0)
+        this.record(this.user(value.slice(0, at)), value.slice(0, at), "pii-swapback-user");
     }
     return out;
   }
@@ -516,7 +1028,7 @@ export class AliasBook {
     if (known === undefined) {
       this.reverse.set(standIn, { value, ruleId });
       this.pattern = undefined;
-    this.glued = undefined;
+      this.glued = undefined;
     } else if (known !== null && known.value.toLowerCase() !== value.toLowerCase()) {
       this.reverse.set(standIn, null);
     }
@@ -534,14 +1046,17 @@ export class AliasBook {
   private unmapParts(text: string): string | null | undefined {
     let known = false;
     let ambiguous = false;
-    const value = text.split(/([-_.])/).map((piece, index) => {
-      if (index % 2 === 1) return piece;
-      const word = this.parts.get(piece.toLowerCase());
-      if (word === null) ambiguous = true;
-      if (typeof word !== "string") return piece;
-      known = true;
-      return word;
-    }).join("");
+    const value = text
+      .split(/([-_.])/)
+      .map((piece, index) => {
+        if (index % 2 === 1) return piece;
+        const word = this.parts.get(piece.toLowerCase());
+        if (word === null) ambiguous = true;
+        if (typeof word !== "string") return piece;
+        known = true;
+        return word;
+      })
+      .join("");
     if (ambiguous) return null;
     return known ? value : undefined;
   }
@@ -566,7 +1081,9 @@ export class AliasBook {
     if (v4) {
       const prefix = this.prefixes.get(v4[1] ?? "");
       if (prefix === null) return null;
-      return prefix === undefined ? undefined : { value: `${prefix}.${v4[2]}`, ruleId: "pii-swapback-ipv4" };
+      return prefix === undefined
+        ? undefined
+        : { value: `${prefix}.${v4[2]}`, ruleId: "pii-swapback-ipv4" };
     }
     const value = this.unmapParts(standIn);
     if (value === null) return null;
@@ -579,7 +1096,8 @@ export class AliasBook {
   matches(text: string): Array<{ text: string; start: number; end: number }> {
     const found: Array<{ text: string; start: number; end: number }> = [];
     this.pattern ??= this.compile();
-    for (const match of text.matchAll(this.pattern)) found.push({ text: match[0], start: match.index, end: match.index + match[0].length });
+    for (const match of text.matchAll(this.pattern))
+      found.push({ text: match[0], start: match.index, end: match.index + match[0].length });
     const exact = found.filter((span) => this.reverse.has(span.text));
     for (const match of text.matchAll(COMPOSITE)) {
       // An exact stand-in inside keeps its case; the parts map is lowercase.
@@ -589,7 +1107,8 @@ export class AliasBook {
       found.push({ text: match[0], start: match.index, end: match.index + match[0].length });
     }
     for (const match of text.matchAll(/\b24[0-7](?:\.\d{1,3}){3}\b/g)) {
-      if (this.resolve(match[0]) !== undefined) found.push({ text: match[0], start: match.index, end: match.index + match[0].length });
+      if (this.resolve(match[0]) !== undefined)
+        found.push({ text: match[0], start: match.index, end: match.index + match[0].length });
     }
     // A whole multi-part stand-in glued into a longer word: the model mangled
     // it, so none of its parts is swapped either (a lone last part came back
@@ -598,19 +1117,27 @@ export class AliasBook {
     const glued: Array<{ start: number; end: number }> = [];
     for (const match of text.matchAll(this.glued)) {
       const end = match.index + match[0].length;
-      if (/[A-Za-z0-9]/.test(text[match.index - 1] ?? "") || /[A-Za-z0-9]/.test(text[end] ?? "")) glued.push({ start: match.index, end });
+      if (/[A-Za-z0-9]/.test(text[match.index - 1] ?? "") || /[A-Za-z0-9]/.test(text[end] ?? ""))
+        glued.push({ start: match.index, end });
     }
-    return found.filter((span) => !glued.some((range) => span.start < range.end && span.end > range.start));
+    return found.filter(
+      (span) => !glued.some((range) => span.start < range.end && span.end > range.start),
+    );
   }
 
   // `glued`: multi-part stand-ins anywhere, to find the mangled ones.
   private compile(glued = false): RegExp {
-    const words = (glued ? [...this.reverse.keys()].filter((word) => /[-_.]/.test(word)) : [...this.reverse.keys(), ...this.parts.keys()])
-      .sort((left, right) => right.length - left.length);
+    const words = (
+      glued
+        ? [...this.reverse.keys()].filter((word) => /[-_.]/.test(word))
+        : [...this.reverse.keys(), ...this.parts.keys()]
+    ).sort((left, right) => right.length - left.length);
     if (words.length === 0) return /$^/g;
     const alternatives = words.map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
     // Glued into a longer word, a stand-in is something else.
-    return glued ? new RegExp(alternatives, "g") : new RegExp(`(?<![A-Za-z0-9])(?:${alternatives})(?![A-Za-z0-9])`, "g");
+    return glued
+      ? new RegExp(alternatives, "g")
+      : new RegExp(`(?<![A-Za-z0-9])(?:${alternatives})(?![A-Za-z0-9])`, "g");
   }
 
   isStandIn(text: string): boolean {
@@ -626,7 +1153,8 @@ export class AliasBook {
   loadCounters(file: string): void {
     this.counterFile = file;
     try {
-      for (const [id, attempt] of JSON.parse(readFileSync(file, "utf8")) as Array<[string, number]>) this.counters.set(id, attempt);
+      for (const [id, attempt] of JSON.parse(readFileSync(file, "utf8")) as Array<[string, number]>)
+        this.counters.set(id, attempt);
     } catch {
       // Absent or unreadable: values mint afresh.
     }
@@ -660,7 +1188,10 @@ export class AliasBook {
 
 // A name, an email address, or a dotted/dashed word, taken whole.
 const WORD = "[A-Za-z0-9](?:[A-Za-z0-9_-]*[A-Za-z0-9])?";
-const COMPOSITE = new RegExp(`(?<![A-Za-z0-9_.@-])(?:${WORD}@)?${WORD}(?:\\.${WORD})*(?![A-Za-z0-9_@-]|\\.[A-Za-z0-9])`, "g");
+const COMPOSITE = new RegExp(
+  `(?<![A-Za-z0-9_.@-])(?:${WORD}@)?${WORD}(?:\\.${WORD})*(?![A-Za-z0-9_@-]|\\.[A-Za-z0-9])`,
+  "g",
+);
 
 function remember(map: Map<string, string | null>, standIn: string, value: string): void {
   const known = map.get(standIn);
@@ -677,7 +1208,8 @@ export function expandIpv6(value: string): string[] | undefined {
   if (v4) {
     const [a, b, c, d] = v4.slice(1).map(Number);
     if ([a, b, c, d].some((octet) => octet === undefined || octet > 255)) return;
-    text = `${text.slice(0, v4.index)}${((a! << 8) | b!).toString(16)}:${((c! << 8) | d!).toString(16)}`;
+    const hextet = (high: number, low: number) => ((high << 8) | low).toString(16);
+    text = `${text.slice(0, v4.index)}${hextet(a!, b!)}:${hextet(c!, d!)}`;
   }
   const [head = "", tail] = text.split("::");
   const left = head ? head.split(":") : [];

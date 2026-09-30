@@ -78,7 +78,10 @@ describe("structured documents", () => {
     const { handlers, ctx } = setup();
     try {
       const res = await handlers.tool_result(
-        { toolName: "bash", content: [{ type: "text", text: `username = "sampler"\nconst samplerCount = 3;` }] },
+        {
+          toolName: "bash",
+          content: [{ type: "text", text: `username = "sampler"\nconst samplerCount = 3;` }],
+        },
         ctx,
       );
       const text = res.content[0].text as string;

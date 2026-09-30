@@ -19,13 +19,42 @@
 import { randomBytes } from "node:crypto";
 import { readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { type LocatedFinding, mergeRanges, scanWindows, SCAN_WINDOW_OVERLAP, assertScanBudget, clearWindowCache, exportWindowCache, importWindowCache, windowCacheRevision, aliasStyle, aliasKeyScope, ruleAliasLabel, ruleGeneralization, inventoryStandInValue, isPromptOnlyRule, GENERALIZE_PATH } from "./lib/rules.ts";
-import { AliasBook, aliasKeyPath, isAliasValue, loadAliasKey, SESSION_KEY_SUFFIX } from "./lib/aliases.ts";
+import {
+  type LocatedFinding,
+  mergeRanges,
+  scanWindows,
+  SCAN_WINDOW_OVERLAP,
+  assertScanBudget,
+  clearWindowCache,
+  exportWindowCache,
+  importWindowCache,
+  windowCacheRevision,
+  aliasStyle,
+  aliasKeyScope,
+  ruleAliasLabel,
+  ruleGeneralization,
+  inventoryStandInValue,
+  isPromptOnlyRule,
+  GENERALIZE_PATH,
+} from "./lib/rules.ts";
+import {
+  AliasBook,
+  aliasKeyPath,
+  isAliasValue,
+  loadAliasKey,
+  SESSION_KEY_SUFFIX,
+} from "./lib/aliases.ts";
 import { planRedaction } from "./lib/redaction-spans.ts";
 import { redactEncoded } from "./lib/encoded.ts";
 import { reportRedaction } from "./lib/redaction-audit.ts";
 import { assignmentEdits, inspectDocument } from "./lib/structured-text.ts";
-import { applyAllowTags, dedupeFindings, type Message, resolveTagPriority, userTypedText } from "./lib/inspector.ts";
+import {
+  applyAllowTags,
+  dedupeFindings,
+  type Message,
+  resolveTagPriority,
+  userTypedText,
+} from "./lib/inspector.ts";
 import { commandSendsCookies, redactCookieHeaders, redactCookieValue } from "./lib/cookies.ts";
 import { isImagePayload } from "./lib/image-payload.ts";
 import { isSecretFile } from "./lib/secret-files.ts";
@@ -35,12 +64,18 @@ export const MAX_SCAN_BYTES = 2_000_000;
 
 // Bounded memo so the context handler does not re-scan the whole transcript on
 // every API call. Keyed by exact text.
-const SCAN_CACHE = new Map<string, { findings: LocatedFinding[]; trips: Array<{ start: number; end: number }> }>();
+const SCAN_CACHE = new Map<
+  string,
+  { findings: LocatedFinding[]; trips: Array<{ start: number; end: number }> }
+>();
 // Budget the memo by bytes, not entries: 512 × 2 MB keys is a gigabyte of RAM.
 const SCAN_CACHE_MAX_BYTES = 32_000_000;
 let scanCacheBytes = 0;
 
-function cachedScan(text: string): { findings: LocatedFinding[]; trips: Array<{ start: number; end: number }> } {
+function cachedScan(text: string): {
+  findings: LocatedFinding[];
+  trips: Array<{ start: number; end: number }>;
+} {
   const hit = SCAN_CACHE.get(text);
   if (hit) return hit;
   const found = scanWindows(text);
@@ -72,10 +107,7 @@ const TOKEN_COUNTERS = new Map<string, number>();
 function storeSynthetic(value: string, synthetic: string): void {
   const cost = (value.length + synthetic.length) * 2;
   if (cost > SYNTHETIC_VALUES_MAX_BYTES) return;
-  while (
-    syntheticValuesBytes + cost > SYNTHETIC_VALUES_MAX_BYTES &&
-    SYNTHETIC_VALUES.size > 0
-  ) {
+  while (syntheticValuesBytes + cost > SYNTHETIC_VALUES_MAX_BYTES && SYNTHETIC_VALUES.size > 0) {
     const oldest = SYNTHETIC_VALUES.keys().next().value;
     if (oldest === undefined) break;
     const oldValue = SYNTHETIC_VALUES.get(oldest);
@@ -170,7 +202,9 @@ function piiReplacement(ruleId: string, rawValue: string): string {
 }
 
 export function isSyntheticValue(value: string): boolean {
-  return SYNTHETIC_OUTPUTS.has(value) || aliasBook?.isStandIn(value) === true || isAliasValue(value);
+  return (
+    SYNTHETIC_OUTPUTS.has(value) || aliasBook?.isStandIn(value) === true || isAliasValue(value)
+  );
 }
 // Provider payload fields carrying authenticated ciphertext must remain byte-for-byte
 // unchanged. Redacting one character invalidates Codex reasoning and compaction
@@ -234,7 +268,8 @@ export function collectValues<T>(work: () => T): { result: T; values: number } {
 // are one value: their merged span's text is what gets counted.
 function collectSpans(text: string, findings: Array<{ start: number; end: number }>): void {
   if (!valueSink) return;
-  for (const range of mergeRanges(findings.map(({ start, end }) => ({ start, end })))) valueSink.add(text.slice(range.start, range.end));
+  for (const range of mergeRanges(findings.map(({ start, end }) => ({ start, end }))))
+    valueSink.add(text.slice(range.start, range.end));
 }
 
 // Completed scan windows next to the session, value-free by construction (see
@@ -258,7 +293,9 @@ export function flushScanCache(sessionFile: string | undefined): void {
   const snapshot = exportWindowCache();
   if (snapshot.entries.length === 0) return;
   try {
-    writeFileSync(`${sessionFile}.canary-scan-cache.json`, `${JSON.stringify(snapshot)}\n`, { mode: 0o600 });
+    writeFileSync(`${sessionFile}.canary-scan-cache.json`, `${JSON.stringify(snapshot)}\n`, {
+      mode: 0o600,
+    });
     lastScanCacheRevision = revision;
   } catch {
     // A cache loss must not break the agent.
@@ -280,24 +317,28 @@ export function asUserText<T>(scan: () => T): T {
   }
 }
 
-export function redactText(text: string, allowTags: Set<string> = new Set()): { text: string; hits: number } {
+export function redactText(
+  text: string,
+  allowTags: Set<string> = new Set(),
+): { text: string; hits: number } {
   const sourceLength = text.length;
-  type Edit = {start:number;end:number;replacementLength:number};
+  type Edit = { start: number; end: number; replacementLength: number };
   // Each pass records edits in the coordinates of its own input; ranges map
   // back through the passes in reverse.
   const encodedEdits: Edit[] = [];
   const cookieEdits: Edit[] = [];
-  const project = (edits: Edit[], at:number, end:boolean) => {
-    let delta=0;
-    for(const edit of edits) {
-      const left=edit.start+delta, right=left+edit.replacementLength;
-      if(at < left || (at === left && !end)) break;
-      if(at < right || (at === right && end)) return end ? edit.end : edit.start;
-      delta += edit.replacementLength-(edit.end-edit.start);
+  const project = (edits: Edit[], at: number, end: boolean) => {
+    let delta = 0;
+    for (const edit of edits) {
+      const left = edit.start + delta,
+        right = left + edit.replacementLength;
+      if (at < left || (at === left && !end)) break;
+      if (at < right || (at === right && end)) return end ? edit.end : edit.start;
+      delta += edit.replacementLength - (edit.end - edit.start);
     }
-    return at-delta;
+    return at - delta;
   };
-  const toOriginal = (range: {start:number;end:number}) => {
+  const toOriginal = (range: { start: number; end: number }) => {
     const passes = [cookieEdits, encodedEdits];
     return {
       start: passes.reduce((at, edits) => project(edits, at, false), range.start),
@@ -306,32 +347,68 @@ export function redactText(text: string, allowTags: Set<string> = new Set()): { 
   };
   let encodedHits = 0;
   if (!allowTags.has("all")) {
-    const encoded = redactEncoded(text, (decoded) => scanWindows(decoded).findings.filter((f) => !isSyntheticValue(f.secretValue) && (scanningUserText || !isPromptOnlyRule(f.ruleId))), (category) => allowTags.has(category), (start,end,replacementLength)=>encodedEdits.push({start,end,replacementLength}));
+    const encoded = redactEncoded(
+      text,
+      (decoded) =>
+        scanWindows(decoded).findings.filter(
+          (f) =>
+            !isSyntheticValue(f.secretValue) && (scanningUserText || !isPromptOnlyRule(f.ruleId)),
+        ),
+      (category) => allowTags.has(category),
+      (start, end, replacementLength) => encodedEdits.push({ start, end, replacementLength }),
+    );
     text = encoded.text;
     encodedHits = encoded.hits;
   }
   let cookieHits = 0;
   if (!allowTags.has("secret")) {
-    const cookieResult = redactCookieHeaders(text, syntheticValue, isSyntheticValue, (start,end,replacementLength)=>cookieEdits.push({start,end,replacementLength}));
+    const cookieResult = redactCookieHeaders(
+      text,
+      syntheticValue,
+      isSyntheticValue,
+      (start, end, replacementLength) => cookieEdits.push({ start, end, replacementLength }),
+    );
     text = cookieResult.text;
     cookieHits = cookieResult.hits;
   }
   const { findings: raw, trips } = cachedScan(text);
-  const allowed = allowTags.has("all") ? [] : [...raw, ...swappedFindings(text)].filter((f) => !isSyntheticValue(f.secretValue));
+  const allowed = allowTags.has("all")
+    ? []
+    : [...raw, ...swappedFindings(text)].filter((f) => !isSyntheticValue(f.secretValue));
   // Structured document edits join the same renderer. Filter them by the
   // same allow-tags before planning so an allowed category cannot exempt an
   // overlapping forbidden secret.
   const omitted = () => {
-    reportRedaction({ sourceLength, detections: [], replacements: [], omissions: [{start:0,end:sourceLength}], coordinateSystem: "original" });
-    return { text: `[sensitive-canary: omitted ${text.length} chars (scan budget exceeded or incomplete document inspection)]`, hits: encodedHits + cookieHits + 1 };
+    reportRedaction({
+      sourceLength,
+      detections: [],
+      replacements: [],
+      omissions: [{ start: 0, end: sourceLength }],
+      coordinateSystem: "original",
+    });
+    return {
+      text:
+        `[sensitive-canary: omitted ${text.length} chars (scan budget exceeded or incomplete ` +
+        `document inspection)]`,
+      hits: encodedHits + cookieHits + 1,
+    };
   };
   const document = inspectDocument(text);
   if (document.status === "incomplete") return omitted();
   let extra: LocatedFinding[];
   try {
-    extra = allowTags.has("all") ? [] : [...document.findings, ...(document.status === "json" ? [] : assignmentEdits(text))]
-      .filter((f) => !isSyntheticValue(f.secretValue) && !isSyntheticValue(f.secretValue.startsWith('"') ? JSON.parse(f.secretValue) : f.secretValue));
-  } catch { return omitted(); }
+    extra = allowTags.has("all")
+      ? []
+      : [...document.findings, ...(document.status === "json" ? [] : assignmentEdits(text))].filter(
+          (f) =>
+            !isSyntheticValue(f.secretValue) &&
+            !isSyntheticValue(
+              f.secretValue.startsWith('"') ? JSON.parse(f.secretValue) : f.secretValue,
+            ),
+        );
+  } catch {
+    return omitted();
+  }
   const boilerplate = boilerplateSpans(text);
   const insideBoilerplate = (finding: { start: number; end: number }): boolean =>
     boilerplate.some((span) => finding.start >= span.start && finding.end <= span.end);
@@ -353,27 +430,56 @@ export function redactText(text: string, allowTags: Set<string> = new Set()): { 
     scalars: document.scalars,
     checkBudget: assertScanBudget,
     replacementFor: (finding) =>
-      (finding as LocatedFinding & { jsonKind?: string }).jsonKind || finding.ruleId.startsWith("structured-")
+      (finding as LocatedFinding & { jsonKind?: string }).jsonKind ||
+      finding.ruleId.startsWith("structured-")
         ? structuredReplacement(finding)
         : finding.category === "pii"
           ? piiReplacement(finding.ruleId, finding.secretValue)
           : syntheticValue(finding.secretValue),
   });
   if (document.status === "json") {
-    try { JSON.parse(planned.text); assertScanBudget(); } catch { return omitted(); }
+    try {
+      JSON.parse(planned.text);
+      assertScanBudget();
+    } catch {
+      return omitted();
+    }
   }
-  const passEdits = [...encodedEdits.map(({start,end})=>({start,end})), ...cookieEdits.map((edit)=>toOriginal({start:edit.start,end:edit.end}))];
-  reportRedaction({ sourceLength, detections: [...passEdits, ...findings.map(toOriginal)], replacements: [...passEdits, ...planned.edits.filter(e=>!e.replacement.startsWith("[sensitive-canary: omitted")).map(toOriginal)], omissions: planned.edits.filter(e=>e.replacement.startsWith("[sensitive-canary: omitted")).map(toOriginal), coordinateSystem: "original" });
-  return { text: planned.text, hits: encodedHits + cookieHits + uniqueFindings.length + trips.length + (planned.text !== text && uniqueFindings.length === 0 && trips.length === 0 ? 1 : 0) };
+  const passEdits = [
+    ...encodedEdits.map(({ start, end }) => ({ start, end })),
+    ...cookieEdits.map((edit) => toOriginal({ start: edit.start, end: edit.end })),
+  ];
+  reportRedaction({
+    sourceLength,
+    detections: [...passEdits, ...findings.map(toOriginal)],
+    replacements: [
+      ...passEdits,
+      ...planned.edits
+        .filter((e) => !e.replacement.startsWith("[sensitive-canary: omitted"))
+        .map(toOriginal),
+    ],
+    omissions: planned.edits
+      .filter((e) => e.replacement.startsWith("[sensitive-canary: omitted"))
+      .map(toOriginal),
+    coordinateSystem: "original",
+  });
+  return {
+    text: planned.text,
+    hits:
+      encodedHits +
+      cookieHits +
+      uniqueFindings.length +
+      trips.length +
+      (planned.text !== text && uniqueFindings.length === 0 && trips.length === 0 ? 1 : 0),
+  };
 }
 
 function structuredReplacement(finding: LocatedFinding): string {
   const kind = (finding as { jsonKind?: string }).jsonKind;
-  const value = kind === "json-string" ? JSON.parse(finding.secretValue) as string : finding.secretValue;
+  const value =
+    kind === "json-string" ? (JSON.parse(finding.secretValue) as string) : finding.secretValue;
   const synthetic =
-    finding.category === "pii"
-      ? piiReplacement(finding.ruleId, value)
-      : syntheticValue(value);
+    finding.category === "pii" ? piiReplacement(finding.ruleId, value) : syntheticValue(value);
   if (kind === "json-string") return JSON.stringify(synthetic);
   if (kind === "json-number") return JSON.stringify(synthetic);
   return synthetic;
@@ -414,38 +520,62 @@ const CHAIN_REFERENCE_PARENT_TYPES: Record<string, true> = {
   custom: true,
 };
 
-function isChainReference(key: string | undefined, parent: Record<string, unknown> | undefined, location: readonly (string | number)[], providerPayload: boolean): boolean {
-  const at = (...parts: Array<string | null>): boolean => location.length === parts.length &&
-    parts.every((part, i) => part === null ? typeof location[i] === "number" : location[i] === part);
+function isChainReference(
+  key: string | undefined,
+  parent: Record<string, unknown> | undefined,
+  location: readonly (string | number)[],
+  providerPayload: boolean,
+): boolean {
+  const at = (...parts: Array<string | null>): boolean =>
+    location.length === parts.length &&
+    parts.every((part, i) =>
+      part === null ? typeof location[i] === "number" : location[i] === part,
+    );
   // JSON-Schema `required` entries are string array elements, so they arrive
   // without a key. They must name real properties or the provider 400s.
   // Protect them only inside tool-definition / structured-output schemas.
-  if (providerPayload && location.length >= 2 && location[location.length - 2] === "required" &&
-      (location[0] === "tools" || location[0] === "response_format" || location[0] === "text")) {
+  if (
+    providerPayload &&
+    location.length >= 2 &&
+    location[location.length - 2] === "required" &&
+    (location[0] === "tools" || location[0] === "response_format" || location[0] === "text")
+  ) {
     return true;
   }
   if (!parent || !key) return false;
   // Persisted root details can be a provider object without a type tag.
   // Never extend this exception to arbitrary nested records.
-  if (!providerPayload) return at("id") && ("encrypted_content" in parent || "encryptedContent" in parent);
+  if (!providerPayload)
+    return at("id") && ("encrypted_content" in parent || "encryptedContent" in parent);
   if (key === "previous_response_id") return at(key);
   // Tool-definition / structured-output names and the top-level model are
   // wire identifiers with provider-side constraints. A starved budget must
   // not rewrite them (400 invalid name / missing model).
   if (key === "model" && at(key)) return true;
-  if (key === "name" && (at("tools", null, key) || at("tools", null, "function", key) ||
-      at("response_format", "json_schema", key) || at("text", "format", key))) return true;
+  if (
+    key === "name" &&
+    (at("tools", null, key) ||
+      at("tools", null, "function", key) ||
+      at("response_format", "json_schema", key) ||
+      at("text", "format", key))
+  )
+    return true;
   if (at("input", null, key)) {
-    if (key === "id") return typeof parent.type === "string" && CHAIN_REFERENCE_PARENT_TYPES[parent.type] === true;
-    if (key === "call_id") return parent.type === "function_call" || parent.type === "function_call_output";
+    if (key === "id")
+      return typeof parent.type === "string" && CHAIN_REFERENCE_PARENT_TYPES[parent.type] === true;
+    if (key === "call_id")
+      return parent.type === "function_call" || parent.type === "function_call_output";
     if (key === "name") return parent.type === "function_call";
   }
   if (key === "tool_call_id") return at("messages", null, key) && parent.role === "tool";
   if (key === "id" && at("messages", null, "tool_calls", null, key)) {
     return parent.type === "function" || parent.type === "custom";
   }
-  return key === "name" && (at("messages", null, "tool_calls", null, "function", key) ||
-    at("messages", null, "tool_calls", null, "custom", key));
+  return (
+    key === "name" &&
+    (at("messages", null, "tool_calls", null, "function", key) ||
+      at("messages", null, "tool_calls", null, "custom", key))
+  );
 }
 
 export function redactValue(
@@ -487,7 +617,14 @@ export function redactValue(
   if (Array.isArray(value)) {
     let hits = 0;
     const out = value.map((item, index) => {
-      const result = redactValue(item, allowTags, undefined, undefined, [...location, index], providerPayload);
+      const result = redactValue(
+        item,
+        allowTags,
+        undefined,
+        undefined,
+        [...location, index],
+        providerPayload,
+      );
       hits += result.hits;
       return result.value;
     });
@@ -497,7 +634,14 @@ export function redactValue(
     let hits = 0;
     const out = Object.fromEntries(
       Object.entries(value).map(([childKey, item]) => {
-        const result = redactValue(item, allowTags, childKey, value as Record<string, unknown>, [...location, childKey], providerPayload);
+        const result = redactValue(
+          item,
+          allowTags,
+          childKey,
+          value as Record<string, unknown>,
+          [...location, childKey],
+          providerPayload,
+        );
         hits += result.hits;
         return [childKey, result.value];
       }),
@@ -528,17 +672,24 @@ function shellAssignments(words: string[]): Map<string, string> {
 }
 
 function substituteVariables(word: string, vars: Map<string, string>): string {
-  return word.replace(/\$\{?([A-Za-z_]\w*)\}?/g, (whole, name: string) => vars.get(name) ?? process.env[name] ?? whole);
+  return word.replace(
+    /\$\{?([A-Za-z_]\w*)\}?/g,
+    (whole, name: string) => vars.get(name) ?? process.env[name] ?? whole,
+  );
 }
 
 // ANSI-C quoting ($'\x2eenv') spells characters as escapes.
 function decodeAnsiC(word: string): string {
   return word.replace(/\$'((?:\\.|[^'\\])*)'/g, (_whole, body: string) =>
-    body.replace(/\\(x[0-9a-fA-F]{1,2}|u[0-9a-fA-F]{1,4}|[0-7]{1,3}|.)/g, (_escape, code: string) => {
-      if (/^x/i.test(code) || /^u/.test(code)) return String.fromCharCode(Number.parseInt(code.slice(1), 16));
-      if (/^[0-7]/.test(code)) return String.fromCharCode(Number.parseInt(code, 8));
-      return ({ n: "\n", t: "\t", r: "\r" } as Record<string, string>)[code] ?? code;
-    }),
+    body.replace(
+      /\\(x[0-9a-fA-F]{1,2}|u[0-9a-fA-F]{1,4}|[0-7]{1,3}|.)/g,
+      (_escape, code: string) => {
+        if (/^x/i.test(code) || /^u/.test(code))
+          return String.fromCharCode(Number.parseInt(code.slice(1), 16));
+        if (/^[0-7]/.test(code)) return String.fromCharCode(Number.parseInt(code, 8));
+        return ({ n: "\n", t: "\t", r: "\r" } as Record<string, string>)[code] ?? code;
+      },
+    ),
   );
 }
 
@@ -551,7 +702,9 @@ function expandBraces(word: string): string[] {
   const close = word.indexOf("}", open);
   const results: string[] = [];
   for (const option of word.slice(open + 1, close).split(",")) {
-    for (const expanded of expandBraces(`${word.slice(0, open)}${option}${word.slice(close + 1)}`)) {
+    for (const expanded of expandBraces(
+      `${word.slice(0, open)}${option}${word.slice(close + 1)}`,
+    )) {
       if (results.length >= MAX_BRACE_WORDS) return results;
       results.push(expanded);
     }
@@ -579,8 +732,14 @@ function globRegExp(pattern: string): RegExp {
     else if (char === "?") source += "[^/]";
     else if (char === "[") {
       const close = pattern.indexOf("]", i + 1);
-      if (close < 0) { source += "\\["; continue; }
-      source += `[${pattern.slice(i + 1, close).replace(/^!/, "^").replace(/\\/g, "\\\\")}]`;
+      if (close < 0) {
+        source += "\\[";
+        continue;
+      }
+      source += `[${pattern
+        .slice(i + 1, close)
+        .replace(/^!/, "^")
+        .replace(/\\/g, "\\\\")}]`;
       i = close;
     } else source += char.replace(/[.+^${}()|\\]/g, "\\$&");
   }
@@ -645,7 +804,11 @@ function expandHomePrefix(filePath: string): string {
 
 export function canonicalPath(filePath: string, cwd: string): string {
   const expanded = path.resolve(cwd, expandHomePrefix(filePath.replace(/^@/, "")));
-  try { return realpathSync(expanded); } catch { return expanded; }
+  try {
+    return realpathSync(expanded);
+  } catch {
+    return expanded;
+  }
 }
 
 // A link to a secret file reads the secret under its own name, so the link's
@@ -662,12 +825,31 @@ function isCanaryInventory(filePath: string, cwd: string): boolean {
     filePath = override;
   }
   const expanded = canonicalPath(filePath.split(/[?:]/)[0] ?? filePath, cwd);
-  const defaultPath = path.join(process.env.HOME ?? "", ".config", "sensitive-canary", "config.json");
-  if (expanded.endsWith("/.config/sensitive-canary/config.json") || expanded === canonicalPath(defaultPath, cwd)) return true;
+  const defaultPath = path.join(
+    process.env.HOME ?? "",
+    ".config",
+    "sensitive-canary",
+    "config.json",
+  );
+  if (
+    expanded.endsWith("/.config/sensitive-canary/config.json") ||
+    expanded === canonicalPath(defaultPath, cwd)
+  )
+    return true;
   // The generalize list: which topics you consider sensitive.
-  if (expanded.endsWith("/sensitive-canary/generalize.json") || expanded === canonicalPath(GENERALIZE_PATH, cwd)) return true;
+  if (
+    expanded.endsWith("/sensitive-canary/generalize.json") ||
+    expanded === canonicalPath(GENERALIZE_PATH, cwd)
+  )
+    return true;
   // The stand-in key: with it, stand-ins could be matched back to guesses.
-  if (expanded.endsWith("/sensitive-canary/alias-key") || expanded.endsWith("/sensitive-canary/proxy-alias-key") || expanded.endsWith(SESSION_KEY_SUFFIX) || expanded === canonicalPath(aliasKeyPath(), cwd)) return true;
+  if (
+    expanded.endsWith("/sensitive-canary/alias-key") ||
+    expanded.endsWith("/sensitive-canary/proxy-alias-key") ||
+    expanded.endsWith(SESSION_KEY_SUFFIX) ||
+    expanded === canonicalPath(aliasKeyPath(), cwd)
+  )
+    return true;
   return !!override && expanded === canonicalPath(override, cwd);
 }
 
@@ -688,10 +870,12 @@ export function candidatePaths(input: Record<string, unknown>): string[] {
 }
 
 export const SYNTHESIS_NOTICE =
-  "[sensitive-canary] Synthesized placeholders above are not real data — use only as labels. Never pass to tools, use as paths/commands/identifiers, or reverse.";
+  "[sensitive-canary] Synthesized placeholders above are not real data — use only as labels. " +
+  "Never pass to tools, use as paths/commands/identifiers, or reverse.";
 
 const SYNTHESIS_NOTICE_SUFFIX =
-  " Sensitive numeric document fields may be rendered as strings; document schema types are not preserved.";
+  " Sensitive numeric document fields may be rendered as strings; document schema types are not " +
+  "preserved.";
 // No per-message notice: redacted output carries no guidance text.
 // Failure-time guidance lives in the system reminder (once per session)
 // and the tool_call block errors. Ablation (8 fresh muse-spark sessions,
@@ -703,7 +887,20 @@ const SYNTHESIS_NOTICE_SUFFIX =
 // placeholder to a tool" wording, written before swap-back, made models
 // refuse to even report a value they had seen.
 export const SYNTHESIS_SYSTEM_REMINDER =
-  "SENSITIVE-CANARY: Personal, infrastructure and secret values in this conversation may be replaced before you see them. Personal and infrastructure values become stable stand-ins: names under the .example TLD, label-hex words (user-3c9d0e, person-…, host-…), n-hex name parts (n3c9d0e), 240.0.0.0/5 and 2001:db8:: addresses, 02: MACs. Secrets become synthetic placeholders; ⟦…⟧ marks generalized wording. Stand-ins keep roles and relationships (same domain, same subnet, same person) and stay consistent within a session, but may differ between sessions. When asked for such a value, give the stand-in you saw and say it is redacted; do not refuse. Local tool calls (shell, file read/write/edit/search) may reuse stand-ins: they are mapped back to the real values before the tool runs; a stand-in that cannot be mapped reaches the tool unchanged, so the call fails. Stand-ins are not mapped back for web tools or anything that leaves the machine. Output of tool calls that read secret files (.env, private keys, credentials) is withheld, as are secret-file lines in search results. Do not try to reverse or guess real values. Suggest the user re-run with [allow-pii] only when they need the real value shown to them.";
+  "SENSITIVE-CANARY: Personal, infrastructure and secret values in this conversation may be " +
+  "replaced before you see them. Personal and infrastructure values become stable stand-ins: " +
+  "names under the .example TLD, label-hex words (user-3c9d0e, person-…, host-…), n-hex name " +
+  "parts (n3c9d0e), 240.0.0.0/5 and 2001:db8:: addresses, 02: MACs. Secrets become synthetic " +
+  "placeholders; ⟦…⟧ marks generalized wording. Stand-ins keep roles and relationships (same " +
+  "domain, same subnet, same person) and stay consistent within a session, but may differ " +
+  "between sessions. When asked for such a value, give the stand-in you saw and say it is " +
+  "redacted; do not refuse. Local tool calls (shell, file read/write/edit/search) may reuse " +
+  "stand-ins: they are mapped back to the real values before the tool runs; a stand-in that " +
+  "cannot be mapped reaches the tool unchanged, so the call fails. Stand-ins are not mapped back " +
+  "for web tools or anything that leaves the machine. Output of tool calls that read secret " +
+  "files (.env, private keys, credentials) is withheld, as are secret-file lines in search " +
+  "results. Do not try to reverse or guess real values. Suggest the user re-run with [allow-pii] " +
+  "only when they need the real value shown to them.";
 
 // Canary's own boilerplate must never be redacted: a user inventory word
 // colliding with it (e.g. a case-insensitive acronym matching ordinary
@@ -720,7 +917,8 @@ const GENERALIZED = /⟦[^⟦⟧\n]{1,80}⟧/g;
 
 function boilerplateSpans(text: string): Array<{ start: number; end: number }> {
   const spans: Array<{ start: number; end: number }> = [];
-  for (const match of text.matchAll(GENERALIZED)) spans.push({ start: match.index, end: match.index + match[0].length });
+  for (const match of text.matchAll(GENERALIZED))
+    spans.push({ start: match.index, end: match.index + match[0].length });
   for (const marker of BOILERPLATE_MARKERS) {
     let from = 0;
     while (true) {
@@ -732,8 +930,6 @@ function boilerplateSpans(text: string): Array<{ start: number; end: number }> {
   }
   return spans;
 }
-
-
 
 export function latestAllowTags(messages: Message[]): Set<string> {
   const latestUser = [...messages].reverse().find((message) => message.role === "user");
@@ -764,23 +960,44 @@ function swappedFindings(text: string): LocatedFinding[] {
       const after = text[at + needle.length] ?? "";
       if (/[\p{L}\p{N}_]/u.test(before) || /[\p{L}\p{N}_]/u.test(after)) continue;
       const secretValue = text.slice(at, at + needle.length);
-      out.push({ ruleId, description: "Value swapped into a tool call", category: "pii", matchRedacted: "[swapped]", secretValue, start: at, end: at + needle.length });
+      out.push({
+        ruleId,
+        description: "Value swapped into a tool call",
+        category: "pii",
+        matchRedacted: "[swapped]",
+        secretValue,
+        start: at,
+        end: at + needle.length,
+      });
     }
   }
   return out;
 }
 
-export function blocksSecretAccess(toolName: string, command: string, targets: string[], allowTags: Set<string>, cwd: string): boolean {
+export function blocksSecretAccess(
+  toolName: string,
+  command: string,
+  targets: string[],
+  allowTags: Set<string>,
+  cwd: string,
+): boolean {
   if (allowTags.has("secret")) return false;
   return (
-    (toolName === "bash" && (commandReadsSecretFile(command, cwd) || commandSendsCookies(command))) ||
+    (toolName === "bash" &&
+      (commandReadsSecretFile(command, cwd) || commandSendsCookies(command))) ||
     targets.some((target) => isSecretPath(target, cwd))
   );
 }
 
 // Inventory reads are PII-gated rather than secret-gated: the file holds
 // match patterns, and [allow-pii]/[allow-all] is the matching bypass.
-export function blocksInventoryAccess(toolName: string, command: string, targets: string[], allowTags: Set<string>, cwd: string): boolean {
+export function blocksInventoryAccess(
+  toolName: string,
+  command: string,
+  targets: string[],
+  allowTags: Set<string>,
+  cwd: string,
+): boolean {
   if (allowTags.has("pii") || allowTags.has("all")) return false;
   return (
     (toolName === "bash" && commandReadsCanaryInventory(command, cwd)) ||

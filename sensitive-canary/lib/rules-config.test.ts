@@ -28,7 +28,9 @@ afterEach(() => stderr.mockRestore());
 
 describe("readConfigFile", () => {
   let dir = "";
-  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "canary-config-file-")); });
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "canary-config-file-"));
+  });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
   it("reads JSON, and is silent when the file is absent", () => {
@@ -54,29 +56,66 @@ describe("readConfigFile", () => {
 describe("readUserSettings", () => {
   it("takes every valid setting", () => {
     const rules = [{ id: "r", description: "d", regex: "x", category: "pii" }];
-    const settings = readUserSettings({
-      contextWindow: 5, rules, inventory: [{ id: "i" }], generalize: [{ id: "g" }],
-      aliasKey: "shared", aliases: "tokens", scanBudgetMs: 45000,
-    }, null);
+    const settings = readUserSettings(
+      {
+        contextWindow: 5,
+        rules,
+        inventory: [{ id: "i" }],
+        generalize: [{ id: "g" }],
+        aliasKey: "shared",
+        aliases: "tokens",
+        scanBudgetMs: 45000,
+      },
+      null,
+    );
     expect(settings).toEqual({
-      contextWindow: 5, ruleConfigs: rules as RuleConfig[], inventory: [{ id: "i" }], generalize: [{ id: "g" }],
-      aliasKey: "shared", aliases: "tokens", scanBudgetMs: 45000,
+      contextWindow: 5,
+      ruleConfigs: rules as RuleConfig[],
+      inventory: [{ id: "i" }],
+      generalize: [{ id: "g" }],
+      aliasKey: "shared",
+      aliases: "tokens",
+      scanBudgetMs: 45000,
     });
     expect(warnings).toEqual([]);
   });
 
   it("defaults for a missing or non-object config", () => {
-    const defaults = { contextWindow: null, ruleConfigs: [], inventory: [], generalize: [], aliasKey: "session", aliases: "stand-ins", scanBudgetMs: null };
-    for (const config of [undefined, null, 5, "text", {}]) expect(readUserSettings(config, null)).toEqual(defaults as never);
+    const defaults = {
+      contextWindow: null,
+      ruleConfigs: [],
+      inventory: [],
+      generalize: [],
+      aliasKey: "session",
+      aliases: "stand-ins",
+      scanBudgetMs: null,
+    };
+    for (const config of [undefined, null, 5, "text", {}])
+      expect(readUserSettings(config, null)).toEqual(defaults as never);
     expect(warnings).toEqual([]);
   });
 
   it("ignores each invalid setting with a warning", () => {
-    const settings = readUserSettings({
-      contextWindow: 0, rules: {}, inventory: "x", generalize: 1, aliasKey: "global", aliases: "names", scanBudgetMs: "12ms",
-    }, null);
+    const settings = readUserSettings(
+      {
+        contextWindow: 0,
+        rules: {},
+        inventory: "x",
+        generalize: 1,
+        aliasKey: "global",
+        aliases: "names",
+        scanBudgetMs: "12ms",
+      },
+      null,
+    );
     expect(settings).toEqual({
-      contextWindow: null, ruleConfigs: [], inventory: [], generalize: [], aliasKey: "session", aliases: "stand-ins", scanBudgetMs: null,
+      contextWindow: null,
+      ruleConfigs: [],
+      inventory: [],
+      generalize: [],
+      aliasKey: "session",
+      aliases: "stand-ins",
+      scanBudgetMs: null,
     });
     expect(warnings).toHaveLength(7);
     for (const warning of warnings) expect(warning).toMatch(/^sensitive-canary: .*, ignoring\n$/);
@@ -115,15 +154,25 @@ describe("generalize and inventory lists", () => {
 
   it("rejects each malformed generalize entry", () => {
     const long = "x".repeat(81);
-    const bad = [null, { id: "a" }, { id: "a", terms: [] }, { id: "a", terms: ["line\nbreak"], replace: "y" },
-      { id: "a", terms: ["t"], replace: long }, { id: "a", terms: ["t"], replace: "y", caseSensitive: "yes" },
-      { id: "a", terms: ["t"], replace: "y", scope: "nowhere" }];
+    const bad = [
+      null,
+      { id: "a" },
+      { id: "a", terms: [] },
+      { id: "a", terms: ["line\nbreak"], replace: "y" },
+      { id: "a", terms: ["t"], replace: long },
+      { id: "a", terms: ["t"], replace: "y", caseSensitive: "yes" },
+      { id: "a", terms: ["t"], replace: "y", scope: "nowhere" },
+    ];
     expect(compileGeneralizeList(bad)).toEqual([]);
     expect(warnings).toHaveLength(bad.length);
   });
 
   it("truncates an inventory over the cap", () => {
-    const entries = Array.from({ length: MAX_INVENTORY_ENTRIES + 1 }, (_, i) => ({ id: `e${i}`, literal: `Zqxentry${i}`, match: "token" }));
+    const entries = Array.from({ length: MAX_INVENTORY_ENTRIES + 1 }, (_, i) => ({
+      id: `e${i}`,
+      literal: `Zqxentry${i}`,
+      match: "token",
+    }));
     expect(compileInventoryList(entries)).toHaveLength(MAX_INVENTORY_ENTRIES);
     expect(warnings[0]).toContain("truncating");
   });
@@ -160,6 +209,7 @@ describe("compileRule", () => {
       [{ ...base, validate: "no-such" }, /unknown validator/],
       [{ ...base, regex: "(" }, /./],
     ];
-    for (const [config, message] of cases) expect(() => compileRule(config as RuleConfig)).toThrow(message);
+    for (const [config, message] of cases)
+      expect(() => compileRule(config as RuleConfig)).toThrow(message);
   });
 });

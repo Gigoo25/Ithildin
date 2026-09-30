@@ -5,13 +5,27 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initEngine } from "./canary.ts";
-import { createHandler, DEFAULT_ROUTES, formatForPath, JSON_DEPTH_MAX, jsonDepth, loadRoutes, readOptions, REQUEST_BYTES_MAX, start, upstreamUrl } from "./server.ts";
+import {
+  createHandler,
+  DEFAULT_ROUTES,
+  formatForPath,
+  JSON_DEPTH_MAX,
+  jsonDepth,
+  loadRoutes,
+  readOptions,
+  REQUEST_BYTES_MAX,
+  start,
+  upstreamUrl,
+} from "./server.ts";
 
 beforeAll(() => initEngine());
 
 type Call = { url: string; init: RequestInit };
 
-function upstream(reply: () => Response | Promise<Response>): { fetch: typeof fetch; calls: Call[] } {
+function upstream(reply: () => Response | Promise<Response>): {
+  fetch: typeof fetch;
+  calls: Call[];
+} {
   const calls: Call[] = [];
   const fn = (async (url: string, init: RequestInit) => {
     calls.push({ url, init });
@@ -20,7 +34,11 @@ function upstream(reply: () => Response | Promise<Response>): { fetch: typeof fe
   return { fetch: fn, calls };
 }
 
-function post(path: string, body: string, headers: Record<string, string> = { "content-type": "application/json" }): Request {
+function post(
+  path: string,
+  body: string,
+  headers: Record<string, string> = { "content-type": "application/json" },
+): Request {
   return new Request(`http://127.0.0.1/${path}`, { method: "POST", headers, body });
 }
 
@@ -45,24 +63,36 @@ describe("requests the proxy refuses", () => {
     const up = upstream(() => Response.json({}));
     const handler = createHandler(DEFAULT_ROUTES, up.fetch);
     const cases: Array<[Request, number]> = [
-      [post("anthropic/v1/messages", messages, { "content-type": "application/json", "content-encoding": "gzip" }), 415],
+      [
+        post("anthropic/v1/messages", messages, {
+          "content-type": "application/json",
+          "content-encoding": "gzip",
+        }),
+        415,
+      ],
       [post("anthropic/v1/messages", "{not json", { "content-type": "application/json" }), 400],
       [post("anthropic/v1/messages", "[1,2]"), 400],
-      [post("anthropic/v1/messages", "\"a string\""), 400],
+      [post("anthropic/v1/messages", '"a string"'), 400],
       [post("anthropic/v1/messages", "null"), 400],
       [post("anthropic/v1/other", "plain text", { "content-type": "text/plain" }), 415],
       [post("anthropic/v1/other", "plain text", {}), 415],
     ];
-    for (const [request, status] of cases) expect((await refusal(await handler(request))).status).toBe(status);
+    for (const [request, status] of cases)
+      expect((await refusal(await handler(request))).status).toBe(status);
     expect(up.calls).toHaveLength(0);
   });
 
   it("refuses bodies over the size limit, declared or actual", async () => {
     const up = upstream(() => Response.json({}));
     const handler = createHandler(DEFAULT_ROUTES, up.fetch);
-    const declared = post("anthropic/v1/messages", messages, { "content-type": "application/json", "content-length": String(REQUEST_BYTES_MAX + 1) });
+    const declared = post("anthropic/v1/messages", messages, {
+      "content-type": "application/json",
+      "content-length": String(REQUEST_BYTES_MAX + 1),
+    });
     expect((await refusal(await handler(declared))).status).toBe(413);
-    const big = JSON.stringify({ messages: [{ role: "user", content: "x".repeat(REQUEST_BYTES_MAX) }] });
+    const big = JSON.stringify({
+      messages: [{ role: "user", content: "x".repeat(REQUEST_BYTES_MAX) }],
+    });
     expect((await refusal(await handler(post("anthropic/v1/messages", big)))).status).toBe(413);
     expect(up.calls).toHaveLength(0);
   });
@@ -91,53 +121,96 @@ describe("requests the proxy refuses", () => {
     const handler = createHandler(DEFAULT_ROUTES, (async () => {
       throw new Error("connect refused");
     }) as unknown as typeof fetch);
-    const { status, message } = await refusal(await handler(post("anthropic/v1/messages", messages)));
+    const { status, message } = await refusal(
+      await handler(post("anthropic/v1/messages", messages)),
+    );
     expect(status).toBe(502);
     expect(message).toContain("connect refused");
   });
 });
 
 describe("replies the proxy refuses", () => {
-  const send = async (reply: () => Response) => createHandler(DEFAULT_ROUTES, upstream(reply).fetch)(post("opencode-go/chat/completions", messages));
+  const send = async (reply: () => Response) =>
+    createHandler(
+      DEFAULT_ROUTES,
+      upstream(reply).fetch,
+    )(post("opencode-go/chat/completions", messages));
 
   it("refuses a successful reply it cannot parse or rewrite", async () => {
-    expect((await refusal(await send(() => new Response("{oops", { headers: { "content-type": "application/json" } })))).status).toBe(502);
+    expect(
+      (
+        await refusal(
+          await send(
+            () => new Response("{oops", { headers: { "content-type": "application/json" } }),
+          ),
+        )
+      ).status,
+    ).toBe(502);
     expect((await refusal(await send(() => Response.json([1])))).status).toBe(502);
     // The Chat rewriter throws on a null choice: nothing half-rewritten goes out.
     expect((await refusal(await send(() => Response.json({ choices: [null] })))).status).toBe(502);
   });
 
   it("refuses a successful reply of a type it does not read", async () => {
-    const { status, message } = await refusal(await send(() => new Response("<p>hi</p>", { headers: { "content-type": "text/html; charset=utf-8" } })));
+    const { status, message } = await refusal(
+      await send(
+        () =>
+          new Response("<p>hi</p>", { headers: { "content-type": "text/html; charset=utf-8" } }),
+      ),
+    );
     expect(status).toBe(502);
     expect(message).toContain("text/html");
     // Newline-delimited JSON takes the JSON path, and fails its parse.
-    expect((await refusal(await send(() => new Response("{\"a\":1}\n{\"b\":2}\n", { headers: { "content-type": "application/x-ndjson" } })))).status).toBe(502);
+    expect(
+      (
+        await refusal(
+          await send(
+            () =>
+              new Response('{"a":1}\n{"b":2}\n', {
+                headers: { "content-type": "application/x-ndjson" },
+              }),
+          ),
+        )
+      ).status,
+    ).toBe(502);
     expect((await refusal(await send(() => new Response("data")))).status).toBe(502);
   });
 
   it("passes provider errors and non-model routes through unchanged", async () => {
-    const error = await send(() => new Response("overloaded", { status: 529, headers: { "content-type": "text/plain" } }));
+    const error = await send(
+      () => new Response("overloaded", { status: 529, headers: { "content-type": "text/plain" } }),
+    );
     expect(error.status).toBe(529);
     expect(await error.text()).toBe("overloaded");
-    const handler = createHandler(DEFAULT_ROUTES, upstream(() => new Response("models", { headers: { "content-type": "text/plain" } })).fetch);
+    const handler = createHandler(
+      DEFAULT_ROUTES,
+      upstream(() => new Response("models", { headers: { "content-type": "text/plain" } })).fetch,
+    );
     const models = await handler(new Request("http://127.0.0.1/anthropic/v1/models"));
     expect(await models.text()).toBe("models");
   });
 
   it("passes SSE comments and bare lines through a rewritten stream", async () => {
-    const text = ": keepalive\n\nevent: ping\ndata: {\"type\":\"ping\"}\n\n";
-    const handler = createHandler(DEFAULT_ROUTES, upstream(() => new Response(text, { headers: { "content-type": "text/event-stream" } })).fetch);
+    const text = ': keepalive\n\nevent: ping\ndata: {"type":"ping"}\n\n';
+    const handler = createHandler(
+      DEFAULT_ROUTES,
+      upstream(() => new Response(text, { headers: { "content-type": "text/event-stream" } }))
+        .fetch,
+    );
     const out = await (await handler(post("anthropic/v1/messages", messages))).text();
     expect(out).toContain(": keepalive");
-    expect(out).toContain("\"ping\"");
+    expect(out).toContain('"ping"');
   });
 });
 
 describe("health and routing", () => {
   it("reports health with the route names", async () => {
     const handler = createHandler(DEFAULT_ROUTES, upstream(() => Response.json({})).fetch);
-    const body = (await (await handler(new Request("http://127.0.0.1/_canary/health"))).json()) as { ok: boolean; routes: string[]; badge: string };
+    const body = (await (await handler(new Request("http://127.0.0.1/_canary/health"))).json()) as {
+      ok: boolean;
+      routes: string[];
+      badge: string;
+    };
     expect(body.ok).toBe(true);
     expect(body.routes).toEqual(Object.keys(DEFAULT_ROUTES));
     expect(body.badge).toBe("CANARY ON");
@@ -152,15 +225,29 @@ describe("health and routing", () => {
   });
 
   it("rewrites the first matching prefix only, and trims the upstream's slash", () => {
-    expect(upstreamUrl({ upstream: "https://up.example/base/" }, "/v1/x", "?a=1")).toBe("https://up.example/base/v1/x?a=1");
-    expect(upstreamUrl({ upstream: "https://up.example", rewrite: { "/chat/": "/v1/chat/", "/c": "/never" } }, "/chat/completions", "")).toBe("https://up.example/v1/chat/completions");
+    expect(upstreamUrl({ upstream: "https://up.example/base/" }, "/v1/x", "?a=1")).toBe(
+      "https://up.example/base/v1/x?a=1",
+    );
+    expect(
+      upstreamUrl(
+        { upstream: "https://up.example", rewrite: { "/chat/": "/v1/chat/", "/c": "/never" } },
+        "/chat/completions",
+        "",
+      ),
+    ).toBe("https://up.example/v1/chat/completions");
   });
 
   it("loads plain-string and object routes from a file", () => {
     const dir = mkdtempSync(join(tmpdir(), "canary-routes-"));
     try {
       const file = join(dir, "routes.json");
-      writeFileSync(file, JSON.stringify({ local: "http://127.0.0.1:4000", other: { upstream: "https://up.example", rewrite: { "/a": "/b" } } }));
+      writeFileSync(
+        file,
+        JSON.stringify({
+          local: "http://127.0.0.1:4000",
+          other: { upstream: "https://up.example", rewrite: { "/a": "/b" } },
+        }),
+      );
       const routes = loadRoutes(file);
       expect(routes.local).toEqual({ upstream: "http://127.0.0.1:4000" });
       expect(routes.other!.rewrite).toEqual({ "/a": "/b" });
@@ -188,12 +275,25 @@ describe("scan failures", () => {
     const fail = () => {
       throw new TypeError("boom");
     };
-    const body = createHandler(DEFAULT_ROUTES, up.fetch, { request: fail, query: (search) => ({ search, hits: 0, values: 0 }) });
+    const body = createHandler(DEFAULT_ROUTES, up.fetch, {
+      request: fail,
+      query: (search) => ({ search, hits: 0, values: 0 }),
+    });
     const first = await refusal(await body(post("anthropic/v1/messages", messages)));
     expect(first.status).toBe(500);
     expect(first.message).toContain("TypeError");
-    const query = createHandler(DEFAULT_ROUTES, up.fetch, { request: (_format, parsed) => ({ body: parsed, hits: 0, counts: { masked: 0, files: 0, lines: 0, images: 0 }, tags: new Set() }), query: fail });
-    expect((await refusal(await query(new Request("http://127.0.0.1/anthropic/v1/models?q=1")))).status).toBe(500);
+    const query = createHandler(DEFAULT_ROUTES, up.fetch, {
+      request: (_format, parsed) => ({
+        body: parsed,
+        hits: 0,
+        counts: { masked: 0, files: 0, lines: 0, images: 0 },
+        tags: new Set(),
+      }),
+      query: fail,
+    });
+    expect(
+      (await refusal(await query(new Request("http://127.0.0.1/anthropic/v1/models?q=1")))).status,
+    ).toBe(500);
     expect(up.calls).toHaveLength(0);
   });
 });
@@ -203,21 +303,41 @@ describe("startup", () => {
 
   it("reads flags before environment before defaults", () => {
     expect(readOptions([], {}, none)).toEqual({ port: 18733, routesFile: undefined });
-    expect(readOptions([], { CANARY_PROXY_PORT: "9000", CANARY_PROXY_ROUTES: "/r.json" }, none)).toEqual({ port: 9000, routesFile: "/r.json" });
-    expect(readOptions(["bun", "server.ts", "--port", "9100", "--routes", "/f.json"], { CANARY_PROXY_PORT: "9000" }, none)).toEqual({ port: 9100, routesFile: "/f.json" });
-    const found = readOptions([], { HOME: "/home/test", XDG_CONFIG_HOME: "" }, (file) => file === "/home/test/.config/canary-proxy/routes.json");
+    expect(
+      readOptions([], { CANARY_PROXY_PORT: "9000", CANARY_PROXY_ROUTES: "/r.json" }, none),
+    ).toEqual({ port: 9000, routesFile: "/r.json" });
+    expect(
+      readOptions(
+        ["bun", "server.ts", "--port", "9100", "--routes", "/f.json"],
+        { CANARY_PROXY_PORT: "9000" },
+        none,
+      ),
+    ).toEqual({ port: 9100, routesFile: "/f.json" });
+    const found = readOptions(
+      [],
+      { HOME: "/home/test", XDG_CONFIG_HOME: "" },
+      (file) => file === "/home/test/.config/canary-proxy/routes.json",
+    );
     expect(found.routesFile).toBe("/home/test/.config/canary-proxy/routes.json");
-    expect(readOptions([], { XDG_CONFIG_HOME: "/xdg" }, (file) => file.startsWith("/xdg/")).routesFile).toBe("/xdg/canary-proxy/routes.json");
+    expect(
+      readOptions([], { XDG_CONFIG_HOME: "/xdg" }, (file) => file.startsWith("/xdg/")).routesFile,
+    ).toBe("/xdg/canary-proxy/routes.json");
   });
 
   it("stops on a port that is not a whole number in range", () => {
-    for (const bad of ["0", "65536", "80a", "", "-1", "1.5"]) expect(() => readOptions(["--port", bad], {}, none)).toThrow(/invalid port/);
+    for (const bad of ["0", "65536", "80a", "", "-1", "1.5"])
+      expect(() => readOptions(["--port", bad], {}, none)).toThrow(/invalid port/);
   });
 
   it("serves health on a free port and drains", async () => {
-    const { server, drain } = start({ port: 0, routesFile: undefined }, upstream(() => Response.json({})).fetch);
+    const { server, drain } = start(
+      { port: 0, routesFile: undefined },
+      upstream(() => Response.json({})).fetch,
+    );
     try {
-      const body = (await (await fetch(`http://127.0.0.1:${server.port}/_canary/health`)).json()) as { ok: boolean };
+      const body = (await (
+        await fetch(`http://127.0.0.1:${server.port}/_canary/health`)
+      ).json()) as { ok: boolean };
       expect(body.ok).toBe(true);
     } finally {
       await drain();

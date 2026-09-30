@@ -60,8 +60,13 @@ export function isSecretFile(filePath: string): boolean {
     const pathLower = `/${normalized}`.toLowerCase();
     if (pathLower.endsWith("/application_default_credentials.json")) return true;
     if (pathLower.endsWith("/gh/hosts.yml") || pathLower.endsWith("/gh/hosts.yaml")) return true;
-    if (/(?:^|\/)\.kube\/config$/.test(pathLower) || pathLower.endsWith("/kube/config")) return true;
-    if (/(?:^|\/)\.docker\/config\.json$/.test(pathLower) || pathLower.endsWith("/docker/config.json")) return true;
+    if (/(?:^|\/)\.kube\/config$/.test(pathLower) || pathLower.endsWith("/kube/config"))
+      return true;
+    if (
+      /(?:^|\/)\.docker\/config\.json$/.test(pathLower) ||
+      pathLower.endsWith("/docker/config.json")
+    )
+      return true;
     return false;
   });
 }
