@@ -229,61 +229,72 @@ class ChatRewriter implements Rewriter {
     ];
   }
 
-  push(event: SseEvent): SseEvent[] {
-    if (event.data.trim() === "[DONE]") {
-      const rest = [...this.texts].flatMap(([index, text]) => {
-        const content = text.flush();
-        return content === ""
-          ? []
-          : [
-              {
-                data: JSON.stringify({
-                  ...this.base,
-                  choices: [{ index, delta: { content }, finish_reason: null }],
-                }),
-              },
-            ];
-      });
-      this.texts.clear();
-      return [...rest, ...[...this.calls.keys()].flatMap((choice) => this.flush(choice)), event];
+  // Held text and tool calls go out ahead of the end of the stream.
+  private drain(event: SseEvent): SseEvent[] {
+    const rest = [...this.texts].flatMap(([index, text]) => {
+      const content = text.flush();
+      return content === ""
+        ? []
+        : [
+            {
+              data: JSON.stringify({
+                ...this.base,
+                choices: [{ index, delta: { content }, finish_reason: null }],
+              }),
+            },
+          ];
+    });
+    this.texts.clear();
+    return [...rest, ...[...this.calls.keys()].flatMap((choice) => this.flush(choice)), event];
+  }
+
+  // Argument fragments are held until the call finishes; the event goes on
+  // with them emptied.
+  private holdCalls(index: number, toolCalls: ChatToolCall[]): void {
+    for (const call of toolCalls) {
+      const calls = this.calls.get(index) ?? new Map();
+      this.calls.set(index, calls);
+      const slot = calls.get(call.index ?? 0) ?? { name: "", args: "" };
+      calls.set(call.index ?? 0, slot);
+      if (call.function?.name) slot.name = call.function.name;
+      if (call.id) slot.id = call.id;
+      if (typeof call.function?.arguments === "string") {
+        slot.args += call.function.arguments;
+        call.function.arguments = "";
+      }
     }
+  }
+
+  private swapContent(index: number, choice: ChatChoice): void {
+    let text = this.texts.get(index);
+    if (!text) {
+      text = new TextHold(this.tags, (n) => {
+        this.swapped += n;
+      });
+      this.texts.set(index, text);
+    }
+    let content = typeof choice.delta?.content === "string" ? text.push(choice.delta.content) : "";
+    if (choice.finish_reason != null) {
+      content += text.flush();
+      this.texts.delete(index);
+    }
+    choice.delta = { ...choice.delta, content };
+  }
+
+  push(event: SseEvent): SseEvent[] {
+    if (event.data.trim() === "[DONE]") return this.drain(event);
     const data = json(event);
     if (!data || !Array.isArray(data.choices)) return [event];
     this.base = { id: data.id, object: data.object, created: data.created, model: data.model };
     const finishing: Array<{ index: number; reason: unknown }> = [];
     for (const choice of data.choices as ChatChoice[]) {
       const index = choice.index ?? 0;
-      for (const call of choice.delta?.tool_calls ?? []) {
-        const calls = this.calls.get(index) ?? new Map();
-        this.calls.set(index, calls);
-        const slot = calls.get(call.index ?? 0) ?? { name: "", args: "" };
-        calls.set(call.index ?? 0, slot);
-        if (call.function?.name) slot.name = call.function.name;
-        if (call.id) slot.id = call.id;
-        if (typeof call.function?.arguments === "string") {
-          slot.args += call.function.arguments;
-          call.function.arguments = "";
-        }
-      }
+      this.holdCalls(index, choice.delta?.tool_calls ?? []);
       if (
         typeof choice.delta?.content === "string" ||
         (choice.finish_reason != null && this.texts.has(index))
-      ) {
-        let text = this.texts.get(index);
-        if (!text) {
-          text = new TextHold(this.tags, (n) => {
-            this.swapped += n;
-          });
-          this.texts.set(index, text);
-        }
-        let content =
-          typeof choice.delta?.content === "string" ? text.push(choice.delta.content) : "";
-        if (choice.finish_reason != null) {
-          content += text.flush();
-          this.texts.delete(index);
-        }
-        choice.delta = { ...choice.delta, content };
-      }
+      )
+        this.swapContent(index, choice);
       if (choice.finish_reason != null && this.calls.has(index)) {
         finishing.push({ index, reason: choice.finish_reason });
         choice.finish_reason = null;
@@ -351,6 +362,57 @@ class ResponsesRewriter implements Rewriter {
     if (item.id !== undefined) this.done.set(item.id, result.json);
   }
 
+  // Held text goes out as one last delta ahead of the done event.
+  private textDone(
+    event: SseEvent,
+    data: Record<string, unknown>,
+    textKey: string,
+    itemId: string | undefined,
+  ): SseEvent[] {
+    const rest = this.texts.get(textKey)?.flush() ?? "";
+    this.texts.delete(textKey);
+    if (typeof data.text === "string") data.text = swapText(data.text, this.tags).text;
+    const done = { ...event, data: JSON.stringify(data) };
+    if (rest === "") return [done];
+    const delta = {
+      type: "response.output_text.delta",
+      item_id: itemId,
+      output_index: data.output_index,
+      content_index: data.content_index,
+      sequence_number: data.sequence_number,
+      delta: rest,
+    };
+    return [{ event: "response.output_text.delta", data: JSON.stringify(delta) }, done];
+  }
+
+  // The held call's swapped arguments go out as one delta ahead of done.
+  private argumentsDone(
+    event: SseEvent,
+    data: Record<string, unknown>,
+    itemId: string,
+    args: string,
+  ): SseEvent[] {
+    const item: ResponseItem = {
+      type: "function_call",
+      id: itemId,
+      name: this.names.get(itemId),
+      arguments: args,
+    };
+    this.swapItem(item);
+    data.arguments = item.arguments;
+    const delta = {
+      type: "response.function_call_arguments.delta",
+      item_id: itemId,
+      output_index: data.output_index,
+      sequence_number: data.sequence_number,
+      delta: item.arguments,
+    };
+    return [
+      { event: "response.function_call_arguments.delta", data: JSON.stringify(delta) },
+      { ...event, data: JSON.stringify(data) },
+    ];
+  }
+
   push(event: SseEvent): SseEvent[] {
     const data = json(event);
     if (!data) return [event];
@@ -376,22 +438,7 @@ class ResponsesRewriter implements Rewriter {
       data.delta = text.push(data.delta);
       return data.delta === "" ? [] : [{ ...event, data: JSON.stringify(data) }];
     }
-    if (type === "response.output_text.done") {
-      const rest = this.texts.get(textKey)?.flush() ?? "";
-      this.texts.delete(textKey);
-      if (typeof data.text === "string") data.text = swapText(data.text, this.tags).text;
-      const done = { ...event, data: JSON.stringify(data) };
-      if (rest === "") return [done];
-      const delta = {
-        type: "response.output_text.delta",
-        item_id: itemId,
-        output_index: data.output_index,
-        content_index: data.content_index,
-        sequence_number: data.sequence_number,
-        delta: rest,
-      };
-      return [{ event: "response.output_text.delta", data: JSON.stringify(delta) }, done];
-    }
+    if (type === "response.output_text.done") return this.textDone(event, data, textKey, itemId);
     if (type === "response.content_part.done") {
       const part = data.part as { type?: string; text?: unknown } | undefined;
       if (part?.type !== "output_text" || typeof part.text !== "string") return [event];
@@ -405,27 +452,8 @@ class ResponsesRewriter implements Rewriter {
       itemId &&
       this.names.has(itemId) &&
       typeof data.arguments === "string"
-    ) {
-      const item: ResponseItem = {
-        type: "function_call",
-        id: itemId,
-        name: this.names.get(itemId),
-        arguments: data.arguments,
-      };
-      this.swapItem(item);
-      data.arguments = item.arguments;
-      const delta = {
-        type: "response.function_call_arguments.delta",
-        item_id: itemId,
-        output_index: data.output_index,
-        sequence_number: data.sequence_number,
-        delta: item.arguments,
-      };
-      return [
-        { event: "response.function_call_arguments.delta", data: JSON.stringify(delta) },
-        { ...event, data: JSON.stringify(data) },
-      ];
-    }
+    )
+      return this.argumentsDone(event, data, itemId, data.arguments);
     if (type === "response.output_item.done") {
       const item = data.item as ResponseItem | undefined;
       if (item?.type !== "function_call" && item?.type !== "message") return [event];
