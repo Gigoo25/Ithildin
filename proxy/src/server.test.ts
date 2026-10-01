@@ -573,6 +573,9 @@ describe("provider blindness", () => {
       "Here is the conversation so far:\n\n<conversation>\n[User]: hi",
       "<conversation-checkpoint>\nThe following is a summary and serialized record",
       "Shell command: cat notes.txt\n",
+      "<conversation>\n[User]: hi\n</conversation>",
+      "# Conversation\n[User]: hi\n\n# Instructions",
+      "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.\n\nYour task is to summarize",
       "Summarize it.\n\nThe following is the conversation history:\n\n[User]: hi",
       "The conversation history before this point was compacted into the following summary:",
       "The following is a summary of a branch that this conversation came back from:",
@@ -587,6 +590,38 @@ describe("provider blindness", () => {
         { role: "user", content: "[allow-pii] go on" },
       ).has("pii"),
     ).toBe(true);
+  });
+
+  it("gives a request with no prompt its session's latest tags", () => {
+    const summary = "<conversation>\nhi\n</conversation>";
+    const summarize = { messages: [{ role: "user", content: summary }] };
+    const tags = (body: Record<string, unknown>, session?: string) =>
+      redactRequest("anthropic", body, session).tags;
+    const typed = tags({ messages: [{ role: "user", content: "[allow-pii] hi" }] }, "s-1");
+    expect(typed.has("pii")).toBe(true);
+    const reused = tags(summarize, "s-1");
+    expect([...reused]).toEqual(["pii"]);
+    expect(reused).not.toBe(typed);
+    expect(tags(summarize, "s-2").size).toBe(0);
+    expect(tags(summarize).size).toBe(0);
+    expect(tags({ messages: 1 }, "s-1").has("pii")).toBe(true);
+    expect(redactRequest("responses", { input: "hi" }, "s-1").tags.size).toBe(0);
+    expect(tags(summarize, "s-1").size).toBe(0);
+    for (let i = 0; i < 300; i++) tags({ messages: [{ role: "user", content: "hi" }] }, `f-${i}`);
+  });
+
+  it("reads opencode's session header", async () => {
+    const up = fakeUpstream(() => Response.json({ content: [] }));
+    const handler = createHandler(DEFAULT_ROUTES, up.fetch);
+    const send = (text: string) => {
+      const messages = [{ role: "user", content: text }];
+      const request = post("anthropic/v1/messages", { messages });
+      request.headers.set("x-opencode-session-id", "oc-1");
+      return handler(request);
+    };
+    await send("[allow-pii] hi");
+    await send(`<conversation>\nmail ${EMAIL}\n</conversation>`);
+    expect(JSON.stringify(up.seen[1]!.body)).toContain(EMAIL);
   });
 });
 
