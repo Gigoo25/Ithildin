@@ -97,11 +97,14 @@ export function redactCookieHeaders(
   return { text: output, hits };
 }
 
+// A curl or wget command that sends a cookie: a Cookie header, or a cookie
+// string or jar.
 export function commandSendsCookies(command: string): boolean {
-  if (!/\bcurl(?:\s|$)/i.test(command)) return false;
-  return (
-    /(?:^|\s)(?:-H|--header)(?:=|\s)+["']?\s*cookie\s*:/im.test(command) ||
-    /(?:^|\s)--cookie(?:=|\s)/im.test(command) ||
-    /(?:^|\s)-b(?:=|\s)/m.test(command)
-  );
+  const header = /(?:^|\s)(?:-H|--header)(?:=|\s)+["']?\s*cookie\s*:/im.test(command);
+  const curl =
+    /\bcurl(?:\s|$)/i.test(command) &&
+    (header || /(?:^|\s)(?:--cookie|-b)(?:=|\s)/im.test(command));
+  const wget =
+    /\bwget2?(?:\s|$)/i.test(command) && (header || /(?:^|\s)--load-cookies\b/.test(command));
+  return curl || wget;
 }
