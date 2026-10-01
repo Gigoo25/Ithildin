@@ -133,7 +133,10 @@ ITHILDIN ON · 12m 1f 3l 2i (+2) · 40 req · +pii
 
 Counts cover the whole conversation, and kinds at zero are left out. With
 nothing hidden, the badge reads `ITHILDIN ON · 0 · N req`. The request count
-ticks on every turn, so a quiet badge still proves the proxy is in the path.
+ticks on every request once the conversation has a second message, so a quiet
+badge still proves the proxy is in the path. A lone first message is not
+counted: it looks the same as the agent's side requests (titles, quota checks).
+Its values show in the counts from the next request on.
 
 `ITHILDIN DOWN` means the health check failed: the proxy isn't running, or
 its self-test didn't pass, and requests are being refused. `BYPASS` means the
