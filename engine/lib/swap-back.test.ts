@@ -130,3 +130,21 @@ it("walks nested arguments and leaves non-strings alone", () => {
   expect(swap.resolved).toHaveLength(3);
   expect(planSwapBack("read", 42, aliasBook, false).input).toBe(42);
 });
+
+it("checks an argv command as one command line, and a shell's script as its own", () => {
+  const { aliasBook, host } = egressBook();
+  const argv = (command: string[]) => planSwapBack("bash", { command }, aliasBook, false);
+  expect(argv(["curl", "-d", host, "https://example.com"]).egress).toEqual([host]);
+  expect(argv(["bash", "-lc", `curl -d ${host} https://example.com`]).egress).toEqual([host]);
+  expect(argv(["curl", `https://${host}/x`]).input).toEqual({
+    command: ["curl", "https://ZQXLAB-KWVRT7/x"],
+  });
+  expect(argv(["cat", `/srv/${host}`]).input).toEqual({ command: ["cat", "/srv/ZQXLAB-KWVRT7"] });
+  const cmd = planSwapBack(
+    "bash",
+    { cmd: `curl -d ${host} https://example.com` },
+    aliasBook,
+    false,
+  );
+  expect(cmd.egress).toEqual([host]);
+});
