@@ -57,7 +57,7 @@ import {
   identityFromWifi,
 } from "../engine/lib/runtime-inventory.ts";
 import type { InventoryEntry } from "../engine/lib/rules.ts";
-import { planSwapBack } from "../engine/lib/swap-back.ts";
+import { planSwapBack, reachesNetwork } from "../engine/lib/swap-back.ts";
 import { protectedBlocked, protectedChange, shellWrites } from "./protect.ts";
 import { BASH_TOOLS, LOCAL_TOOLS, shellCommand, writeTargets } from "./tools.ts";
 import { argsKey, initReplay, recordOriginal, replayOriginal, saveReplay } from "./replay.ts";
@@ -358,7 +358,10 @@ function redactAnthropic(
     out.messages = messages.map((message, i) => {
       if (!message || typeof message !== "object") return message;
       const { content, ...fields } = message as Record<string, unknown>;
-      const next: Record<string, unknown> = { ...fields };
+      // Fields beside content (a name, an unknown extension) are scanned too.
+      const scanned = redactValue(fields, tags, undefined, undefined, ["messages", i], true);
+      hits += scanned.hits;
+      const next = scanned.value as Record<string, unknown>;
       const user = fields.role === "user";
       const replayed =
         !user && typeof content === "string" ? replayOriginal("text", content) : undefined;
@@ -389,12 +392,24 @@ function redactAnthropic(
           return result.value;
         });
       } else if (content !== undefined) {
-        next.content = content;
+        const result = redactValue(
+          content,
+          tags,
+          "content",
+          undefined,
+          ["messages", i, "content"],
+          true,
+        );
+        hits += result.hits;
+        next.content = result.value;
       }
       return next;
     });
   } else if (messages !== undefined) {
-    out.messages = messages;
+    // Not a list: no turn structure to read, so every value is scanned.
+    const result = redactValue(messages, tags, "messages", undefined, ["messages"], true);
+    hits += result.hits;
+    out.messages = result.value;
   }
   return { value: out, hits };
 }
@@ -1225,15 +1240,36 @@ export function swapToolArguments(
   callId?: string,
 ): Swapped {
   const result = swapArguments(toolName, args, tags, callId);
-  if (result.blocked || tags.has("protected")) return result;
+  if (result.blocked) return result;
   const cwd = requestDirs.get(tags) ?? process.env.HOME ?? process.cwd();
+  if (sendsSecret(toolName, args, tags, cwd) || sendsSecret(toolName, result.args, tags, cwd))
+    return block(callId, SECRET_SENT);
+  if (tags.has("protected")) return result;
   const kind =
     protectedChange(toolName, args, cwd) ??
     (result.swapped > 0 ? protectedChange(toolName, result.args, cwd) : undefined);
   return kind ? block(callId, protectedBlocked(kind)) : result;
 }
 
+export const SECRET_SENT =
+  "Not run: this command reads a file that holds secrets and talks to the network, so its " +
+  "contents could leave the machine. Run the network step without the file, or ask the user " +
+  "to include [allow-secrets] in their prompt.";
+
+// A shell command that reads a secret file and runs a network client: its
+// result would be withheld, but by then the data has gone. Lifted by the
+// same tags that let the read's output through.
+function sendsSecret(toolName: string, args: unknown, tags: Set<string>, cwd: string): boolean {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return false;
+  const record = args as Record<string, unknown>;
+  const command = shellCommand(record);
+  if (command === undefined && !BASH_TOOLS.has(toolName)) return false;
+  if (command === undefined || !reachesNetwork(command)) return false;
+  return blocksSecretAccess("bash", command, candidatePaths(record), tags, cwd);
+}
+
 // Every string in a value, as written: JSON escapes glued a newline's n to
+
 // the word after it.
 function stringsOf(value: unknown): string[] {
   if (typeof value === "string") return [value];
@@ -1318,6 +1354,27 @@ export function swapToolInput(
 }
 
 // Arguments as a JSON string (OpenAI shapes, Anthropic streaming).
+export const UNREADABLE_CALL =
+  "Not run: this call's arguments were not valid JSON, so nothing was run. Send the call " +
+  "again with its arguments as a JSON object.";
+
+// A call's arguments, a JSON string or (from some local servers) an object,
+// swapped and guarded; returned in the shape they came in.
+export function swapToolValue(
+  toolName: string,
+  args: unknown,
+  tags: Set<string>,
+  callId?: string,
+): { args: unknown; swapped: number } {
+  if (typeof args === "string") {
+    const result = swapToolJson(toolName, args, tags, callId);
+    return { args: result.json, swapped: result.swapped };
+  }
+  if (args === undefined || args === null) return { args, swapped: 0 };
+  const result = swapToolArguments(toolName, args, tags, callId);
+  return { args: result.args, swapped: result.swapped };
+}
+
 export function swapToolJson(
   toolName: string,
   json: string,
@@ -1328,7 +1385,9 @@ export function swapToolJson(
   try {
     args = json.trim() === "" ? {} : JSON.parse(json);
   } catch {
-    return { json, swapped: 0 };
+    // Agents repair broken JSON and run the call, which no guard has read.
+    block(callId, UNREADABLE_CALL);
+    return { json: "{}", swapped: 0, blocked: true };
   }
   const result = swapToolArguments(toolName, args, tags, callId);
   if (result.blocked) return { json: "{}", swapped: 0, blocked: true };

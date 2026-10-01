@@ -209,6 +209,11 @@ function destinations(command: string): Array<{ start: number; end: number }> | 
   return network ? ranges : undefined;
 }
 
+// Whether a command runs a network client (git only when it talks to a remote).
+export function reachesNetwork(command: string): boolean {
+  return destinations(command) !== undefined;
+}
+
 function swapString(
   text: string,
   book: AliasBook,

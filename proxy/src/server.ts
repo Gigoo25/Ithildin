@@ -448,6 +448,12 @@ async function relayReply(
   tags: Set<string>,
   line: string,
 ): Promise<Response> {
+  // A client following a redirect resends its original, unredacted body to
+  // the new URL, around the proxy: refuse it, and never pass its Location.
+  if (upstream.status >= 300 && upstream.status < 400) {
+    await upstream.body?.cancel();
+    return refuse(502, `upstream redirected (${upstream.status}), refusing to pass it on`);
+  }
   const headers = new Headers(upstream.headers);
   headers.delete("content-encoding");
   headers.delete("content-length");

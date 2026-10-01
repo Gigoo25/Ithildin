@@ -111,21 +111,34 @@ const ANTHROPIC: Wire = {
     })),
     usage: { input_tokens: 0, output_tokens: 0 },
   }),
+  // The protected call comes whole on its start block, as local servers send
+  // it: that input must be held and guarded like deltas.
   events: (calls, cut) =>
-    calls.flatMap((call, index) => [
-      {
-        type: "content_block_start",
-        index,
-        content_block: { type: "tool_use", id: call.id, name: "Bash", input: {} },
-      },
-      ...cut(argsOf(call)).map((partial_json) => ({
-        type: "content_block_delta",
-        index,
-        delta: { type: "input_json_delta", partial_json },
-      })),
-      { type: "content_block_stop", index },
-    ]),
+    calls.flatMap((call, index) => {
+      const whole = call.id === "call_protected";
+      return [
+        {
+          type: "content_block_start",
+          index,
+          content_block: {
+            type: "tool_use",
+            id: call.id,
+            name: "Bash",
+            input: whole ? { command: call.command } : {},
+          },
+        },
+        ...(whole ? [] : cut(argsOf(call))).map((partial_json) => ({
+          type: "content_block_delta",
+          index,
+          delta: { type: "input_json_delta", partial_json },
+        })),
+        { type: "content_block_stop", index },
+      ];
+    }),
+  // A client uses a start block's input when no delta follows.
   fragments: (event) => {
+    const input = (event.content_block as { input?: object } | undefined)?.input;
+    if (input && Object.keys(input).length > 0) return [[event.index, JSON.stringify(input)]];
     const delta = event.delta as { partial_json?: unknown } | undefined;
     return delta?.partial_json === undefined ? [] : [[event.index, delta.partial_json]];
   },
@@ -400,7 +413,27 @@ async function probe(
   return failures;
 }
 
+// A client following a redirect resends its unredacted body around the
+// proxy, so one must never reach it.
+async function redirectProbe(makeHandler: (fetchUpstream: typeof fetch) => Handler) {
+  const upstream = (async () =>
+    new Response(null, {
+      status: 307,
+      headers: { location: "http://127.0.0.1:9/" },
+    })) as unknown as typeof fetch;
+  const response = await makeHandler(upstream)(
+    new Request("http://127.0.0.1/anthropic/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "selftest", messages: [{ role: "user", content: "hi" }] }),
+    }),
+  );
+  await response.body?.cancel();
+  return response.status >= 300 && response.status < 400 ? ["redirect passed to the client"] : [];
+}
+
 // `makeHandler`: a proxy handler over the given upstream, built the way the
+
 // server builds its own.
 export async function selfTest(
   makeHandler: (fetchUpstream: typeof fetch) => Handler,
@@ -414,6 +447,7 @@ export async function selfTest(
       for (const stream of [false, true])
         failures.push(...(await probe(makeHandler, wire, stream, values, forwarded)));
     }
+    failures.push(...(await redirectProbe(makeHandler)));
     for (const [name, value] of Object.entries(values)) {
       if (forwarded.some((body) => body.includes(value)))
         failures.push(`${name} reached the provider`);

@@ -100,18 +100,22 @@ describe("self-test", () => {
       const raw = await request.text();
       const sent = JSON.stringify(redactRequest(format, JSON.parse(raw)).body);
       const reply = await upstream("http://upstream", { method: "POST", body: sent });
-      const [real, standIn] = [raw, sent].map((text) => /<<([^<>]*)>>/.exec(text)![1]!);
-      return new Response(rewrite(await reply.text(), real!, standIn!), reply);
+      const [real, standIn] = [raw, sent].map((text) => /<<([^<>]*)>>/.exec(text)?.[1]);
+      // The redirect probe carries no stand-in: its reply goes back as it came.
+      if (real === undefined || standIn === undefined) return reply;
+      return new Response(rewrite(await reply.text(), real, standIn), reply);
     };
   const labels = WIRES.flatMap((wire) => [wire.name, `${wire.name} streamed`]);
 
   it("names every reply check a proxy that never rewrites replies fails", async () => {
     const report = await selfTest(unguarded((text) => text));
     expect(report.failures).toEqual(
-      labels.flatMap((label) => [
-        `${label}: tool call not swapped back`,
-        `${label}: protected change not blocked`,
-      ]),
+      labels
+        .flatMap((label) => [
+          `${label}: tool call not swapped back`,
+          `${label}: protected change not blocked`,
+        ])
+        .concat("redirect passed to the client"),
     );
   });
 
@@ -138,12 +142,14 @@ describe("self-test", () => {
       unguarded((text, real, standIn) => text.split(standIn).join(real)),
     );
     expect(report.failures).toEqual(
-      labels.flatMap((label) => [
-        label.endsWith("streamed")
-          ? `${label}: tool call not swapped back`
-          : `${label}: real value sent off the machine`,
-        `${label}: protected change not blocked`,
-      ]),
+      labels
+        .flatMap((label) => [
+          label.endsWith("streamed")
+            ? `${label}: tool call not swapped back`
+            : `${label}: real value sent off the machine`,
+          `${label}: protected change not blocked`,
+        ])
+        .concat("redirect passed to the client"),
     );
   });
 

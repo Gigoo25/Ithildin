@@ -109,10 +109,11 @@ describe("secret reads", () => {
 });
 
 describe("swapToolJson", () => {
-  it("returns arguments it cannot parse unchanged", () => {
+  it("blocks arguments it cannot parse: no guard has read them", () => {
     expect(swapToolJson("bash", "{not json", new Set())).toEqual({
-      json: "{not json",
+      json: "{}",
       swapped: 0,
+      blocked: true,
     });
   });
 });
