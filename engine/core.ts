@@ -223,20 +223,60 @@ const OPAQUE_PROVIDER_FIELDS: Record<string, true> = {
 // instructions, tool arguments, data/url, etc.) remain scanned.
 // Chat Completions compat adapters send the same class of enum as
 // reasoning_effort (422 unknown variant).
-const PROTOCOL_PASSTHROUGH_FIELDS: Record<string, true> = {
+//
+// Request-level settings, passed whole only at the top of the body.
+const PROTOCOL_TOP_FIELDS: Record<string, true> = {
   include: true,
   reasoning: true,
-  effort: true,
-  summary: true,
   service_tier: true,
   serviceTier: true,
   reasoning_effort: true,
   reasoningEffort: true,
   tool_choice: true,
   toolChoice: true,
+};
+// Block and message tags, at any depth, but only while they hold an enum: a
+// tool result's JSON {"summary": "<an email>"} is content under the same key.
+const PROTOCOL_ENUM_FIELDS: Record<string, true> = {
   type: true,
   role: true,
+  effort: true,
+  summary: true,
 };
+// "input_text", "json_object", "web_search_20250305", "reasoning.encrypted_content".
+const PROTOCOL_ENUM = /^[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)*$/;
+
+function isProtocolEnum(value: unknown): boolean {
+  if (typeof value === "string") return PROTOCOL_ENUM.test(value);
+  // JSON Schema: "type": ["string", "null"].
+  return Array.isArray(value) && value.length > 0 && value.every(isProtocolEnum);
+}
+
+// Inside what a tool took or gave back (Anthropic tool_use input, Responses
+// call output and arguments) every key is the tool's, not the protocol's.
+// Tool definitions are the protocol's own schema.
+const TOOL_PAYLOAD_KEYS = new Set(["input", "output", "arguments"]);
+
+function inToolPayload(location: readonly (string | number)[]): boolean {
+  if (location[0] !== "messages" && location[0] !== "input") return false;
+  return location
+    .slice(1, -1)
+    .some((part) => typeof part === "string" && TOOL_PAYLOAD_KEYS.has(part));
+}
+
+function isProtocolControl(
+  key: string,
+  value: unknown,
+  parent: Record<string, unknown> | undefined,
+  location: readonly (string | number)[],
+): boolean {
+  if (PROTOCOL_TOP_FIELDS[key] === true) return location.length === 1;
+  // Responses reasoning items carry the provider's own summary, beside the
+  // signed encrypted_content.
+  if (key === "summary" && location.length === 3 && location[0] === "input")
+    return parent?.type === "reasoning";
+  return PROTOCOL_ENUM_FIELDS[key] === true && isProtocolEnum(value) && !inToolPayload(location);
+}
 
 export function clearCaches(): void {
   SCAN_CACHE.clear();
@@ -622,13 +662,12 @@ export function redactValue(
   // through at any depth. Protocol control enums only need that protection
   // inside the provider payload itself. Persisted details share no wire
   // contract with the provider, so a user-controlled `type`/`role`/`include`
-  // key there must scan like any other field. (Within the payload these keys
-  // are core-set enums. Narrowing them further by location would risk 400s
-  // on future protocol shapes for no measurable gain.)
+  // key there must scan like any other field. Within the payload they pass
+  // only where the protocol puts them (isProtocolControl).
   if (key !== undefined && OPAQUE_PROVIDER_FIELDS[key] === true) {
     return { value, hits: 0 };
   }
-  if (providerPayload && key !== undefined && PROTOCOL_PASSTHROUGH_FIELDS[key] === true) {
+  if (providerPayload && key !== undefined && isProtocolControl(key, value, parent, location)) {
     return { value, hits: 0 };
   }
   if (typeof value === "string" && isChainReference(key, parent, location, providerPayload)) {

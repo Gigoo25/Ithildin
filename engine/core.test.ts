@@ -132,6 +132,48 @@ describe("redactValue", () => {
     expect(redactValue({ other: { required: [TOKEN] } }, NONE).hits).toBe(1);
   });
 
+  it("passes protocol enums through a starved budget", () => {
+    const body = {
+      include: ["reasoning.encrypted_content"],
+      reasoning: { effort: "high", summary: "auto" },
+      tool_choice: { type: "function", name: "Lookup" },
+      input: [
+        { type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] },
+        { type: "reasoning", summary: [{ type: "summary_text", text: "model text" }] },
+      ],
+      tools: [{ type: "function", parameters: { type: ["string", "null"] } }],
+    };
+    const result = withScanBudget(
+      () => redactValue(body, NONE, undefined, undefined, [], true),
+      -1,
+    );
+    expect(result.value).toMatchObject({
+      include: body.include,
+      reasoning: body.reasoning,
+      tool_choice: body.tool_choice,
+      input: [{ type: "message", role: "user", content: [{ type: "input_text" }] }, body.input[1]],
+      tools: body.tools,
+    });
+  });
+
+  it("scans control-named keys that hold content, or sit in a tool's payload", () => {
+    const body = {
+      summary: TOKEN,
+      system: [{ type: "text", text: "x", role: TOKEN }],
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "tool_use", input: { type: "lowercase_value", summary: TOKEN } }],
+        },
+      ],
+      input: [{ type: "function_call_output", output: { effort: TOKEN } }],
+      deep: { include: TOKEN, reasoning: TOKEN },
+    };
+    const result = redactValue(body, NONE, undefined, undefined, [], true);
+    expect(JSON.stringify(result.value)).not.toContain(TOKEN);
+    expect(result.hits).toBe(6);
+  });
+
   it("replaces a string too long to scan whole", () => {
     const long = "x".repeat(MAX_SCAN_BYTES + 1);
     const result = redactValue(long, NONE);
