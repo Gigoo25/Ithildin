@@ -48,11 +48,12 @@ function argvLine(argv: string[]): string {
 }
 
 // A shell call's command line: {command: "…"} (Claude, Pi), {command: argv}
-// (Codex shell), {cmd: "…"} (Codex exec_command). Undefined for anything else.
+// (Codex shell), {cmd: "…"} (Codex exec_command), {script: "…"}. Undefined
+// for anything else.
 export function shellCommand(args: unknown): string | undefined {
   if (!args || typeof args !== "object" || Array.isArray(args)) return undefined;
   const record = args as Record<string, unknown>;
-  for (const key of ["command", "cmd"]) {
+  for (const key of ["command", "cmd", "script"]) {
     const value = record[key];
     if (typeof value === "string") return value;
     if (Array.isArray(value) && value.length > 0 && value.every((word) => typeof word === "string"))
@@ -82,9 +83,5 @@ export function writeTargets(toolName: string, args: unknown): string[] | undefi
   const patches = ["input", "patch"].flatMap((key) =>
     typeof record[key] === "string" ? patchPaths(record[key] as string) : [],
   );
-  return [
-    ...candidatePaths(record),
-    ...(typeof record.notebook_path === "string" ? [record.notebook_path] : []),
-    ...patches,
-  ];
+  return [...candidatePaths(record), ...patches];
 }

@@ -19,27 +19,46 @@ import {
   swapToolJson,
   swapWholeText,
 } from "./redact.ts";
+import { aliases } from "../engine/core.ts";
 import { recordOriginal } from "./replay.ts";
 
 export interface SseEvent {
   event?: string | undefined;
   data: string;
+  // Kept for a client that resumes a stream (Last-Event-ID).
+  id?: string | undefined;
+  retry?: string | undefined;
 }
 
 export function parseSseBlock(block: string): SseEvent | undefined {
   let event: string | undefined;
+  let id: string | undefined;
+  let retry: string | undefined;
   const data: string[] = [];
   for (const line of block.split(/\r?\n/)) {
     if (line.startsWith("event:")) event = line.slice(6).trim();
     else if (line.startsWith("data:")) data.push(line.slice(5).replace(/^ /, ""));
+    else if (line.startsWith("id:")) id = line.slice(3).replace(/^ /, "");
+    else if (line.startsWith("retry:")) retry = line.slice(6).trim();
   }
-  if (event === undefined && data.length === 0) return undefined;
-  return { event, data: data.join("\n") };
+  if (event === undefined && data.length === 0 && id === undefined && retry === undefined)
+    return undefined;
+  return {
+    event,
+    data: data.join("\n"),
+    ...(id === undefined ? {} : { id }),
+    ...(retry === undefined ? {} : { retry }),
+  };
 }
 
 export function formatSse(event: SseEvent): string {
   const lines = event.event === undefined ? [] : [`event: ${event.event}`];
-  for (const line of event.data.split("\n")) lines.push(`data: ${line}`);
+  if (event.id !== undefined) lines.push(`id: ${event.id}`);
+  if (event.retry !== undefined) lines.push(`retry: ${event.retry}`);
+  // An id- or retry-only block carries no data line: one would dispatch an
+  // empty event.
+  const bare = event.data === "" && event.event === undefined && lines.length > 0;
+  if (!bare) for (const line of event.data.split("\n")) lines.push(`data: ${line}`);
   return `${lines.join("\n")}\n\n`;
 }
 
@@ -63,7 +82,7 @@ function json(event: SseEvent): Record<string, unknown> | undefined {
 }
 
 // Streamed reply text, released up to the last whitespace. A run with no
-// whitespace is released past a tail long enough for any stand-in.
+// whitespace is released past a tail as long as the longest stand-in.
 const HOLD_LIMIT = 512;
 const HOLD_TAIL = 160;
 
@@ -86,7 +105,11 @@ class TextHold {
       this.held.lastIndexOf("\t"),
     );
     const cut =
-      space >= 0 ? space + 1 : this.held.length > HOLD_LIMIT ? this.held.length - HOLD_TAIL : 0;
+      space >= 0
+        ? space + 1
+        : this.held.length > HOLD_LIMIT
+          ? this.held.length - Math.max(HOLD_TAIL, aliases().longestStandIn())
+          : 0;
     return this.release(cut);
   }
 

@@ -225,3 +225,11 @@ it("takes a .example stand-in whole before punctuation, not inside a longer name
   }
   expect(aliasMatches(`${standIn}.com`).map((match) => match.text)).not.toContain(standIn);
 });
+
+it("knows its longest stand-in, for a stream's hold", () => {
+  const b = book();
+  expect(b.longestStandIn()).toBe(0);
+  const short = b.standIn("pii-swapback-user", "zqx");
+  const long = b.standIn("pii-swapback-host", "a.very.long.host.name.zqxcorp.internal");
+  expect(b.longestStandIn()).toBe(Math.max(short.length, long.length));
+});

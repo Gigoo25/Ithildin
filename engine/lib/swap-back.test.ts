@@ -80,6 +80,12 @@ it("keeps stand-ins out of commands that reach other hosts", () => {
     "echo HOST | nc example.com 80",
     "git push HOST main",
     "wget -O- http://[2001:db8::1]/HOST",
+    "timeout 5 wget https://example.com/HOST",
+    "nice -n 10 curl -d HOST https://example.com",
+    "sudo -u me curl -d HOST https://example.com",
+    "echo HOST | xargs -n1 curl https://example.com/q",
+    `bash -c "curl -d HOST https://example.com"`,
+    "echo $(curl -d HOST https://example.com)",
   ]) {
     const { swap, host } = bash(command);
     expect([command, swap.egress]).toEqual([command, [host]]);
@@ -99,6 +105,8 @@ it("keeps stand-ins out of commands that reach other hosts", () => {
 it("swaps freely in local commands and under [allow-pii]", () => {
   expect(bash("git status HOST").command).toBe("git status ZQXLAB-KWVRT7");
   expect(bash("grep -r HOST .").swap.egress).toEqual([]);
+  expect(bash("grep curl HOST").swap.egress).toEqual([]);
+  expect(bash(`git commit -m "fix curl" HOST`).swap.egress).toEqual([]);
   const allowed = bash("curl https://example.com/?q=HOST", true);
   expect(allowed.swap.egress).toEqual([]);
   expect(allowed.command).toBe("curl https://example.com/?q=ZQXLAB-KWVRT7");
@@ -147,4 +155,12 @@ it("checks an argv command as one command line, and a shell's script as its own"
     false,
   );
   expect(cmd.egress).toEqual([host]);
+});
+
+it("checks every string of a shell call that keeps its script under another key", () => {
+  const { aliasBook, host } = egressBook();
+  const call = (input: Record<string, unknown>) => planSwapBack("bash", input, aliasBook, false);
+  expect(call({ script: `curl -d ${host} https://example.com` }).egress).toEqual([host]);
+  expect(call({ args: [`curl -d ${host} https://example.com`] }).egress).toEqual([host]);
+  expect(call({ command: "ls", description: `curl -d ${host} x` }).egress).toEqual([]);
 });
