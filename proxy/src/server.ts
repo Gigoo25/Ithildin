@@ -21,6 +21,7 @@ import {
   type Counts,
   type Format,
   initEngine,
+  redactHeaders,
   redactQuery,
   redactRequest,
   refreshIdentity,
@@ -28,6 +29,7 @@ import {
   typedPromptCount,
 } from "./redact.ts";
 import { configHome, NAME } from "../engine/lib/names.ts";
+import { aliasStyle } from "../engine/lib/rules.ts";
 import { createStatusBook } from "./status.ts";
 import { type SelfTest, selfTest } from "./selftest.ts";
 import { createRewriter, formatSse, parseSseBlock, swapResponseBody } from "./streams.ts";
@@ -169,6 +171,7 @@ function rewriteSse(
       flush(controller) {
         buffer += decoder.decode();
         if (buffer.trim() !== "") emit(buffer, controller);
+        for (const out of rewriter.flush()) controller.enqueue(encoder.encode(formatSse(out)));
         done(rewriter.swapped);
       },
     }),
@@ -177,8 +180,16 @@ function rewriteSse(
 
 // The scanners the handler calls; tests pass ones that fail, to show a
 // failed scan refuses the request instead of forwarding it.
-export type Redactors = { request: typeof redactRequest; query: typeof redactQuery };
-const REDACTORS: Redactors = { request: redactRequest, query: redactQuery };
+export type Redactors = {
+  request: typeof redactRequest;
+  query: typeof redactQuery;
+  headers: typeof redactHeaders;
+};
+const REDACTORS: Redactors = {
+  request: redactRequest,
+  query: redactQuery,
+  headers: redactHeaders,
+};
 
 // What scanning a request body gave: the body to forward and what it found.
 type Scanned = {
@@ -192,6 +203,21 @@ type Scanned = {
 
 function unscanned(): Scanned {
   return { body: undefined, tags: new Set(), hits: 0, counts: undefined, prompts: 0, scanMs: 0 };
+}
+
+// The body as text, read no further than the cap: a chunked body declares no
+// length. Undefined when it runs over.
+async function readCapped(request: Request): Promise<string | undefined> {
+  if (!request.body) return "";
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for await (const chunk of request.body) {
+    size += chunk.byteLength;
+    // Leaving the loop cancels the rest of the stream.
+    if (size > REQUEST_BYTES_MAX) return undefined;
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks).toString("utf8");
 }
 
 // The request body redacted, or the refusal. Bodies not read as JSON pass
@@ -208,9 +234,8 @@ async function scanRequest(
   const declared = Number(request.headers.get("content-length") ?? 0);
   if (declared > REQUEST_BYTES_MAX)
     return refuse(413, `request body over ${REQUEST_BYTES_MAX} bytes`);
-  const raw = await request.text();
-  if (Buffer.byteLength(raw) > REQUEST_BYTES_MAX)
-    return refuse(413, `request body over ${REQUEST_BYTES_MAX} bytes`);
+  const raw = await readCapped(request);
+  if (raw === undefined) return refuse(413, `request body over ${REQUEST_BYTES_MAX} bytes`);
   const type = request.headers.get("content-type") ?? "";
   if (type.includes("json") || (format !== undefined && raw.trimStart().startsWith("{"))) {
     const parsed = parseRequestObject(raw);
@@ -267,17 +292,24 @@ function redactBody(
   }
 }
 
-// The query string redacted, its hits added to the body's; or the refusal.
-function redactSearch(search: string, scanned: Scanned, redact: Redactors): string | Response {
+// The query string redacted and the headers redacted in place, their hits
+// added to the body's; or the refusal.
+function redactSearch(
+  search: string,
+  headers: Headers,
+  scanned: Scanned,
+  redact: Redactors,
+): string | Response {
   try {
     const query = redact.query(search, scanned.tags);
-    scanned.hits += query.hits;
-    if (scanned.counts) scanned.counts.masked += query.values;
+    const sent = redact.headers(headers, scanned.tags);
+    scanned.hits += query.hits + sent.hits;
+    if (scanned.counts) scanned.counts.masked += query.values + sent.values;
     return query.search;
   } catch (error) {
     return refuse(
       500,
-      `query redaction failed (${(error as Error).name}), refusing to forward unscanned`,
+      `query or header redaction failed (${(error as Error).name}), refusing to forward unscanned`,
     );
   }
 }
@@ -363,7 +395,7 @@ export function createHandler(
     const scanned = await scanRequest(request, format, redact);
     if (scanned instanceof Response) return scanned;
     const { body, tags, counts, prompts, scanMs } = scanned;
-    const search = redactSearch(url.search, scanned, redact);
+    const search = redactSearch(url.search, headers, scanned, redact);
     if (typeof search !== "string") return search;
     const target = upstreamUrl(route, rest, search);
     if (counts) book.record(session, match[1]!, counts, prompts, tags);
@@ -424,8 +456,40 @@ async function relayReply(
     await upstream.body.cancel();
     return refuse(502, `upstream reply type ${contentType.split(";")[0]} cannot be checked`);
   }
+  if (!format && upstream.ok && upstream.body) return relayUnread(upstream, init, line);
   log(line);
   return new Response(upstream.body, init);
+}
+
+// Top-level keys of model replies in the formats not read here: completions
+// and Ollama (choices, message, response), Gemini (candidates), Anthropic and
+// Responses lookalikes (content, output).
+const MODEL_REPLY_KEYS = ["choices", "message", "response", "candidates", "content", "output"];
+
+// A successful reply on a path formatForPath does not know. A model reply
+// there (a stream, or JSON shaped like one) is refused: no guard read its
+// tool calls. Anything else (model lists, health checks) passes.
+async function relayUnread(upstream: Response, init: ResponseInit, line: string) {
+  const contentType = upstream.headers.get("content-type") ?? "";
+  if (/event-stream|ndjson/.test(contentType)) {
+    await upstream.body?.cancel();
+    return refuse(502, "streamed reply on a path this proxy does not read, refusing it unchecked");
+  }
+  if (!contentType.includes("json")) {
+    log(line);
+    return new Response(upstream.body, init);
+  }
+  const text = await upstream.text();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    parsed = undefined;
+  }
+  if (parsed && typeof parsed === "object" && MODEL_REPLY_KEYS.some((key) => key in parsed))
+    return refuse(502, "model reply on a path this proxy does not read, refusing it unchecked");
+  log(line);
+  return new Response(text, init);
 }
 
 async function swapJsonReply(
@@ -492,6 +556,8 @@ export function start(
 ): { server: ReturnType<typeof Bun.serve>; drain: () => Promise<void>; proven: Promise<void> } {
   const routes = loadRoutes(options.routesFile);
   initEngine();
+  if (aliasStyle() === "tokens")
+    log("aliases are tokens: nothing is swapped back, tools run with the tokens the model wrote");
   const saving = setInterval(saveScanCache, 30_000);
   saving.unref();
   const refreshing = setInterval(() => {

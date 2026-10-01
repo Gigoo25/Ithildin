@@ -94,6 +94,21 @@ describe("requests the proxy refuses", () => {
       messages: [{ role: "user", content: "x".repeat(REQUEST_BYTES_MAX) }],
     });
     expect((await refusal(await handler(post("anthropic/v1/messages", big)))).status).toBe(413);
+    // Chunked, with no length declared: it stops reading past the cap.
+    let pulled = 0;
+    const chunk = new Uint8Array(1024 * 1024).fill(32);
+    const chunked = new Request("http://127.0.0.1/anthropic/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: new ReadableStream({
+        pull(controller) {
+          pulled++;
+          controller.enqueue(chunk);
+        },
+      }),
+    });
+    expect((await refusal(await handler(chunked))).status).toBe(413);
+    expect(pulled * chunk.byteLength).toBeLessThan(REQUEST_BYTES_MAX * 2);
     expect(up.calls).toHaveLength(0);
   });
 
@@ -190,6 +205,27 @@ describe("replies the proxy refuses", () => {
     expect(await models.text()).toBe("models");
   });
 
+  it("refuses a model reply on a path it does not read, and passes other JSON", async () => {
+    const via = (reply: () => Response) =>
+      createHandler(DEFAULT_ROUTES, upstream(reply).fetch)(post("anthropic/api/chat", messages));
+    const json = (body: unknown) => () => Response.json(body);
+    const tool = { message: { tool_calls: [{ function: { name: "bash", arguments: {} } }] } };
+    expect((await refusal(await via(json(tool)))).status).toBe(502);
+    expect((await refusal(await via(json({ choices: [] })))).status).toBe(502);
+    const stream = () =>
+      new Response("{}\n", { headers: { "content-type": "application/x-ndjson" } });
+    expect((await refusal(await via(stream))).status).toBe(502);
+    const list = await via(json({ data: [{ id: "m" }] }));
+    expect(await list.json()).toEqual({ data: [{ id: "m" }] });
+    expect(
+      await (
+        await via(
+          () => new Response("not json {", { headers: { "content-type": "application/json" } }),
+        )
+      ).text(),
+    ).toBe("not json {");
+  });
+
   it("passes SSE comments and bare lines through a rewritten stream", async () => {
     const text = ': keepalive\n\nevent: ping\ndata: {"type":"ping"}\n\n';
     const handler = createHandler(
@@ -271,8 +307,18 @@ describe("jsonDepth", () => {
   });
 });
 
+const REDACTORS_PASSING = {
+  request: (_format: unknown, parsed: Record<string, unknown>) => ({
+    body: parsed,
+    hits: 0,
+    counts: { masked: 0, files: 0, lines: 0, images: 0 },
+    tags: new Set<string>(),
+  }),
+  query: (search: string) => ({ search, hits: 0, values: 0 }),
+};
+
 describe("scan failures", () => {
-  it("refuses when request or query redaction throws, and never calls upstream", async () => {
+  it("refuses when any redaction throws, and never calls upstream", async () => {
     const up = upstream(() => Response.json({}));
     const fail = () => {
       throw new TypeError("boom");
@@ -280,6 +326,7 @@ describe("scan failures", () => {
     const body = createHandler(DEFAULT_ROUTES, up.fetch, {
       request: fail,
       query: (search) => ({ search, hits: 0, values: 0 }),
+      headers: () => ({ hits: 0, values: 0 }),
     });
     const first = await refusal(await body(post("anthropic/v1/messages", messages)));
     expect(first.status).toBe(500);
@@ -292,9 +339,17 @@ describe("scan failures", () => {
         tags: new Set(),
       }),
       query: fail,
+      headers: () => ({ hits: 0, values: 0 }),
     });
     expect(
       (await refusal(await query(new Request("http://127.0.0.1/anthropic/v1/models?q=1")))).status,
+    ).toBe(500);
+    const headers = createHandler(DEFAULT_ROUTES, up.fetch, {
+      ...REDACTORS_PASSING,
+      headers: fail,
+    });
+    expect(
+      (await refusal(await headers(new Request("http://127.0.0.1/anthropic/v1/models")))).status,
     ).toBe(500);
     expect(up.calls).toHaveLength(0);
   });

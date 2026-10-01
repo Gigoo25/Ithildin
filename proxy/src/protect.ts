@@ -23,13 +23,11 @@
 
 import { existsSync, readdirSync, realpathSync } from "node:fs";
 import path from "node:path";
-import { candidatePaths, canonicalPath, commandPathCandidates } from "../engine/core.ts";
+import { canonicalPath, commandPathCandidates } from "../engine/core.ts";
 import { NAME, setting } from "../engine/lib/names.ts";
+import { shellCommand, writeTargets } from "./tools.ts";
 
 export type ProtectedKind = "config" | "git";
-
-const WRITE_TOOLS = new Set(["write", "edit", "Write", "Edit", "MultiEdit", "NotebookEdit"]);
-const BASH_TOOLS = new Set(["bash", "Bash"]);
 
 export function protectedBlocked(kind: ProtectedKind): string {
   const what =
@@ -399,24 +397,18 @@ function bashChange(
   return undefined;
 }
 
-// What a tool call would change that is protected, or undefined.
+// What a tool call would change that is protected, or undefined. Shell and
+// write calls are known by their arguments as well as their name (tools.ts).
 export function protectedChange(
   toolName: string,
   args: unknown,
   cwd: string,
 ): ProtectedKind | undefined {
-  if (!args || typeof args !== "object" || Array.isArray(args)) return;
-  const record = args as Record<string, unknown>;
-  if (BASH_TOOLS.has(toolName))
-    return typeof record.command === "string"
-      ? bashChange(record.command, cwd, protectedRoots())
-      : undefined;
-  if (!WRITE_TOOLS.has(toolName)) return;
+  const command = shellCommand(args);
+  if (command !== undefined) return bashChange(command, cwd, protectedRoots());
+  const targets = writeTargets(toolName, args);
+  if (!targets) return;
   const roots = protectedRoots();
-  const targets = [
-    ...candidatePaths(record),
-    ...(typeof record.notebook_path === "string" ? [record.notebook_path] : []),
-  ];
   for (const target of targets) {
     const kind = protectedPath(target, cwd, roots);
     if (kind) return kind;

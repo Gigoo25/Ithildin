@@ -156,6 +156,29 @@ describe("protected bash", () => {
   });
 });
 
+describe("tools known by their arguments", () => {
+  it("guards Codex shell, exec_command and apply_patch calls", () => {
+    expect(protectedChange("shell", { command: ["bash", "-lc", "rm -rf .git"] }, repo)).toBe("git");
+    expect(protectedChange("shell", { command: ["git", "push", "--force"] }, repo)).toBe("git");
+    expect(protectedChange("exec_command", { cmd: "git reset --hard" }, repo)).toBe("git");
+    const patch =
+      "*** Begin Patch\n*** Update File: config/pi/models.json\n@@\n-a\n+b\n*** End Patch";
+    expect(protectedChange("apply_patch", patch, repo)).toBe("config");
+    expect(protectedChange("apply_patch", { input: patch }, repo)).toBe("config");
+    expect(
+      protectedChange("apply_patch", patch.replace("config/pi/models.json", "src/app.ts"), repo),
+    ).toBeUndefined();
+  });
+
+  it("guards a shell- or write-shaped call whatever its name", () => {
+    expect(protectedChange("run_terminal", { command: "rm -rf .git" }, repo)).toBe("git");
+    expect(
+      protectedChange("write_file", { path: "~/.pi/agent/models.json", content: "{}" }, home),
+    ).toBe("config");
+    expect(protectedChange("read_file", { path: "~/.pi/agent/models.json" }, home)).toBeUndefined();
+  });
+});
+
 describe("protected calls through the proxy", () => {
   const request = (prompt: string) =>
     redactRequest("anthropic", {

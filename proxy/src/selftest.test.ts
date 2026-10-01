@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it, spyOn } from "bun:test";
-import { initEngine, redactQuery, redactRequest } from "./redact.ts";
+import { initEngine, redactHeaders, redactQuery, redactRequest } from "./redact.ts";
 import { createHandler, DEFAULT_ROUTES, type Redactors, selfTestCli, start } from "./server.ts";
 import { selfTest, syntheticValues } from "./selftest.ts";
 
@@ -21,12 +21,14 @@ const leaking: Redactors = {
     tags: new Set(),
   }),
   query: redactQuery,
+  headers: redactHeaders,
 };
 const broken: Redactors = {
   request: () => {
     throw new TypeError("broken");
   },
   query: redactQuery,
+  headers: redactHeaders,
 };
 
 describe("self-test", () => {
@@ -54,6 +56,7 @@ describe("self-test", () => {
     expect(report.failures).toEqual([
       "request not forwarded (status 500)",
       "tool call not swapped back",
+      "streamed tool call not swapped back",
     ]);
   });
 
