@@ -108,6 +108,59 @@ function standInSpans(text: string, book: AliasBook): Span[] {
   return spans;
 }
 
+// Programs that run the command after them, and their options.
+const LAUNCHERS = new Set([
+  "sudo",
+  "doas",
+  "env",
+  "command",
+  "exec",
+  "time",
+  "nice",
+  "nohup",
+  "timeout",
+  "xargs",
+  "stdbuf",
+  "ionice",
+  "chrt",
+  "taskset",
+  "setsid",
+  "unbuffer",
+  "watch",
+  "flock",
+  "parallel",
+  "{",
+  "!",
+]);
+
+function clientName(word: string): string {
+  return (
+    word
+      .replace(/^[$"'`(]+/, "")
+      .split("/")
+      .pop() ?? ""
+  );
+}
+
+// Where a network client sits in a segment's words: the program, the one a
+// launcher runs past its options (timeout 5 wget, sudo -u me curl), or the
+// first word of a nested script (bash -c "curl …", $(curl …)).
+function clientIndex(words: string[]): number | undefined {
+  let launched = true;
+  let option = false;
+  for (const [j, word] of words.entries()) {
+    const name = clientName(word);
+    if (NETWORK_CLIENTS.has(name) && (launched || /^(?:["'`(]|\$\()/.test(word))) return j;
+    if (LAUNCHERS.has(name) || /^[A-Za-z_]\w*=/.test(word)) launched = true;
+    else if (launched && (word.startsWith("-") || option || /^\d/.test(word))) {
+      option = word.startsWith("-");
+      continue;
+    } else launched = false;
+    option = false;
+  }
+  return undefined;
+}
+
 // Character ranges of network destinations in a Bash command: URL hosts,
 // user@host / host:path arguments, and the host argument of ssh-like and
 // nc-like clients. Undefined when the command talks to the network at all.
@@ -120,15 +173,9 @@ function destinations(command: string): Array<{ start: number; end: number }> | 
       text: word[0],
       start: segment.index + word.index,
     }));
-    let i = 0;
-    while (
-      i < words.length &&
-      (/^[A-Za-z_]\w*=/.test(words[i]!.text) ||
-        ["sudo", "env", "command", "time", "nohup"].includes(words[i]!.text))
-    )
-      i++;
-    const program = (words[i]?.text ?? "").split("/").pop() ?? "";
-    if (!NETWORK_CLIENTS.has(program)) continue;
+    const i = clientIndex(words.map((word) => word.text));
+    if (i === undefined) continue;
+    const program = clientName(words[i]!.text);
     if (program === "git" && !words.slice(i + 1).some((word) => GIT_NETWORK.has(word.text)))
       continue;
     network = true;
@@ -238,7 +285,7 @@ function argvEgress(list: unknown[], index: number, book: AliasBook): (span: Spa
     own(span) || whole({ ...span, start: span.start + offset, end: span.end + offset });
 }
 
-const COMMAND_KEYS = new Set(["command", "cmd"]);
+const COMMAND_KEYS = new Set(["command", "cmd", "script"]);
 
 // `offMachineAllowed`: [allow-pii] lets real values go anywhere.
 export function planSwapBack(
@@ -248,11 +295,14 @@ export function planSwapBack(
   offMachineAllowed: boolean,
 ): Swap {
   const out: Swap = { input, resolved: [], unresolved: [], egress: [] };
+  // A shell call with its script under some other key: any string may run.
+  const keyed =
+    !!input && typeof input === "object" && Object.keys(input).some((k) => COMMAND_KEYS.has(k));
   out.input = walk(input, (text, key, list, index) => {
     let egress: (span: Span) => boolean = () => false;
     if (!offMachineAllowed) {
       if (WEB_TOOLS.has(toolName)) egress = () => true;
-      else if (toolName === "bash" && key !== undefined && COMMAND_KEYS.has(key))
+      else if (toolName === "bash" && (!keyed || (key !== undefined && COMMAND_KEYS.has(key))))
         egress = list ? argvEgress(list, index!, book) : commandEgress(text, book);
     }
     return swapString(text, book, out, egress);

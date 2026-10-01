@@ -116,6 +116,44 @@ describe("protected bash", () => {
     expect(bash("git gc --prune=now")).toBe("git");
   });
 
+  it("blocks find, xargs and rsync deletions that reach a repo or config", () => {
+    expect(bash("find . -delete")).toBe("git");
+    expect(bash("find -L . -type f -exec rm {} +")).toBe("git");
+    expect(bash("find . -type f | xargs rm")).toBe("git");
+    expect(bash("find . -print0 | xargs -0 -n 5 rm -rf")).toBe("git");
+    expect(bash("xargs rm -rf .git < list.txt")).toBe("git");
+    expect(bash("find . -not -name '*.pyc' -delete")).toBe("git");
+    expect(bash("find . -name '*.pyc' -o -name x -delete")).toBe("git");
+    expect(bash("find . -name 'conf*' -delete")).toBe("git");
+    expect(bash("rsync -a --delete /tmp/empty/ ./")).toBe("git");
+    expect(bash("rsync -a --remove-source-files ./ /tmp/out/")).toBe("git");
+    expect(bash("find ~ -iname '*.JSON' -delete", home)).toBe("config");
+  });
+
+  it("lets find, xargs and rsync through when they delete nothing protected", () => {
+    expect(bash("find . -name '*.pyc' -delete")).toBeUndefined();
+    expect(bash("find . -type f -exec grep -l foo {} +")).toBeUndefined();
+    expect(bash("find . -name '*.log' | xargs rm")).toBeUndefined();
+    expect(bash("git ls-files | xargs wc -l")).toBeUndefined();
+    expect(bash("find src -delete")).toBeUndefined();
+    expect(bash("rsync -a src/ /tmp/out/")).toBeUndefined();
+  });
+
+  it("guards the agents' other config and the shell startup files", () => {
+    for (const file of [
+      "~/.claude.json",
+      "~/.config/opencode/opencode.json",
+      "~/.codex/config.toml",
+      "~/.bashrc",
+      "~/.zshrc",
+    ])
+      expect([file, protectedChange("Write", { file_path: file, content: "x" }, home)]).toEqual([
+        file,
+        "config",
+      ]);
+    expect(bash("echo 'export ANTHROPIC_BASE_URL=x' >> ~/.bashrc", home)).toBe("config");
+  });
+
   it("lets the same git subcommands through when they keep history", () => {
     expect(bash("git reflog show")).toBeUndefined();
     expect(bash("git update-ref refs/heads/topic HEAD")).toBeUndefined();
@@ -176,6 +214,7 @@ describe("tools known by their arguments", () => {
       protectedChange("write_file", { path: "~/.pi/agent/models.json", content: "{}" }, home),
     ).toBe("config");
     expect(protectedChange("read_file", { path: "~/.pi/agent/models.json" }, home)).toBeUndefined();
+    expect(protectedChange("run", { script: "rm -rf .git" }, repo)).toBe("git");
   });
 });
 

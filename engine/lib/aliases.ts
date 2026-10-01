@@ -716,6 +716,7 @@ export class AliasBook {
   private corpusTokens: Set<string> | undefined;
   private pattern: RegExp | undefined;
   private glued: RegExp | undefined;
+  private longest = 0;
   private readonly key: Buffer;
 
   // No parameter property: Node's type stripping (the node checks) rejects it.
@@ -1021,11 +1022,17 @@ export class AliasBook {
     const known = this.reverse.get(standIn);
     if (known === undefined) {
       this.reverse.set(standIn, { value, ruleId });
+      this.longest = Math.max(this.longest, standIn.length);
       this.pattern = undefined;
       this.glued = undefined;
     } else if (known !== null && known.value.toLowerCase() !== value.toLowerCase()) {
       this.reverse.set(standIn, null);
     }
+  }
+
+  // Length of the longest stand-in minted, so a stream holds back enough.
+  longestStandIn(): number {
+    return this.longest;
   }
 
   // Real value behind a stand-in this process minted, undefined when unknown,

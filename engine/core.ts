@@ -809,7 +809,7 @@ function wordPathSpellings(word: string): string[] {
   return spellings;
 }
 
-function globRegExp(pattern: string): RegExp {
+export function globRegExp(pattern: string): RegExp {
   let source = "";
   for (let i = 0; i < pattern.length; i++) {
     const char = pattern[i] ?? "";
@@ -940,7 +940,7 @@ function commandReadsOwnInventory(command: string, cwd: string): boolean {
 // Candidate path inputs across Pi's file-touching tools.
 export function candidatePaths(input: Record<string, unknown>): string[] {
   const out: string[] = [];
-  for (const key of ["path", "file_path", "filePath", "file"]) {
+  for (const key of ["path", "file_path", "filePath", "file", "notebook_path"]) {
     const value = input[key];
     if (typeof value === "string" && value) {
       out.push(value);

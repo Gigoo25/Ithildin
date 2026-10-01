@@ -58,8 +58,8 @@ import {
 } from "../engine/lib/runtime-inventory.ts";
 import type { InventoryEntry } from "../engine/lib/rules.ts";
 import { planSwapBack } from "../engine/lib/swap-back.ts";
-import { protectedBlocked, protectedChange } from "./protect.ts";
-import { BASH_TOOLS, LOCAL_TOOLS, shellCommand, WRITE_TOOLS } from "./tools.ts";
+import { protectedBlocked, protectedChange, shellWrites } from "./protect.ts";
+import { BASH_TOOLS, LOCAL_TOOLS, shellCommand, writeTargets } from "./tools.ts";
 import { argsKey, initReplay, recordOriginal, replayOriginal, saveReplay } from "./replay.ts";
 
 export type Format = "anthropic" | "chat" | "responses";
@@ -674,18 +674,19 @@ export function redactQuery(
 ): { search: string; hits: number; values: number } {
   if (search === "" || search === "?" || tags.has("all")) return { search, hits: 0, values: 0 };
   const params = new URLSearchParams(search);
+  // Rebuilt pair by pair: set() on a hit collapsed a repeated key.
+  const out = new URLSearchParams();
   let hits = 0;
   const { values } = collectValues(() =>
     withScanBudget(() => {
-      for (const [name, value] of [...params]) {
+      for (const [name, value] of params) {
         const result = redactValue(value, tags, name, undefined, ["query", name], true);
-        if (result.hits === 0) continue;
         hits += result.hits;
-        params.set(name, String(result.value));
+        out.append(name, result.hits === 0 ? value : String(result.value));
       }
     }),
   );
-  return hits === 0 ? { search, hits, values } : { search: `?${params}`, hits, values };
+  return hits === 0 ? { search, hits, values } : { search: `?${out}`, hits, values };
 }
 
 // Request headers the agent sends to its own provider: the user's credentials
@@ -1214,6 +1215,15 @@ export function swapToolArguments(
   return kind ? block(callId, protectedBlocked(kind)) : result;
 }
 
+// Every string in a value, as written: JSON escapes glued a newline's n to
+// the word after it.
+function stringsOf(value: unknown): string[] {
+  if (typeof value === "string") return [value];
+  if (Array.isArray(value)) return value.flatMap(stringsOf);
+  if (value && typeof value === "object") return Object.values(value).flatMap(stringsOf);
+  return [];
+}
+
 function swapArguments(
   toolName: string,
   args: unknown,
@@ -1230,8 +1240,11 @@ function swapArguments(
   // Old hash-like shapes: stand-ins now look real, so a model that writes a
   // label and six hex digits copied them from an older transcript or made
   // them up.
-  const invented = WRITE_TOOLS.has(toolName)
-    ? [...new Set(aliasSpans(JSON.stringify(args ?? {})))].filter(
+  // By shape, like the guards: a write by any name, or a shell call that
+  // writes (cat > notes.txt <<EOF).
+  const writes = writeTargets(toolName, args) !== undefined || shellWrites(args);
+  const invented = writes
+    ? [...new Set(stringsOf(args).flatMap(aliasSpans))].filter(
         (token) => !seenLiterals.has(token) && !aliases().isStandIn(token),
       )
     : [];

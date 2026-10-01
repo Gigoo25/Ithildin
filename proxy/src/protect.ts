@@ -12,10 +12,13 @@
 //   the stand-in keys, under the old names too) and the repo files those
 //   links point at;
 // - where agents send requests: Pi's models.json/settings.json, Claude's
-//   ~/.claude/settings.json and any .claude/settings*.json (env can set
-//   ANTHROPIC_BASE_URL);
-// - git history: any path inside .git, rm/mv of a repo or a directory above
-//   one, and git commands that discard commits or refs.
+//   ~/.claude.json, ~/.claude/settings.json and any .claude/settings*.json
+//   (env can set ANTHROPIC_BASE_URL), opencode's opencode.json, Codex's
+//   config.toml and auth.json, and the shell startup files an exported
+//   base URL would go in;
+// - git history: any path inside .git, removing a repo or a directory above
+//   one (rm, mv, a deleting find, xargs rm over a find, rsync --delete), and
+//   git commands that discard commits or refs.
 //
 // Like the read guards this is lexical, not a sandbox: paths computed at run
 // time ($(...), eval, a script that edits the file) are out of scope, and
@@ -23,7 +26,7 @@
 
 import { existsSync, readdirSync, realpathSync } from "node:fs";
 import path from "node:path";
-import { canonicalPath, commandPathCandidates } from "../engine/core.ts";
+import { canonicalPath, commandPathCandidates, globRegExp } from "../engine/core.ts";
 import { NAME, setting } from "../engine/lib/names.ts";
 import { shellCommand, writeTargets } from "./tools.ts";
 
@@ -89,6 +92,15 @@ function protectedRoots(): { dirs: string[]; files: string[] } {
     path.join(home, ".pi", "agent", "models.json"),
     path.join(home, ".pi", "agent", "settings.json"),
     path.join(home, ".claude", "settings.json"),
+    path.join(home, ".claude.json"),
+    path.join(config, "opencode", "opencode.json"),
+    path.join(config, "opencode", "opencode.jsonc"),
+    path.join(home, ".codex", "config.toml"),
+    path.join(home, ".codex", "auth.json"),
+    ...[".bashrc", ".bash_profile", ".profile", ".zshrc", ".zshenv", ".zprofile"].map((name) =>
+      path.join(home, name),
+    ),
+    path.join(config, "fish", "config.fish"),
     ...(override ? [override] : []),
   ]) {
     files.add(file);
@@ -347,6 +359,80 @@ function destroysHistory(argv: string[]): boolean {
 }
 
 const REMOVERS = new Set(["rm", "rmdir", "shred", "unlink", "trash", "trash-put", "mv"]);
+const FIND_ACTIONS = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
+const XARGS_VALUES = new Set(["-I", "-n", "-P", "-d", "-L", "-s", "-a", "-E", "--arg-file"]);
+
+// Names a find -name glob must not match to narrow a deletion: .git and
+// files inside it, the protected files, and what the protected dirs hold.
+function protectedNames(roots: ReturnType<typeof protectedRoots>): string[] {
+  const names = new Set([".git", "HEAD", "config", "index", "packed-refs", "main", "a.pack"]);
+  for (const file of roots.files) names.add(path.basename(file));
+  for (const dir of roots.dirs) {
+    names.add(path.basename(dir));
+    try {
+      for (const name of readdirSync(dir)) names.add(name);
+    } catch {
+      continue;
+    }
+  }
+  return [...names];
+}
+
+// find deletes, or runs something that may change what it finds.
+function findChanges(argv: string[]): boolean {
+  return argv.some(
+    (arg, i) =>
+      arg === "-delete" ||
+      (FIND_ACTIONS.has(arg) && !READ_ONLY.has(path.basename(argv[i + 1] ?? ""))),
+  );
+}
+
+// find's start points, or none when a -name glob keeps it off everything
+// protected. A negated or or-ed glob narrows nothing.
+function findTargets(argv: string[], roots: ReturnType<typeof protectedRoots>): string[] {
+  const args = argv.slice(1);
+  while (/^-(?:[HLP]|O\d)$/.test(args[0] ?? "")) args.shift();
+  const end = args.findIndex((arg) => /^[-(!]/.test(arg));
+  const starts = end < 0 ? args : args.slice(0, end);
+  const globs = argv.flatMap((arg, i) =>
+    /^-i?name$/.test(arg) && argv[i + 1] && !["!", "-not"].includes(argv[i - 1] ?? "")
+      ? [new RegExp(globRegExp(argv[i + 1]!).source, arg === "-iname" ? "i" : "")]
+      : [],
+  );
+  const alternatives = argv.includes("-o") || argv.includes("-or");
+  const names = protectedNames(roots);
+  if (!alternatives && globs.some((glob) => !names.some((name) => glob.test(name)))) return [];
+  return starts.length > 0 ? starts : ["."];
+}
+
+// What a segment removes or rewrites wholesale: a remover's operands, a
+// changing find's start points, an rsync --delete destination, and a
+// remover run by xargs over a find's output (`previous`).
+function removedPaths(
+  argv: string[],
+  previous: string[],
+  roots: ReturnType<typeof protectedRoots>,
+): string[] {
+  const [name = "", ...args] = argv;
+  const operands = (list: string[]) => list.filter((arg) => !arg.startsWith("-"));
+  // mv's last argument is where things go, not what goes.
+  if (REMOVERS.has(name)) return operands(name === "mv" ? args.slice(0, -1) : args);
+  if (name === "find") return findChanges(argv) ? findTargets(argv, roots) : [];
+  if (name === "rsync") {
+    const paths = operands(args);
+    return [
+      ...(args.some((arg) => arg.startsWith("--delete")) ? paths.slice(-1) : []),
+      ...(args.includes("--remove-source-files") ? paths.slice(0, -1) : []),
+    ];
+  }
+  if (name !== "xargs") return [];
+  let i = 0;
+  while (args[i]?.startsWith("-")) i += XARGS_VALUES.has(args[i]!) ? 2 : 1;
+  const inner = args.slice(i).map((word, j) => (j === 0 ? path.basename(word) : word));
+  if (!REMOVERS.has(inner[0] ?? "")) return [];
+  const piped = previous[0] === "find" ? findTargets(previous, roots) : [];
+  return [...removedPaths(inner, [], roots), ...piped];
+}
 
 // Directories the command moves into, so a relative name after `cd dir &&`
 // or `git -C dir` resolves where it will run.
@@ -372,21 +458,20 @@ function bashChange(
 ): ProtectedKind | undefined {
   const command = heredocsAsData(raw);
   const dirs = commandDirs(command, cwd);
+  let previous: string[] = [];
   for (const segment of segments(command)) {
     const argv = program(segment);
+    const upstream = previous;
+    previous = argv;
     if (destroysHistory(argv)) return "git";
     if (readOnly(argv, segment)) continue;
+    const removed = removedPaths(argv, upstream, roots);
     for (const dir of dirs) {
       for (const candidate of commandPathCandidates(segment, dir)) {
         const kind = protectedPath(candidate, dir, roots);
         if (kind) return kind;
       }
-      if (!REMOVERS.has(argv[0] ?? "")) continue;
-      // mv's last argument is where things go, not what goes.
-      const operands = argv
-        .slice(1, argv[0] === "mv" ? -1 : undefined)
-        .filter((arg) => !arg.startsWith("-"));
-      for (const operand of operands) {
+      for (const operand of removed) {
         for (const candidate of commandPathCandidates(operand, dir)) {
           const kind = holdsProtected(candidate, dir, roots);
           if (kind) return kind;
@@ -395,6 +480,13 @@ function bashChange(
     }
   }
   return undefined;
+}
+
+// A shell call that may write something: a segment that is not a read.
+export function shellWrites(args: unknown): boolean {
+  const command = shellCommand(args);
+  if (command === undefined) return false;
+  return segments(command).some((segment) => !readOnly(program(segment), segment));
 }
 
 // What a tool call would change that is protected, or undefined. Shell and

@@ -5,11 +5,14 @@ import {
   IDENTITY_ENTRIES_MAX,
   initEngine,
   mergeIdentity,
+  redactQuery,
   redactRequest,
   refreshIdentity,
+  swapToolArguments,
   swapToolJson,
   WITHHELD_NOTICE,
 } from "./redact.ts";
+import { formatSse, parseSseBlock } from "./streams.ts";
 import { argsKey, recordOriginal, replayOriginal } from "./replay.ts";
 
 beforeAll(() => initEngine());
@@ -75,6 +78,22 @@ describe("secret reads", () => {
     const [, first, second] = body.messages as Array<Record<string, unknown>>;
     expect(first!.content).toBe(WITHHELD_NOTICE);
     expect(second!.content).toBe("fine");
+  });
+
+  it("withholds a notebook edit's output when the notebook path is a secret", () => {
+    const args = JSON.stringify({ notebook_path: KEY, new_source: "x" });
+    const { body } = redactRequest("chat", {
+      messages: [
+        {
+          role: "assistant",
+          tool_calls: [
+            { id: "n1", type: "function", function: { name: "NotebookEdit", arguments: args } },
+          ],
+        },
+        { role: "tool", tool_call_id: "n1", content: "key material" },
+      ],
+    });
+    expect((body.messages as Array<Record<string, unknown>>)[1]!.content).toBe(WITHHELD_NOTICE);
   });
 
   it("withholds a Responses function output for a call that read a secret file", () => {
@@ -167,5 +186,43 @@ describe("identity refresh", () => {
     expect(refreshIdentity(() => [entry("runtime-ssid-1", "ZqxRefreshNet")])).toBe(false);
     expect(refreshIdentity(() => [])).toBe(false);
     expect(found()).toBe(true);
+  });
+});
+
+describe("invented stand-ins by shape", () => {
+  // Stand-in shaped, never minted, never in real input.
+  const INVENTED = "user-0a1b2c";
+  const blocked = (name: string, args: unknown) =>
+    swapToolArguments(name, args, new Set()).blocked === true;
+
+  it("drops a shell write or an unlisted write tool naming one", () => {
+    expect(blocked("bash", { command: `cat > notes.md <<EOF\n${INVENTED}\nEOF` })).toBe(true);
+    expect(blocked("run", { command: `echo ${INVENTED} >> notes.md` })).toBe(true);
+    expect(blocked("write_file", { path: "notes.md", content: INVENTED })).toBe(true);
+  });
+
+  it("lets a shell read naming one through", () => {
+    expect(blocked("bash", { command: `grep -r ${INVENTED} .` })).toBe(false);
+  });
+});
+
+describe("query and stream fidelity", () => {
+  it("keeps every value of a repeated query key", () => {
+    const email = "jane.doe@acme-corp.com";
+    const { search, hits } = redactQuery(`?a=1&a=${encodeURIComponent(email)}&b=2`, new Set());
+    expect(hits).toBeGreaterThan(0);
+    const params = new URLSearchParams(search);
+    expect(params.getAll("a")).toHaveLength(2);
+    expect(params.getAll("a")[0]).toBe("1");
+    expect(params.get("b")).toBe("2");
+    expect(search).not.toContain("acme-corp");
+  });
+
+  it("keeps an event's id and retry lines", () => {
+    const event = parseSseBlock("id: 7\nretry: 500\nevent: ping\ndata: {}");
+    expect(event).toEqual({ event: "ping", data: "{}", id: "7", retry: "500" });
+    expect(formatSse(event!)).toBe("event: ping\nid: 7\nretry: 500\ndata: {}\n\n");
+    expect(formatSse(parseSseBlock("id: 9")!)).toBe("id: 9\n\n");
+    expect(parseSseBlock(": comment")).toBeUndefined();
   });
 });
