@@ -336,14 +336,26 @@ function refuseUnproven(proof: SelfTest | undefined): Response {
   );
 }
 
+// Why a gated handler is not serving, for the badge; undefined while it is.
+function downBadge(proof: SelfTest | undefined, gated: boolean): string | undefined {
+  if (proof && !proof.ok) {
+    const [first, ...rest] = proof.failures;
+    return `ITHILDIN DOWN · self-test: ${first}${rest.length > 0 ? ` (+${rest.length})` : ""}`;
+  }
+  return gated && !proof ? "ITHILDIN DOWN · self-test pending" : undefined;
+}
+
 function health(
   url: URL,
   routes: Record<string, Route>,
   book: ReturnType<typeof createStatusBook>,
   proof: SelfTest | undefined,
+  gated: boolean,
 ): Response {
-  // A failed self-test reads as down: both badges turn red on a non-200.
-  if (proof && !proof.ok) return Response.json({ ok: false, selftest: proof }, { status: 503 });
+  // Not serving reads as down: both badges turn red on a non-200, and show
+  // the badge text it carries.
+  const down = downBadge(proof, gated);
+  if (down) return Response.json({ ok: false, badge: down, selftest: proof }, { status: 503 });
   const status = book.lookup(
     url.searchParams.get("session") ?? undefined,
     url.searchParams.get("route") ?? undefined,
@@ -376,7 +388,7 @@ export function createHandler(
       proof = await runSelfTest(routes, redact);
       return Response.json(proof, { status: proof.ok ? 200 : 503 });
     }
-    if (own === "health") return health(url, routes, book, proof);
+    if (own === "health") return health(url, routes, book, proof, gated);
     if (gated && !proof?.ok) return refuseUnproven(proof);
     const match = /^\/([^/]+)(\/.*)?$/.exec(url.pathname);
     const route = match ? routes[match[1]!] : undefined;
@@ -550,7 +562,9 @@ export function readOptions(
   return { port, routesFile };
 }
 
-// Networks and clones change under a running proxy; values only join.
+// Networks and clones change under a running proxy; values only join. The
+// self-test re-runs on the same beat, so a rule or inventory that stops
+// masking mid-run closes the gate (and turns the badges red) within minutes.
 const IDENTITY_REFRESH_MS = 300_000;
 
 // Port 0 picks a free port (tests); the bound one is on the server.
@@ -564,11 +578,13 @@ export function start(
     log("aliases are tokens: nothing is swapped back, tools run with the tokens the model wrote");
   const saving = setInterval(saveScanCache, 30_000);
   saving.unref();
+  const handler = createHandler(routes, fetchUpstream, REDACTORS, true);
+  const selfTestRequest = () => new Request("http://127.0.0.1/_ithildin/selftest");
   const refreshing = setInterval(() => {
     if (refreshIdentity()) log("identity inventory grew");
+    void handler(selfTestRequest());
   }, IDENTITY_REFRESH_MS);
   refreshing.unref();
-  const handler = createHandler(routes, fetchUpstream, REDACTORS, true);
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: options.port,
@@ -577,7 +593,7 @@ export function start(
   });
   log(`listening on http://127.0.0.1:${server.port} (routes: ${Object.keys(routes).join(", ")})`);
   // Requests are refused until this passes; agents retry refused requests.
-  const proven = handler(new Request("http://127.0.0.1/_ithildin/selftest")).then(() => undefined);
+  const proven = handler(selfTestRequest()).then(() => undefined);
   // A rules edit restarts the proxy. Stop taking requests but let streaming
   // replies finish, so the edit does not cut a response off mid-turn; agents
   // retry the refused connections.

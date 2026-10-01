@@ -37,9 +37,13 @@ agent ──> http://127.0.0.1:18733/<route>/... ──> provider
   pass through untouched because they are signed.
 - **Refusals.** The proxy refuses to forward anything it cannot scan: an
   unknown route, a body that isn't JSON, a compressed body, a WebSocket
-  upgrade, a scan that throws or runs out of time. On startup it sends
-  synthetic secrets through itself and serves nothing until none of them get
-  through.
+  upgrade, a scan that throws or runs out of time.
+- **Self-test.** On startup, and every five minutes after, the proxy sends
+  synthetic secrets, a file read and an image through itself in every wire
+  format, JSON and streamed. It checks that none of them reach the provider,
+  that a tool call gets its real value back, and that the guards below block a
+  call sending that value to a web host and one deleting `.git`. Until it
+  passes, the proxy serves nothing and the footer reads `ITHILDIN DOWN`.
 
 Stand-ins look like the values they replace. An IPv4 address becomes another
 IPv4 address in 240.0.0.0/5, a space that is never assigned, and addresses in
@@ -138,8 +142,10 @@ badge still proves the proxy is in the path. A lone first message is not
 counted: it looks the same as the agent's side requests (titles, quota checks).
 Its values show in the counts from the next request on.
 
-`ITHILDIN DOWN` means the health check failed: the proxy isn't running, or
-its self-test didn't pass, and requests are being refused. `BYPASS` means the
+`ITHILDIN DOWN` means requests are being refused: the proxy isn't running,
+or its self-test hasn't passed. For a failed self-test the badge names the
+first failure, `ITHILDIN DOWN · self-test: chat streamed: protected change not
+blocked (+1)`. Both footers re-check every five seconds, idle or not. `BYPASS` means the
 agent isn't routed through the proxy at all.
 
 ## Allow tags

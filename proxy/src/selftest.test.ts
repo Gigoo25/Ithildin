@@ -1,7 +1,14 @@
 import { beforeAll, describe, expect, it, spyOn } from "bun:test";
 import { initEngine, redactHeaders, redactQuery, redactRequest } from "./redact.ts";
-import { createHandler, DEFAULT_ROUTES, type Redactors, selfTestCli, start } from "./server.ts";
-import { selfTest, syntheticValues } from "./selftest.ts";
+import {
+  createHandler,
+  DEFAULT_ROUTES,
+  formatForPath,
+  type Redactors,
+  selfTestCli,
+  start,
+} from "./server.ts";
+import { selfTest, syntheticValues, WIRES } from "./selftest.ts";
 
 beforeAll(() => initEngine());
 
@@ -46,6 +53,8 @@ describe("self-test", () => {
         "aws reached the provider",
         "token reached the provider",
         "email reached the provider",
+        "file reached the provider",
+        "image reached the provider",
       ]),
     );
     expect(JSON.stringify(report)).not.toMatch(/AKIA|ghp_|@/);
@@ -53,11 +62,73 @@ describe("self-test", () => {
 
   it("fails when the scanner throws", async () => {
     const report = await selfTest((upstream) => createHandler(DEFAULT_ROUTES, upstream, broken));
-    expect(report.failures).toEqual([
-      "request not forwarded (status 500)",
-      "tool call not swapped back",
-      "streamed tool call not swapped back",
-    ]);
+    expect(report.failures).toEqual(
+      WIRES.flatMap((wire) => [
+        `${wire.name}: request not forwarded (status 500)`,
+        `${wire.name} streamed: request not forwarded (status 500)`,
+      ]),
+    );
+  });
+
+  it("names each hold that lets its value through", async () => {
+    // Masks the prompt but sends the read file and the image bytes as they were.
+    const strings = (value: unknown): string[] =>
+      typeof value === "string"
+        ? [value]
+        : value && typeof value === "object"
+          ? Object.values(value).flatMap(strings)
+          : [];
+    const holed: Redactors = {
+      ...leaking,
+      request: (format, body, session) => {
+        const out = redactRequest(format, body, session);
+        const raw = strings(body).filter((text) => /^[a-z]{16,}$/.test(text));
+        return { ...out, body: { ...out.body, raw } };
+      },
+    };
+    const report = await selfTest((upstream) => createHandler(DEFAULT_ROUTES, upstream, holed));
+    expect(report.failures).toEqual(["file reached the provider", "image reached the provider"]);
+  });
+
+  // Masks the request, then hands back the provider's reply with `rewrite`
+  // applied to its text: no guard, no stream holding.
+  const unguarded =
+    (rewrite: (text: string, real: string, standIn: string) => string) =>
+    (upstream: typeof fetch) =>
+    async (request: Request): Promise<Response> => {
+      const format = formatForPath(new URL(request.url).pathname)!;
+      const raw = await request.text();
+      const sent = JSON.stringify(redactRequest(format, JSON.parse(raw)).body);
+      const reply = await upstream("http://upstream", { method: "POST", body: sent });
+      const [real, standIn] = [raw, sent].map((text) => /<<([^<>]*)>>/.exec(text)![1]!);
+      return new Response(rewrite(await reply.text(), real!, standIn!), reply);
+    };
+  const labels = WIRES.flatMap((wire) => [wire.name, `${wire.name} streamed`]);
+
+  it("names every reply check a proxy that never rewrites replies fails", async () => {
+    const report = await selfTest(unguarded((text) => text));
+    expect(report.failures).toEqual(
+      labels.flatMap((label) => [
+        `${label}: tool call not swapped back`,
+        `${label}: protected change not blocked`,
+      ]),
+    );
+  });
+
+  it("names a swap-back that sends the real value to a web host", async () => {
+    // Streamed, the stand-in is cut in two, so swapping text as it passes
+    // misses it.
+    const report = await selfTest(
+      unguarded((text, real, standIn) => text.split(standIn).join(real)),
+    );
+    expect(report.failures).toEqual(
+      labels.flatMap((label) => [
+        label.endsWith("streamed")
+          ? `${label}: tool call not swapped back`
+          : `${label}: real value sent off the machine`,
+        `${label}: protected change not blocked`,
+      ]),
+    );
   });
 
   it("reports a handler that throws", async () => {
@@ -73,6 +144,11 @@ describe("gated handler", () => {
 
   it("refuses model requests until the self-test passes", async () => {
     const handler = createHandler(DEFAULT_ROUTES, refuse, undefined, true);
+    const pending = await handler(new Request("http://127.0.0.1/_ithildin/health"));
+    expect(pending.status).toBe(503);
+    expect(((await pending.json()) as { badge: string }).badge).toBe(
+      "ITHILDIN DOWN · self-test pending",
+    );
     const before = await handler(post(request));
     expect(before.status).toBe(503);
     expect(((await before.json()) as { error: { message: string } }).error.message).toContain(
@@ -94,7 +170,11 @@ describe("gated handler", () => {
     expect(((await refused.json()) as { error: { message: string } }).error.message).toContain(
       "reached the provider",
     );
-    expect((await handler(new Request("http://127.0.0.1/_ithildin/health"))).status).toBe(503);
+    const down = await handler(new Request("http://127.0.0.1/_ithildin/health"));
+    expect(down.status).toBe(503);
+    expect(((await down.json()) as { badge: string }).badge).toMatch(
+      /^ITHILDIN DOWN · self-test: anthropic: email got no stand-in \(\+\d+\)$/,
+    );
   });
 
   it("the real engine redacts the same request the gate lets through", () => {
