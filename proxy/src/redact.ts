@@ -192,18 +192,25 @@ function textBlocks(content: unknown): Array<{ type: "text"; text: string }> {
 
 const PROTECTED_TAG = /\[allow-protected\]/i;
 
-// Compaction and branch summaries arrive as user turns: Claude Code's, and
-// Pi's (COMPACTION_SUMMARY_PREFIX, BRANCH_SUMMARY_PREFIX). The user did not
-// type them, and they can quote tags (a tool's notice saying which to type).
-const COMPACT_SUMMARY = new RegExp(
+// User text the user did not type: summaries and transcripts the agent
+// writes, which can quote tags (a tool's notice saying which to type). Claude
+// Code's and Pi's summaries (COMPACTION_SUMMARY_PREFIX, BRANCH_SUMMARY_PREFIX);
+// opencode's summary request, whose one user message holds the whole history
+// (buildPrompt, or a plugin prompt and "The following is the conversation
+// history:"); opencode v2's checkpoint and shell turns (to-llm-message.ts).
+const AGENT_WRITTEN = new RegExp(
   "^\\s*(?:This session is being continued from a previous conversation\\b" +
     "|The conversation history before this point was compacted into the following summary:" +
-    "|The following is a summary of a branch that this conversation came back from:)",
+    "|The following is a summary of a branch that this conversation came back from:" +
+    "|Here is the conversation so far:\\s*<conversation>" +
+    "|<conversation-checkpoint>" +
+    "|Shell command: )" +
+    "|\\n\\nThe following is the conversation history:\\n\\n",
 );
 
 // The text blocks of a user turn that may hold what the user typed.
 function promptBlocks(content: unknown): Array<{ type: "text"; text: string }> {
-  return textBlocks(content).filter((block) => !COMPACT_SUMMARY.test(block.text));
+  return textBlocks(content).filter((block) => !AGENT_WRITTEN.test(block.text));
 }
 
 export function requestAllowTags(format: Format, body: Record<string, unknown>): Set<string> {
