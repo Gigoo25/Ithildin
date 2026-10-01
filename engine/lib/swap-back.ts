@@ -11,7 +11,8 @@
 // your own infrastructure. The web tools never get swapped values. In Bash,
 // a command that talks to the network may carry a stand-in only as the
 // destination it connects to (your host); a stand-in anywhere else in such
-// a command (a query string, a request body, a pipe into curl) blocks it.
+// a command (a query string, a request body, a pipe into curl) is egress,
+// and the caller blocks the call.
 // This is a lexical check: a script written to disk and run later is out of
 // its reach.
 
@@ -188,13 +189,18 @@ function swapString(
   return result + text.slice(last);
 }
 
+// `list`/`index`: a string inside an array is visited with the array's key
+// and its place in it, so an argv command is checked as one command line.
 function walk(
   value: unknown,
-  visit: (text: string, key: string | undefined) => string,
+  visit: (text: string, key: string | undefined, list?: unknown[], index?: number) => string,
   key?: string,
 ): unknown {
   if (typeof value === "string") return visit(value, key);
-  if (Array.isArray(value)) return value.map((item) => walk(item, visit));
+  if (Array.isArray(value))
+    return value.map((item, index) =>
+      typeof item === "string" ? visit(item, key, value, index) : walk(item, visit),
+    );
   if (value && typeof value === "object") {
     return Object.fromEntries(
       Object.entries(value).map(([childKey, item]) => [childKey, walk(item, visit, childKey)]),
@@ -202,6 +208,37 @@ function walk(
   }
   return value;
 }
+
+// The spans of a command line that would leave the machine, or none when
+// the command does not talk to the network.
+function commandEgress(text: string, book: AliasBook): (span: Span) => boolean {
+  const ranges = destinations(text);
+  // Every destination a stand-in: the data goes to your own hosts, so
+  // stand-ins may appear anywhere (ssh host-… "cat /home/user-…/x").
+  const spans = ranges ? standInSpans(text, book) : [];
+  const external =
+    ranges !== undefined &&
+    (ranges.length === 0 ||
+      ranges.some(
+        (range) => !spans.some((span) => span.start <= range.start && span.end >= range.end),
+      ));
+  if (!external) return () => false;
+  return (span) => !ranges!.some((range) => span.start >= range.start && span.end <= range.end);
+}
+
+// One word of an argv command (Codex: ["curl", "-d", …] or ["bash", "-lc",
+// script]): egress in the argv read as one command line, or in the word read
+// as a command line of its own (a shell's script).
+function argvEgress(list: unknown[], index: number, book: AliasBook): (span: Span) => boolean {
+  const words = list.map((word) => (typeof word === "string" ? word : ""));
+  const offset = words.slice(0, index).reduce((sum, word) => sum + word.length + 1, 0);
+  const whole = commandEgress(words.join(" "), book);
+  const own = commandEgress(words[index]!, book);
+  return (span) =>
+    own(span) || whole({ ...span, start: span.start + offset, end: span.end + offset });
+}
+
+const COMMAND_KEYS = new Set(["command", "cmd"]);
 
 // `offMachineAllowed`: [allow-pii] lets real values go anywhere.
 export function planSwapBack(
@@ -211,25 +248,12 @@ export function planSwapBack(
   offMachineAllowed: boolean,
 ): Swap {
   const out: Swap = { input, resolved: [], unresolved: [], egress: [] };
-  out.input = walk(input, (text, key) => {
+  out.input = walk(input, (text, key, list, index) => {
     let egress: (span: Span) => boolean = () => false;
     if (!offMachineAllowed) {
       if (WEB_TOOLS.has(toolName)) egress = () => true;
-      else if (toolName === "bash" && key === "command") {
-        const ranges = destinations(text);
-        // Every destination a stand-in: the data goes to your own hosts, so
-        // stand-ins may appear anywhere (ssh host-… "cat /home/user-…/x").
-        const spans = ranges ? standInSpans(text, book) : [];
-        const external =
-          ranges !== undefined &&
-          (ranges.length === 0 ||
-            ranges.some(
-              (range) => !spans.some((span) => span.start <= range.start && span.end >= range.end),
-            ));
-        if (external)
-          egress = (span) =>
-            !ranges!.some((range) => span.start >= range.start && span.end <= range.end);
-      }
+      else if (toolName === "bash" && key !== undefined && COMMAND_KEYS.has(key))
+        egress = list ? argvEgress(list, index!, book) : commandEgress(text, book);
     }
     return swapString(text, book, out, egress);
   });
