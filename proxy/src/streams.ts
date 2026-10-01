@@ -17,6 +17,7 @@ import {
   swapToolArguments,
   swapToolInput,
   swapToolJson,
+  swapToolValue,
   swapWholeText,
 } from "./redact.ts";
 import { aliases } from "../engine/core.ts";
@@ -135,7 +136,7 @@ class AnthropicRewriter implements Rewriter {
   swapped = 0;
   private readonly calls = new Map<
     number,
-    { name: string; id?: string | undefined; json: string }
+    { name: string; id?: string | undefined; json: string; start: string }
   >();
   private readonly texts = new Map<number, TextHold>();
   constructor(private readonly tags: Set<string>) {}
@@ -145,9 +146,22 @@ class AnthropicRewriter implements Rewriter {
     if (!data) return [event];
     const index = typeof data.index === "number" ? data.index : -1;
     if (data.type === "content_block_start") {
-      const block = data.content_block as { type?: string; name?: string; id?: string } | undefined;
-      if (block?.type === "tool_use")
-        this.calls.set(index, { name: String(block.name ?? ""), id: block.id, json: "" });
+      const block = data.content_block as
+        { type?: string; name?: string; id?: string; input?: unknown } | undefined;
+      if (block?.type === "tool_use") {
+        // Input already on the start block (local servers send it there) is
+        // held like the deltas: a client uses it when no delta follows.
+        const input = block.input;
+        const start =
+          input && typeof input === "object" && Object.keys(input).length > 0
+            ? JSON.stringify(input)
+            : "";
+        this.calls.set(index, { name: String(block.name ?? ""), id: block.id, json: "", start });
+        if (start !== "") {
+          block.input = {};
+          return [{ ...event, data: JSON.stringify(data) }];
+        }
+      }
       if (block?.type === "text")
         this.texts.set(
           index,
@@ -171,7 +185,7 @@ class AnthropicRewriter implements Rewriter {
     }
     if (data.type === "content_block_stop") {
       this.calls.delete(index);
-      const result = swapToolJson(call.name, call.json, this.tags, call.id);
+      const result = swapToolJson(call.name, call.json || call.start, this.tags, call.id);
       this.swapped += result.swapped;
       if (result.json === "") return [event];
       const delta: SseEvent = {
@@ -192,7 +206,7 @@ class AnthropicRewriter implements Rewriter {
     const out = indexes.flatMap((index) => {
       const text = this.texts.get(index)?.flush();
       const call = this.calls.get(index);
-      const result = call && swapToolJson(call.name, call.json, this.tags, call.id);
+      const result = call && swapToolJson(call.name, call.json || call.start, this.tags, call.id);
       this.swapped += result?.swapped ?? 0;
       const delta = text
         ? { type: "text_delta", text }
@@ -245,7 +259,7 @@ class AnthropicRewriter implements Rewriter {
 type ChatToolCall = {
   index?: number;
   id?: string;
-  function?: { name?: string; arguments?: string };
+  function?: { name?: string; arguments?: unknown };
 };
 type ChatChoice = {
   index?: number;
@@ -312,8 +326,9 @@ class ChatRewriter implements Rewriter {
       calls.set(call.index ?? 0, slot);
       if (call.function?.name) slot.name = call.function.name;
       if (call.id) slot.id = call.id;
-      if (typeof call.function?.arguments === "string") {
-        slot.args += call.function.arguments;
+      const args: unknown = call.function?.arguments;
+      if (call.function && args !== undefined && args !== null) {
+        slot.args += typeof args === "string" ? args : JSON.stringify(args);
         call.function.arguments = "";
       }
     }
@@ -375,7 +390,8 @@ type ResponseItem = {
   id?: string;
   call_id?: string;
   name?: string | undefined;
-  arguments?: string;
+  // A JSON string, or an object from some local servers.
+  arguments?: unknown;
   // custom_tool_call: freeform input.
   input?: string;
   content?: Array<{ type?: string; text?: unknown }>;
@@ -444,7 +460,13 @@ class ResponsesRewriter implements Rewriter {
       this.swapCustom(item as ResponseItem & { input: string });
       return;
     }
-    if (item.type !== "function_call" || typeof item.arguments !== "string") return;
+    if (item.type !== "function_call" || item.arguments === undefined) return;
+    if (typeof item.arguments !== "string") {
+      const result = swapToolValue(item.name ?? "", item.arguments, this.tags, item.call_id);
+      this.swapped += result.swapped;
+      item.arguments = result.args;
+      return;
+    }
     const known = item.id === undefined ? undefined : this.done.get(item.id);
     if (known !== undefined) {
       item.arguments = known;
@@ -580,6 +602,20 @@ class ResponsesRewriter implements Rewriter {
   }
 
   // A call's name and id, from the item that opens it.
+  // The item that opens a call. Arguments already on it (local servers send
+  // them there) are held like the deltas, and the item goes on emptied.
+  private addedEvent(event: SseEvent, data: Record<string, unknown>): SseEvent[] {
+    const item = data.item as ResponseItem | undefined;
+    this.added(item);
+    if (!item?.id) return [event];
+    const key = item.type === "custom_tool_call" ? "input" : "arguments";
+    const held = item.type === "function_call" || item.type === "custom_tool_call" ? item[key] : "";
+    if (held === undefined || held === null || held === "") return [event];
+    this.pending.set(item.id, typeof held === "string" ? held : JSON.stringify(held));
+    item[key] = "";
+    return [{ ...event, data: JSON.stringify(data) }];
+  }
+
   private added(item: ResponseItem | undefined): void {
     if (!item?.id) return;
     if (item.type === "custom_tool_call") this.customs.set(item.id, item.name ?? "");
@@ -592,10 +628,7 @@ class ResponsesRewriter implements Rewriter {
     const data = json(event);
     if (!data) return [event];
     const type = data.type;
-    if (type === "response.output_item.added") {
-      this.added(data.item as ResponseItem | undefined);
-      return [event];
-    }
+    if (type === "response.output_item.added") return this.addedEvent(event, data);
     const itemId = typeof data.item_id === "string" ? data.item_id : undefined;
     const textKey = `${itemId}:${String(data.content_index ?? 0)}`;
     if (type === "response.output_text.delta" && typeof data.delta === "string")
@@ -607,9 +640,17 @@ class ResponsesRewriter implements Rewriter {
       part.text = swapText(part.text, this.tags).text;
       return [{ ...event, data: JSON.stringify(data) }];
     }
+    // Held even before the item that names the call: a call no item opened
+    // still runs, unnamed.
+    const custom = type?.toString().startsWith("response.custom_tool_call_input.");
+    if (itemId && (custom || type?.toString().startsWith("response.function_call_arguments."))) {
+      const names = custom ? this.customs : this.names;
+      if (!names.has(itemId)) names.set(itemId, "");
+    }
     if (
-      (type === "response.function_call_arguments.delta" && itemId && this.names.has(itemId)) ||
-      (type === "response.custom_tool_call_input.delta" && itemId && this.customs.has(itemId))
+      itemId &&
+      (type === "response.function_call_arguments.delta" ||
+        type === "response.custom_tool_call_input.delta")
     ) {
       if (typeof data.delta === "string")
         this.pending.set(itemId, (this.pending.get(itemId) ?? "") + data.delta);
@@ -618,16 +659,10 @@ class ResponsesRewriter implements Rewriter {
     if (
       type === "response.function_call_arguments.done" &&
       itemId &&
-      this.names.has(itemId) &&
       typeof data.arguments === "string"
     )
       return this.argumentsDone(event, data, itemId, data.arguments);
-    if (
-      type === "response.custom_tool_call_input.done" &&
-      itemId &&
-      this.customs.has(itemId) &&
-      typeof data.input === "string"
-    )
+    if (type === "response.custom_tool_call_input.done" && itemId && typeof data.input === "string")
       return this.customDone(event, data, itemId);
     if (type === "response.output_item.done") {
       const item = data.item as ResponseItem | undefined;
@@ -689,14 +724,14 @@ export function swapResponseBody(
         swapped += result.swapped;
       }
       for (const call of choice.message?.tool_calls ?? []) {
-        if (typeof call.function?.arguments !== "string") continue;
-        const result = swapToolJson(
+        if (!call.function) continue;
+        const result = swapToolValue(
           call.function.name ?? "",
           call.function.arguments,
           tags,
           call.id,
         );
-        call.function.arguments = result.json;
+        call.function.arguments = result.args;
         swapped += result.swapped;
       }
     }
@@ -715,9 +750,9 @@ export function swapResponseBody(
         item.input = result.input;
         swapped += result.swapped;
       }
-      if (item?.type !== "function_call" || typeof item.arguments !== "string") continue;
-      const result = swapToolJson(item.name ?? "", item.arguments, tags, item.call_id);
-      item.arguments = result.json;
+      if (item?.type !== "function_call") continue;
+      const result = swapToolValue(item.name ?? "", item.arguments, tags, item.call_id);
+      item.arguments = result.args;
       swapped += result.swapped;
     }
   }

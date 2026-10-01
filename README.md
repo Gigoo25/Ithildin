@@ -37,13 +37,16 @@ agent ──> http://127.0.0.1:18733/<route>/... ──> provider
   pass through untouched because they are signed.
 - **Refusals.** The proxy refuses to forward anything it cannot scan: an
   unknown route, a body that isn't JSON, a compressed body, a WebSocket
-  upgrade, a scan that throws or runs out of time.
+  upgrade, a scan that throws or runs out of time. It refuses an upstream
+  redirect too: a client following one would resend its unredacted body.
 - **Self-test.** On startup, and every five minutes after, the proxy sends
   synthetic secrets, a file read and an image through itself in every wire
   format, JSON and streamed. It checks that none of them reach the provider,
   that a tool call gets its real value back, and that the guards below block a
   call sending that value to a web host and one deleting `.git`. Until it
-  passes, the proxy serves nothing and the footer reads `ITHILDIN DOWN`.
+  passes, the proxy serves nothing and the footer reads `ITHILDIN DOWN`. A
+  pass proves those paths work; it does not prove nothing else gets out (see
+  [What it does not do](#what-it-does-not-do)).
 
 Stand-ins look like the values they replace. An IPv4 address becomes another
 IPv4 address in 240.0.0.0/5, a space that is never assigned, and addresses in
@@ -102,6 +105,10 @@ phrase instead of a stand-in: `⟦minor neurological condition⟧`.
 `.netrc`, `.npmrc`, SSH private keys, `*.pem`, `*.key`, kubeconfig), the whole
 result is withheld. The same happens to search lines that came from such a
 file.
+
+A shell command that reads such a file and runs a network client (`curl`,
+`scp`, `nc`, a git push) doesn't run at all: by the time its result could be
+withheld, the data would be gone. `[allow-secrets]` lifts both.
 
 **Images.** Inline images are withheld, since their text can't be scanned.
 
@@ -212,6 +219,15 @@ It's a guardrail for a cooperative agent. It is not a sandbox.
   nothing flags the push.
 - **The network and git guards read command lines.** A script written to
   disk and run later, or a command assembled at runtime, gets past them.
+- **Some request parts go out unscanned.** Provider credentials and the
+  cookie and beta headers, the URL path and query names, thinking blocks and
+  encrypted reasoning (providers verify their signatures), and images the
+  provider fetches by URL or file id.
+- **Routes in unread formats.** A route to a path the proxy can't parse
+  (Ollama's `/api/chat`, a wrapping gateway) has its requests scanned, but a
+  reply without model-shaped top-level keys passes unread.
+- **The identity list stops at 1000 values.** Values found after that aren't
+  masked; the log warns.
 - **Traffic that skips the proxy isn't covered.** That includes an agent not
   pointed at it and a tool that makes its own network calls.
 
