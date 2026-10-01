@@ -227,7 +227,7 @@ async function scanRequest(
   request: Request,
   format: Format | undefined,
   redact: Redactors,
-  session: string | undefined,
+  session: string | null,
 ): Promise<Scanned | Response> {
   if (request.method === "GET" || request.method === "HEAD") return unscanned();
   const encoding = request.headers.get("content-encoding");
@@ -269,7 +269,7 @@ function redactBody(
   parsed: Record<string, unknown>,
   format: Format,
   redact: Redactors,
-  session: string | undefined,
+  session: string | null,
 ): Scanned | Response {
   try {
     const started = performance.now();
@@ -396,7 +396,7 @@ export function createHandler(
     headers.delete(SESSION_HEADER);
     headers.set("accept-encoding", "identity");
 
-    const scanned = await scanRequest(request, format, redact, session);
+    const scanned = await scanRequest(request, format, redact, session ?? null);
     if (scanned instanceof Response) return scanned;
     const { body, tags, counts, prompts, scanMs } = scanned;
     const search = redactSearch(url.search, headers, scanned, redact);

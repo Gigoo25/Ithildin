@@ -209,13 +209,28 @@ const AGENT_WRITTEN = new RegExp(
     "|<conversation>\\n|# Conversation\\n" +
     "|CRITICAL: Respond with TEXT ONLY\\. Do NOT call any tools\\." +
     "|<conversation-checkpoint>" +
-    "|Shell command: )" +
+    "|Shell command: " +
+    "|Result of calling the \\S+ tool:)" +
     "|\\n\\nThe following is the conversation history:\\n\\n",
 );
 
-// The text blocks of a user turn that may hold what the user typed.
+// A file or resource the harness attaches to the prompt: the header, and
+// the block after it holds the content (opencode's @file and MCP resource
+// parts, Claude Code's @-mentioned files).
+const ATTACHED = /^\s*(?:Called the \S+ tool with the following input: |Reading MCP resource: )/;
+
+// The text block of a user turn the user typed, or none: the first with text
+// left once harness wrappers and fences are stripped. Attachments, file
+// contents and MCP resources come after it, or are skipped by their header;
+// an attached file holding a tag is not the user asking for it.
 function promptBlocks(content: unknown): Array<{ type: "text"; text: string }> {
-  return textBlocks(content).filter((block) => !AGENT_WRITTEN.test(block.text));
+  const blocks = textBlocks(content);
+  for (const [i, block] of blocks.entries()) {
+    if (AGENT_WRITTEN.test(block.text) || ATTACHED.test(block.text)) continue;
+    if (i > 0 && ATTACHED.test(blocks[i - 1]!.text)) continue;
+    if (userTypedText({ role: "user", content: [block] }).trim() !== "") return [block];
+  }
+  return [];
 }
 
 // The tags each session's latest prompt carried, for its requests that hold
@@ -233,8 +248,11 @@ function rememberTags(session: string, tags: Set<string>) {
 export function requestAllowTags(
   format: Format,
   body: Record<string, unknown>,
-  session?: string,
+  session?: string | null,
 ): Set<string> {
+  // null: a client the proxy cannot name (no session header). Which of its
+  // text the user typed is unknown, so nothing it sends lifts masking.
+  if (session === null) return new Set();
   const list =
     format === "responses"
       ? typeof body.input === "string"
@@ -520,7 +538,7 @@ export interface Counts {
 export function redactRequest(
   format: Format,
   body: Record<string, unknown>,
-  session?: string,
+  session?: string | null,
 ): { body: Record<string, unknown>; hits: number; counts: Counts; tags: Set<string> } {
   const tags = requestAllowTags(format, body, session);
   requestDirs.set(tags, requestCwd(format, body));
