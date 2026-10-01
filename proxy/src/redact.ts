@@ -59,6 +59,7 @@ import {
 import type { InventoryEntry } from "../engine/lib/rules.ts";
 import { planSwapBack } from "../engine/lib/swap-back.ts";
 import { protectedBlocked, protectedChange } from "./protect.ts";
+import { BASH_TOOLS, LOCAL_TOOLS, shellCommand, WRITE_TOOLS } from "./tools.ts";
 import { argsKey, initReplay, recordOriginal, replayOriginal, saveReplay } from "./replay.ts";
 
 export type Format = "anthropic" | "chat" | "responses";
@@ -191,6 +192,15 @@ function textBlocks(content: unknown): Array<{ type: "text"; text: string }> {
 
 const PROTECTED_TAG = /\[allow-protected\]/i;
 
+// Claude Code's compaction summary arrives as a user turn. The user did not
+// type it, and it can quote tags (a tool's notice saying which tag to type).
+const COMPACT_SUMMARY = /^\s*This session is being continued from a previous conversation\b/;
+
+// The text blocks of a user turn that may hold what the user typed.
+function promptBlocks(content: unknown): Array<{ type: "text"; text: string }> {
+  return textBlocks(content).filter((block) => !COMPACT_SUMMARY.test(block.text));
+}
+
 export function requestAllowTags(format: Format, body: Record<string, unknown>): Set<string> {
   const list =
     format === "responses"
@@ -204,7 +214,7 @@ export function requestAllowTags(format: Format, body: Record<string, unknown>):
   for (const item of list) {
     if (!item || typeof item !== "object" || (item as { role?: unknown }).role !== "user") continue;
     const content = (item as { content?: unknown }).content;
-    const blocks = textBlocks(content);
+    const blocks = promptBlocks(content);
     if (blocks.length === 0) continue;
     // Anthropic tool results come back as user turns, often with harness text
     // beside them. Taken as the latest prompt, they cancelled the typed tag
@@ -240,7 +250,7 @@ export function typedPromptCount(format: Format, body: Record<string, unknown>):
       content.some((block) => (block as { type?: unknown } | null)?.type === "tool_result")
     )
       return false;
-    return textBlocks(content).length > 0;
+    return promptBlocks(content).length > 0;
   }).length;
 }
 
@@ -527,8 +537,6 @@ function redactWithCorpus(
 // validation, and every later request shows that failure as standInBlocked.
 // The notice says nothing about redaction (provider blindness, below).
 
-const WRITE_TOOLS = new Set(["write", "edit", "Write", "Edit", "MultiEdit", "NotebookEdit"]);
-
 // Stand-in-shaped text seen in real input: system prompts, typed prompts and
 // tool results. The model's own turns do not count: they hold what it made up.
 const seenLiterals = new Set<string>();
@@ -572,6 +580,14 @@ export function standInBlocked(tokens: string[]): string {
     `Not run: ${tokens.join(", ")} ${tokens.length === 1 ? "does" : "do"} not appear anywhere in ` +
     `this conversation, so nothing was written. Use values exactly as they appear in files and ` +
     `tool output; do not make up identifiers.`
+  );
+}
+
+export function egressBlocked(tokens: string[]): string {
+  return (
+    `Not run: this command would send ${tokens.join(", ")} to a host that is not one of the ` +
+    `user's own machines. Ask the user before sending these values off the machine; ` +
+    `they can include [allow-pii] in their prompt to permit it.`
   );
 }
 
@@ -636,6 +652,42 @@ export function redactQuery(
   return hits === 0 ? { search, hits, values } : { search: `?${params}`, hits, values };
 }
 
+// Request headers the agent sends to its own provider: the user's credentials
+// for it (masked, the provider refuses the call) and protocol fields.
+const PASSED_HEADERS = new Set([
+  "authorization",
+  "x-api-key",
+  "api-key",
+  "x-goog-api-key",
+  "cookie",
+  "content-type",
+  "accept",
+  "anthropic-version",
+  "anthropic-beta",
+]);
+
+// Header values, scanned like query values: a user agent, an X-* header a
+// harness or plugin adds. Changed in place.
+export function redactHeaders(
+  headers: Headers,
+  tags: Set<string>,
+): { hits: number; values: number } {
+  if (tags.has("all")) return { hits: 0, values: 0 };
+  let hits = 0;
+  const { values } = collectValues(() =>
+    withScanBudget(() => {
+      for (const [name, value] of [...headers]) {
+        if (PASSED_HEADERS.has(name)) continue;
+        const result = redactValue(value, tags, name, undefined, ["headers", name], true);
+        if (result.hits === 0) continue;
+        hits += result.hits;
+        headers.set(name, String(result.value));
+      }
+    }),
+  );
+  return { hits, values };
+}
+
 // One scan envelope per request. Split out so tests can set the allow tags.
 export function redactBody(
   format: Format,
@@ -682,8 +734,9 @@ export const INVENTORY_NOTICE =
 // working directory:", Pi: "Current working directory:"). The latest mention
 // wins: Claude reports a changed cwd in later user turns. Relative tool paths
 // resolve against it, so links to secret files are followed from the right
-// place. Falls back to $HOME.
-const CWD_LINE = /(?:Primary|Current) working directory: ([^\n]+)/g;
+// place. Falls back to $HOME. Tool results are never read, and the line must
+// start a line, as the agents write it, so quoted prose does not move it.
+const CWD_LINE = /^[ \t]*(?:- )?(?:Primary|Current) working directory: ([^\n]+)/gm;
 
 export function requestCwd(format: Format, body: Record<string, unknown>): string {
   const texts: string[] = [];
@@ -720,8 +773,10 @@ function readsSecret(
 ): string | undefined {
   if (!input || typeof input !== "object" || Array.isArray(input)) return;
   const record = input as Record<string, unknown>;
-  const tool = BASH_TOOLS.has(name) ? "bash" : name;
-  const command = String(record.command ?? "");
+  // A shell-shaped call reads like one whatever its name (tools.ts).
+  const shell = shellCommand(record);
+  const tool = shell !== undefined || BASH_TOOLS.has(name) ? "bash" : name;
+  const command = shell ?? "";
   const targets = candidatePaths(record);
   if (blocksSecretAccess(tool, command, targets, tags, cwd)) return WITHHELD_NOTICE;
   if (blocksInventoryAccess(tool, command, targets, tags, cwd)) return INVENTORY_NOTICE;
@@ -955,14 +1010,15 @@ function isInlineData(value: unknown): boolean {
   return typeof value === "string" && value.startsWith("data:");
 }
 
-// Anthropic image/document with a base64 source; chat image_url, file and
-// input_audio parts; Responses input_image and input_file.
+// Anthropic image/document with a base64 source or a data: URL; chat
+// image_url, file and input_audio parts; Responses input_image and input_file.
+// engine/lib/image-payload.ts lets the same bytes through unscanned once allowed.
 function isOpaqueBlock(block: Record<string, unknown>): boolean {
-  const source = block.source as { type?: unknown } | undefined;
+  const source = block.source as { type?: unknown; url?: unknown } | undefined;
   switch (block.type) {
     case "image":
     case "document":
-      return source?.type === "base64";
+      return source?.type === "base64" || isInlineData(source?.url);
     case "image_url":
       return isInlineData((block.image_url as { url?: unknown } | undefined)?.url);
     case "input_image":
@@ -1028,7 +1084,7 @@ export function withholdImages(
       Array.isArray(record.content) &&
       record.content.some((block) => (block as { type?: unknown } | null)?.type === "tool_result");
     if (record.role === "user" && !results) {
-      const typed = textBlocks(record.content);
+      const typed = promptBlocks(record.content);
       if (typed.length > 0) allowed = typed.some((block) => IMAGE_TAG.test(block.text));
     }
     return allowed ? item : replaceImages(item, format, count);
@@ -1082,25 +1138,6 @@ export function stripAllowTags(
 // Only tools that run on this machine get real values. Anything else (web
 // tools, MCP servers, subagent prompts) keeps the stand-ins: a real value
 // must not leave the machine through a tool the proxy cannot see into.
-
-const BASH_TOOLS = new Set(["bash", "Bash"]);
-const LOCAL_TOOLS = new Set([
-  "read",
-  "write",
-  "edit",
-  "grep",
-  "find",
-  "ls",
-  "search_files",
-  "Read",
-  "Write",
-  "Edit",
-  "MultiEdit",
-  "Glob",
-  "Grep",
-  "LS",
-  "NotebookEdit",
-]);
 
 // planSwapBack's tool vocabulary: "bash" gets the network-destination check,
 // "web_fetch" treats every position as egress.
@@ -1163,6 +1200,11 @@ function swapArguments(
       )
     : [];
   if (invented.length > 0) return block(callId, standInBlocked(invented));
+  // A shell command sending a stand-in somewhere other than the user's own
+  // hosts: swapped, the real value leaves; unswapped, the call does the
+  // wrong thing. Web and MCP tools keep their stand-ins (they are meant to).
+  if (swap.egress.length > 0 && swapToolName(toolName) === "bash")
+    return block(callId, egressBlocked([...new Set(swap.egress)]));
   // Swap per span. A stand-in the book cannot resolve (often a stand-in-shaped
   // literal in source or docs), or one bound off the machine, stays a stand-in
   // in swap.input: that span fails on a name that does not exist rather than
@@ -1194,6 +1236,18 @@ export function swapWholeText(text: string, tags: Set<string>): { text: string; 
   const result = swapText(text, tags);
   if (text !== "") recordOriginal("text", result.text, text);
   return result;
+}
+
+// A freeform call's raw input (Responses custom tools: Codex apply_patch).
+export function swapToolInput(
+  toolName: string,
+  input: string,
+  tags: Set<string>,
+  callId?: string,
+): { input: string; swapped: number } {
+  const result = swapToolArguments(toolName, input, tags, callId);
+  if (result.blocked) return { input: "", swapped: 0 };
+  return { input: result.args as string, swapped: result.swapped };
 }
 
 // Arguments as a JSON string (OpenAI shapes, Anthropic streaming).

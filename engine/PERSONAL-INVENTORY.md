@@ -42,8 +42,8 @@ At session start the engine also reads `~/.ssh/config` (following `Include`) and
 When the model calls a tool with a stand-in, the engine replaces it with the real value in the arguments the tool runs with. Pi documents in-place edits of `event.input` as supported. The transcript keeps the model's stand-in arguments, and the tool's output is aliased again on the way back. Every value swapped in is added to that scan, so it returns as its stand-in even when no rule would have caught it.
 
 - Exact stand-ins resolve from this session's findings and from every inventory entry (minted at session start, so stand-ins from earlier sessions resolve too). Composed stand-ins resolve from their parts: another host in a known stand-in domain, or another address in a known stand-in /24.
-- A stand-in that cannot be resolved (another machine, a re-rolled key) blocks the call.
-- Off-machine rule: `web_fetch` and `web_search` never get swapped values. In a Bash command that talks to the network (curl, wget, nc, ssh, scp, rsync, git push/fetch/pull/clone, …), a stand-in may appear only as the destination host, unless every destination in the command is itself a stand-in (your own hosts). Anything else, such as a stand-in in a query string, a request body, or piped into curl, blocks the call. `[allow-pii]` lifts this rule. The check is lexical: a script written to disk and run later is out of its reach.
+- A stand-in that cannot be resolved (another machine, a re-rolled key) runs as it is. The tool sees the stand-in, not a guess.
+- Off-machine rule: `web_fetch` and `web_search` never get swapped values. In a Bash command that talks to the network (curl, wget, nc, ssh, scp, rsync, git push/fetch/pull/clone, …), a stand-in may appear only as the destination host, unless every destination in the command is itself a stand-in (your own hosts). Anything else, such as a stand-in in a query string, a request body, or piped into curl, blocks the call. The proxy blocks this for shell tools; other tools keep the stand-in. `[allow-pii]` lifts this rule. The check is lexical: a script written to disk and run later is out of its reach.
 - The secret-file and inventory guards run again on the swapped arguments.
 - Secrets are never swapped back. They keep random fakes, and the fake is what runs.
 - Stand-in home paths (`/home/user-3c9d0e/…`) work with file tools, because the check for a real home path runs on the model's arguments, before the swap.
@@ -60,7 +60,7 @@ When the model calls a tool with a stand-in, the engine replaces it with the rea
 
 - Terms match whole words, case-insensitively unless `"caseSensitive": true`. Longer terms win ("chronic migraine" over "migraine"). Up to 1,000 terms per entry. `replace` is one line of at most 80 characters.
 - The model sees `⟦minor neurological condition⟧`. Text inside `⟦…⟧` is never generalized again.
-- One phrase stands for many terms, so it cannot be swapped back. Tool calls containing `⟦…⟧` are blocked, so general wording is never written into files or commands. `[allow-pii]` bypasses both the replacement and the block.
+- One phrase stands for many terms, so it cannot be swapped back. A tool call containing `⟦…⟧` runs with the phrase as written, so general wording can end up in files or commands. `[allow-pii]` bypasses the replacement.
 - `"scope": "everywhere"` (default) generalizes everywhere the engine scans: your prompts, tool output, and the provider payload. A file containing such a term cannot be edited around that word while the proxy is on (use `[allow-pii]` for that turn).
 - `"scope": "prompts"` generalizes only what you type. Use it for words that also appear in code and config (vendor and product names), so those files stay readable and editable.
 - Keep out words that are also ordinary dev vocabulary (`stroke`, `debt`, `fired`, `pip`, Dockerfile `ADD`). Put acronyms in their own `"caseSensitive": true` group.
