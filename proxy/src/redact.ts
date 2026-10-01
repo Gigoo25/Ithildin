@@ -192,9 +192,14 @@ function textBlocks(content: unknown): Array<{ type: "text"; text: string }> {
 
 const PROTECTED_TAG = /\[allow-protected\]/i;
 
-// Claude Code's compaction summary arrives as a user turn. The user did not
-// type it, and it can quote tags (a tool's notice saying which tag to type).
-const COMPACT_SUMMARY = /^\s*This session is being continued from a previous conversation\b/;
+// Compaction and branch summaries arrive as user turns: Claude Code's, and
+// Pi's (COMPACTION_SUMMARY_PREFIX, BRANCH_SUMMARY_PREFIX). The user did not
+// type them, and they can quote tags (a tool's notice saying which to type).
+const COMPACT_SUMMARY = new RegExp(
+  "^\\s*(?:This session is being continued from a previous conversation\\b" +
+    "|The conversation history before this point was compacted into the following summary:" +
+    "|The following is a summary of a branch that this conversation came back from:)",
+);
 
 // The text blocks of a user turn that may hold what the user typed.
 function promptBlocks(content: unknown): Array<{ type: "text"; text: string }> {
