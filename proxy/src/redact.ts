@@ -197,12 +197,17 @@ const PROTECTED_TAG = /\[allow-protected\]/i;
 // Code's and Pi's summaries (COMPACTION_SUMMARY_PREFIX, BRANCH_SUMMARY_PREFIX);
 // opencode's summary request, whose one user message holds the whole history
 // (buildPrompt, or a plugin prompt and "The following is the conversation
-// history:"); opencode v2's checkpoint and shell turns (to-llm-message.ts).
+// history:"); opencode v2's checkpoint and shell turns (to-llm-message.ts);
+// Pi's summary requests (generateSummary, generateTurnPrefixSummary,
+// generateBranchSummary), and Claude Code's compact instruction, sent after
+// the whole conversation.
 const AGENT_WRITTEN = new RegExp(
   "^\\s*(?:This session is being continued from a previous conversation\\b" +
     "|The conversation history before this point was compacted into the following summary:" +
     "|The following is a summary of a branch that this conversation came back from:" +
     "|Here is the conversation so far:\\s*<conversation>" +
+    "|<conversation>\\n|# Conversation\\n" +
+    "|CRITICAL: Respond with TEXT ONLY\\. Do NOT call any tools\\." +
     "|<conversation-checkpoint>" +
     "|Shell command: )" +
     "|\\n\\nThe following is the conversation history:\\n\\n",
@@ -213,14 +218,30 @@ function promptBlocks(content: unknown): Array<{ type: "text"; text: string }> {
   return textBlocks(content).filter((block) => !AGENT_WRITTEN.test(block.text));
 }
 
-export function requestAllowTags(format: Format, body: Record<string, unknown>): Set<string> {
+// The tags each session's latest prompt carried, for its requests that hold
+// none: a summary request, whose one user turn the agent wrote, would
+// otherwise mask what the user allowed. Oldest sessions go first.
+const SESSION_TAGS_MAX = 256;
+const sessionTags = new Map<string, Set<string>>();
+
+function rememberTags(session: string, tags: Set<string>) {
+  sessionTags.delete(session);
+  sessionTags.set(session, new Set(tags));
+  if (sessionTags.size > SESSION_TAGS_MAX) sessionTags.delete(sessionTags.keys().next().value!);
+}
+
+export function requestAllowTags(
+  format: Format,
+  body: Record<string, unknown>,
+  session?: string,
+): Set<string> {
   const list =
     format === "responses"
       ? typeof body.input === "string"
         ? [{ role: "user", content: body.input }]
         : body.input
       : body.messages;
-  if (!Array.isArray(list)) return new Set();
+  if (!Array.isArray(list)) return new Set(session ? sessionTags.get(session) : undefined);
   const users: Message[] = [];
   let typed = "";
   for (const item of list) {
@@ -241,10 +262,12 @@ export function requestAllowTags(format: Format, body: Record<string, unknown>):
     if (!results) typed = userTypedText({ role: "user", content: blocks });
     users.push({ role: "user", content: blocks });
   }
+  if (users.length === 0) return new Set(session ? sessionTags.get(session) : undefined);
   const tags = latestAllowTags(users);
   // Proxy-only, like [allow-images]: the latest typed prompt decides, not a
   // tool-result turn, whatever tags that carries.
   if (PROTECTED_TAG.test(typed)) tags.add("protected");
+  if (session) rememberTags(session, tags);
   return tags;
 }
 
@@ -497,8 +520,9 @@ export interface Counts {
 export function redactRequest(
   format: Format,
   body: Record<string, unknown>,
+  session?: string,
 ): { body: Record<string, unknown>; hits: number; counts: Counts; tags: Set<string> } {
-  const tags = requestAllowTags(format, body);
+  const tags = requestAllowTags(format, body, session);
   requestDirs.set(tags, requestCwd(format, body));
   rememberLiterals(format, body);
   // A new stand-in must not equal a word the conversation already holds:

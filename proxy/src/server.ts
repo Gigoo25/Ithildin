@@ -89,6 +89,7 @@ export function upstreamUrl(route: Route, rest: string, search: string): string 
 
 // Pi's footer tags its requests with its session id (the proxy's own header,
 // never forwarded); Claude sends X-Claude-Code-Session-Id itself.
+// opencode sends x-opencode-session-id.
 const SESSION_HEADER = "x-ithildin-session";
 const OWN_PATH = /^\/_ithildin\/(selftest|health)$/;
 
@@ -226,6 +227,7 @@ async function scanRequest(
   request: Request,
   format: Format | undefined,
   redact: Redactors,
+  session: string | undefined,
 ): Promise<Scanned | Response> {
   if (request.method === "GET" || request.method === "HEAD") return unscanned();
   const encoding = request.headers.get("content-encoding");
@@ -240,7 +242,7 @@ async function scanRequest(
   if (type.includes("json") || (format !== undefined && raw.trimStart().startsWith("{"))) {
     const parsed = parseRequestObject(raw);
     if (parsed instanceof Response) return parsed;
-    return redactBody(parsed, format ?? "chat", redact);
+    return redactBody(parsed, format ?? "chat", redact, session);
   }
   if (raw.length > 0)
     return refuse(415, `non-JSON request body (${type || "no content-type"}) cannot be scanned`);
@@ -267,10 +269,11 @@ function redactBody(
   parsed: Record<string, unknown>,
   format: Format,
   redact: Redactors,
+  session: string | undefined,
 ): Scanned | Response {
   try {
     const started = performance.now();
-    const redacted = redact.request(format, parsed);
+    const redacted = redact.request(format, parsed, session);
     const scanMs = Math.round(performance.now() - started);
     // Single-message side requests (titles, quota probes) are not the
     // conversation, so they do not set its badge.
@@ -386,13 +389,14 @@ export function createHandler(
     const session =
       request.headers.get(SESSION_HEADER) ??
       request.headers.get("x-Claude-Code-Session-Id") ??
+      request.headers.get("x-opencode-session-id") ??
       undefined;
     const headers = new Headers(request.headers);
     for (const name of HOP_HEADERS) headers.delete(name);
     headers.delete(SESSION_HEADER);
     headers.set("accept-encoding", "identity");
 
-    const scanned = await scanRequest(request, format, redact);
+    const scanned = await scanRequest(request, format, redact, session);
     if (scanned instanceof Response) return scanned;
     const { body, tags, counts, prompts, scanMs } = scanned;
     const search = redactSearch(url.search, headers, scanned, redact);
