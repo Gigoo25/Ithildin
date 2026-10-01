@@ -158,6 +158,11 @@ A tag applies to the prompt it is typed in, and ends when you send the next
 one. The proxy removes tags before forwarding, so the model never sees them.
 The footer is how you know one took effect.
 
+Only text you type counts: a tag inside an attached file, a code fence or a
+summary the agent wrote does nothing. Tags also need a client that names its
+session (Claude Code, opencode, Pi with the footer extension); from any
+other client the proxy masks everything.
+
 ## Running it
 
 The flake builds the `ithildin` package, and the flake checks run the tests,
