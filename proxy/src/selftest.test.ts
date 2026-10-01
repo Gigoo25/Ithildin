@@ -115,6 +115,22 @@ describe("self-test", () => {
     );
   });
 
+  it("reads a reply that lost a call as unreadable, not as passing", async () => {
+    // Drops the egress call from the Anthropic JSON reply.
+    const dropped = await selfTest((upstream) =>
+      createHandler(DEFAULT_ROUTES, (async (url: string, init?: RequestInit) => {
+        const reply = await (await upstream(url, init)).text();
+        if (reply.startsWith("{")) {
+          const json = JSON.parse(reply) as { content?: unknown[] };
+          if (Array.isArray(json.content)) json.content.splice(1, 1);
+          return Response.json(json);
+        }
+        return new Response(reply, { headers: { "content-type": "text/event-stream" } });
+      }) as unknown as typeof fetch),
+    );
+    expect(dropped.failures).toEqual(["anthropic: reply unreadable"]);
+  });
+
   it("names a swap-back that sends the real value to a web host", async () => {
     // Streamed, the stand-in is cut in two, so swapping text as it passes
     // misses it.

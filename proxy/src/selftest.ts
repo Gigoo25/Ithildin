@@ -387,9 +387,11 @@ async function probe(
     return [`${label}: request not forwarded (status ${response.status})`];
   const standIn = provider.standIn();
   if (standIn === "" || standIn === values.email) failures.push(`${label}: email got no stand-in`);
-  const [swapped, egress, guarded, ...rest] = replyCommands(wire, await response.text(), stream);
-  if (rest.length > 0 || (guarded === undefined && swapped === undefined))
-    return [...failures, `${label}: reply unreadable`];
+  // Each check reads its call by position, so a reply missing one would
+  // pass the checks after it untested.
+  const commands = replyCommands(wire, await response.text(), stream);
+  if (commands.length !== calls("").length) return [...failures, `${label}: reply unreadable`];
+  const [swapped, egress, guarded] = commands;
   if (aliasStyle() === "stand-ins" && swapped !== `echo ${values.email}`)
     failures.push(`${label}: tool call not swapped back`);
   if (String(egress).includes(values.email))
