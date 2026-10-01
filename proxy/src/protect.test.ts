@@ -89,6 +89,22 @@ describe("protected writes", () => {
 describe("protected bash", () => {
   const bash = (command: string, cwd = repo) => protectedChange("bash", { command }, cwd);
 
+  it("follows a cd into a subshell, brace group or command substitution", () => {
+    const outside = join(home, "elsewhere");
+    mkdirSync(outside, { recursive: true });
+    for (const command of [
+      `(cd ${repo} && rm -rf .git)`,
+      `( cd ${repo}; rm -rf .git )`,
+      `(rm -rf ${repo}/.git)`,
+      `{ cd ${repo}; rm -rf .git; }`,
+      `echo $(cd ${repo} && rm -rf .git)`,
+      `pushd ${repo} && rm -rf .git`,
+      `(cd ${repo} && git reset --hard)`,
+    ])
+      expect(bash(command, outside)).toBe("git");
+    expect(bash(`(cd ${repo} && git status)`, outside)).toBeUndefined();
+  });
+
   it("blocks commands that change protected config", () => {
     expect(bash("sed -i 's/a/b/' ~/.pi/agent/models.json")).toBe("config");
     expect(bash("jq . x.json > ~/.claude/settings.json")).toBe("config");
