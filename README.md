@@ -43,7 +43,8 @@ agent ──> http://127.0.0.1:18733/<route>/... ──> provider
   synthetic secrets, a file read and an image through itself in every wire
   format, JSON and streamed. It checks that none of them reach the provider,
   that a tool call gets its real value back, and that the guards below block a
-  call sending that value to a web host and one deleting `.git`. Until it
+  call sending that value to a web host, one deleting `.git`, and a `git push`
+  after the conversation read a web page. Until it
   passes, the proxy serves nothing and the footer reads `ITHILDIN DOWN`. A
   pass proves those paths work; it does not prove nothing else gets out (see
   [What it does not do](#what-it-does-not-do)).
@@ -121,7 +122,46 @@ or throw work away:
 - `git reset --hard`, `git clean -fdx`, force pushes, `branch -D`
 - `git filter-branch`, `git reflog expire`
 
-Ordinary `add`, `commit`, `push` and soft resets go through.
+Ordinary `add`, `commit`, `push` and soft resets go through. A refusal tells
+the agent the safer way to the same end where there is one (`git stash`
+instead of `reset --hard`, `branch -d` instead of `-D`), so it doesn't hunt
+for another spelling of the same change. Each refusal also names an id the
+user can type to allow just that one call (see [Allow tags](#allow-tags)).
+
+**Outside content.** A web page, a download or an issue thread can carry
+instructions the user never gave. Once a conversation has read any of these,
+it is *untrusted* and stays that way, even after compaction. These count as
+outside reads:
+
+- web tools (`WebFetch`, `WebSearch`, `web_fetch`) and MCP tools whose names
+  say they fetch, browse or search
+- `curl`, `wget`, `httpie`/`xh` and text browsers
+- `gh issue`, `gh pr`, `gh api` and other `gh` reads
+
+While a conversation is untrusted, calls that send data off the machine
+don't run:
+
+- `git push`
+- `scp`, `ssh`, `nc`, `rsync` to a host
+- uploads and POSTs (`curl -d`/`-F`/`-T`/`-X POST`, `wget --post-file`)
+- a URL built at run time (`$(…)`)
+- `gh … create/comment`
+- MCP tools whose names say they post, send or comment
+
+Plain downloads and local work go through. `[allow-send]` lifts the block.
+
+**Your own guard list.** Under `"guard"` in `config.json` you can protect
+more paths, name more tools as outside reads or sends, and mark tools you
+have reviewed. Tool names take `*` globs. The file is re-read when it changes.
+
+```json
+"guard": {
+  "protect": ["~/infra/deploy.yaml"],
+  "outsideTools": ["mcp__jira__*"],
+  "sendTools": ["mcp__mail__*"],
+  "reviewedTools": ["mcp__db__run_query"]
+}
+```
 
 ## The footer
 
@@ -129,18 +169,20 @@ Claude Code's status line and Pi's footer both show the same badge, which
 the proxy builds:
 
 ```
-ITHILDIN ON · 12m 1f 3l 2i (+2) · 40 req · +pii
+ITHILDIN ON · 12m 1f 3l 2i (+2) · 40 req · untrusted · ?1t · +pii
 ```
 
-| Part     | Meaning                                                     |
-|----------|-------------------------------------------------------------|
-| `12m`    | distinct values masked (stand-ins or generalized wording)   |
-| `1f`     | tool results withheld because they read a protected file    |
-| `3l`     | search lines withheld because they came from one            |
-| `2i`     | inline images withheld                                      |
-| `(+2)`   | how many of those arrived since your latest prompt          |
-| `40 req` | requests scanned in this conversation                       |
-| `+pii`   | allow tags your latest prompt carries                       |
+| Part        | Meaning                                                     |
+|-------------|-------------------------------------------------------------|
+| `12m`       | distinct values masked (stand-ins or generalized wording)   |
+| `1f`        | tool results withheld because they read a protected file    |
+| `3l`        | search lines withheld because they came from one            |
+| `2i`        | inline images withheld                                      |
+| `(+2)`      | how many of those arrived since your latest prompt          |
+| `40 req`    | requests scanned in this conversation                       |
+| `untrusted` | the conversation read outside content, so sends are blocked |
+| `?1t`       | tools the agent offers that act but no guard reads          |
+| `+pii`      | allow tags your latest prompt carries                       |
 
 Counts cover the whole conversation, and kinds at zero are left out. With
 nothing hidden, the badge reads `ITHILDIN ON · 0 · N req`. The request count
@@ -155,21 +197,32 @@ first failure, `ITHILDIN DOWN · self-test: chat streamed: protected change not
 blocked (+1)`. Both footers re-check every five seconds, idle or not. `BYPASS` means the
 agent isn't routed through the proxy at all.
 
+For `?Nt`, the proxy log names each such tool once (`tool mcp__db__drop_table
+acts, and no guard reads its calls`). Teach the guard about it under `guard`
+in `config.json`, or list it in `reviewedTools` once you've checked it.
+
 ## Allow tags
 
 Sometimes the model needs a real value. Put a tag anywhere in your prompt:
 
-| Tag                 | Lifts                                   |
-|---------------------|-----------------------------------------|
-| `[allow-pii]`       | personal and infrastructure details     |
-| `[allow-secrets]`   | secrets                                 |
-| `[allow-images]`    | the image hold                          |
-| `[allow-protected]` | the guard on config and git history     |
-| `[allow-all]`       | everything but `protected`              |
+| Tag                 | Lifts                                        |
+|---------------------|----------------------------------------------|
+| `[allow-pii]`       | personal and infrastructure details          |
+| `[allow-secrets]`   | secrets                                      |
+| `[allow-images]`    | the image hold                               |
+| `[allow-protected]` | the guard on config and git history          |
+| `[allow-send]`      | the send block in untrusted conversations    |
+| `[allow-once:<id>]` | the guards, for the one call a refusal named |
+| `[allow-all]`       | everything but `protected`                   |
 
 A tag applies to the prompt it is typed in, and ends when you send the next
 one. The proxy removes tags before forwarding, so the model never sees them.
 The footer is how you know one took effect.
+
+A tag opens every call of its kind. `[allow-once:<id>]` opens only the call
+whose refusal gave that id: the same command sent again runs, and anything
+else is still checked. It lifts the protected, send and secret-send guards,
+but not the hold on personal details.
 
 Only text you type counts: a tag inside an attached file, a code fence or a
 summary the agent wrote does nothing. Tags also need a client that names its
@@ -219,6 +272,10 @@ It's a guardrail for a cooperative agent. It is not a sandbox.
   nothing flags the push.
 - **The network and git guards read command lines.** A script written to
   disk and run later, or a command assembled at runtime, gets past them.
+  The send guard has the same limit: an interpreter's own HTTP client
+  (`python -c 'requests.post(…)'`) or a web tool's URL is not read as a
+  send. An outside read is known by the tool's name or command, so content
+  that arrives some other way does not mark the conversation.
 - **Some request parts go out unscanned.** Provider credentials and the
   cookie and beta headers, the URL path and query names, thinking blocks and
   encrypted reasoning (providers verify their signatures), and images the
