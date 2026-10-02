@@ -60,9 +60,14 @@ import type { InventoryEntry } from "../engine/lib/rules.ts";
 import { planSwapBack, reachesNetwork } from "../engine/lib/swap-back.ts";
 import { protectedBlocked, protectedFinding, shellWrites } from "./protect.ts";
 import {
-  conversationUntrusted,
+  conversationLabel,
+  copiesData,
+  type Label,
+  PRIVATE_SEND,
   readsOutside,
+  type Seen,
   sendsOut,
+  SUBAGENT_TOOLS,
   unguardedTools,
   UNTRUSTED_SEND,
 } from "./trust.ts";
@@ -570,13 +575,13 @@ export function redactRequest(
   hits: number;
   counts: Counts;
   tags: Set<string>;
-  untrusted: boolean;
+  label: Label;
   unguarded: string[];
 } {
   const tags = requestAllowTags(format, body, session);
   requestDirs.set(tags, requestCwd(format, body));
-  const untrusted = conversationUntrusted(readOutside(format, body), session);
-  requestUntrusted.set(tags, untrusted);
+  const label = conversationLabel(seenInHistory(format, body, tags), session);
+  requestLabels.set(tags, label);
   rememberLiterals(format, body);
   // A new stand-in must not equal a word the conversation already holds:
   // swap-back would turn that word into the real value.
@@ -585,7 +590,7 @@ export function redactRequest(
   try {
     return {
       ...redactWithCorpus(format, body, tags),
-      untrusted,
+      label,
       unguarded: unguardedTools(body.tools),
     };
   } finally {
@@ -638,6 +643,11 @@ const seenLiterals = new Set<string>();
 // the same. Protected changes (protect.ts) are blocked the same way.
 const blockedCalls = new Map<string, string>();
 const MAX_REMEMBERED = 50_000;
+
+// Why a call was blocked, for `ithildin check`.
+export function blockedNotice(callId: string): string | undefined {
+  return blockedCalls.get(callId);
+}
 
 function rememberLiterals(format: Format, body: Record<string, unknown>): void {
   const list = format === "responses" ? body.input : body.messages;
@@ -941,13 +951,23 @@ function secretCalls(
   return secret;
 }
 
-// Whether any tool call in the conversation brought in outside content
-// (trust.ts).
-function readOutside(format: Format, body: Record<string, unknown>): boolean {
+// What the conversation's tool calls show, for its labels (trust.ts): an
+// outside read; a secret file the model saw (its output let through by a
+// tag) or a shell call copied; subagent answers.
+function seenInHistory(format: Format, body: Record<string, unknown>, tags: Set<string>): Seen {
+  const seen: Seen = { outside: false, secret: false, subagents: [] };
   const list = format === "responses" ? body.input : body.messages;
-  if (!Array.isArray(list)) return false;
-  return toolCalls(format, list).some((call) => readsOutside(call.name, call.input));
+  if (!Array.isArray(list)) return seen;
+  const cwd = requestDirs.get(tags) ?? process.env.HOME ?? process.cwd();
+  for (const call of toolCalls(format, list)) {
+    seen.outside ||= readsOutside(call.name, call.input);
+    if (!seen.secret && readsSecret(call.name, call.input, NO_TAGS, cwd))
+      seen.secret = !readsSecret(call.name, call.input, tags, cwd) || copiesData(call.input);
+    if (SUBAGENT_TOOLS.has(call.name)) seen.subagents.push(String(call.id));
+  }
+  return seen;
 }
+const NO_TAGS = new Set<string>();
 
 // The conversation with every tool result passed through `result`, which
 // counts what it changed in `counter.hits`. Unchanged items stay as they were.
@@ -1273,8 +1293,8 @@ function block(callId: string | undefined, notice: string): Swapped {
 // The request's cwd, for protected paths named relative to it. Keyed by the
 // request's tag set, the one thing every reply rewriter is handed.
 const requestDirs = new WeakMap<Set<string>, string>();
-// Whether the request's conversation has read outside content (trust.ts).
-const requestUntrusted = new WeakMap<Set<string>, boolean>();
+// The request's conversation labels (trust.ts).
+const requestLabels = new WeakMap<Set<string>, Label>();
 
 // ── one-call approvals ──────────────────────────────────────────────────────
 // A guard's refusal names the call by an id, and [allow-once:<id>] typed by
@@ -1320,13 +1340,14 @@ function guardNotice(
   const cwd = requestDirs.get(tags) ?? process.env.HOME ?? process.cwd();
   if (sendsSecret(toolName, args, tags, cwd) || sendsSecret(toolName, result.args, tags, cwd))
     return SECRET_SENT;
+  const label = requestLabels.get(tags);
   if (
-    requestUntrusted.get(tags) &&
+    (label?.private || label?.untrusted) &&
     !tags.has("send") &&
     !tags.has("all") &&
     (sendsOut(toolName, args) || sendsOut(toolName, result.args))
   )
-    return UNTRUSTED_SEND;
+    return label.private ? PRIVATE_SEND : UNTRUSTED_SEND;
   if (tags.has("protected")) return undefined;
   const found =
     protectedFinding(toolName, args, cwd) ??

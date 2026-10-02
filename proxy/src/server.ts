@@ -33,6 +33,8 @@ import { aliasStyle } from "../engine/lib/rules.ts";
 import { createStatusBook } from "./status.ts";
 import { type SelfTest, selfTest } from "./selftest.ts";
 import { createRewriter, formatSse, parseSseBlock, swapResponseBody } from "./streams.ts";
+import type { Label } from "./trust.ts";
+import { runCheck } from "./check.ts";
 
 export interface Route {
   upstream: string;
@@ -212,7 +214,7 @@ type Scanned = {
   counts: Counts | undefined;
   prompts: number;
   scanMs: number;
-  untrusted: boolean;
+  label: Label;
   unguarded: string[];
 };
 
@@ -224,7 +226,7 @@ function unscanned(): Scanned {
     counts: undefined,
     prompts: 0,
     scanMs: 0,
-    untrusted: false,
+    label: { untrusted: false, private: false },
     unguarded: [],
   };
 }
@@ -310,7 +312,7 @@ function redactBody(
       counts: conversation ? redacted.counts : undefined,
       prompts: conversation ? typedPromptCount(format, parsed) : 0,
       scanMs,
-      untrusted: redacted.untrusted,
+      label: redacted.label,
       unguarded: redacted.unguarded,
     };
   } catch (error) {
@@ -436,11 +438,11 @@ export function createHandler(
 
     const scanned = await scanRequest(request, format, redact, session ?? null);
     if (scanned instanceof Response) return scanned;
-    const { body, tags, counts, prompts, scanMs, untrusted, unguarded } = scanned;
+    const { body, tags, counts, prompts, scanMs, label, unguarded } = scanned;
     const search = redactSearch(url.search, headers, scanned, redact);
     if (typeof search !== "string") return search;
     const target = upstreamUrl(route, rest, search);
-    const trust = { untrusted, unguarded: unguarded.length };
+    const trust = { ...label, unguarded: unguarded.length };
     if (counts) book.record(session, match[1]!, counts, prompts, tags, trust);
 
     let upstream: Response;
@@ -663,7 +665,9 @@ export async function selfTestCli(port: number, fetchProxy: typeof fetch = fetch
   return report.ok ? 0 : 1;
 }
 
-if (import.meta.main && process.argv[2] === "selftest") {
+if (import.meta.main && process.argv[2] === "check") {
+  process.exit(runCheck(process.argv.slice(3), (text) => process.stdout.write(text)));
+} else if (import.meta.main && process.argv[2] === "selftest") {
   process.exit(await selfTestCli(readOptions(process.argv, process.env, existsSync).port));
 } else if (import.meta.main) {
   const { drain } = start(readOptions(process.argv, process.env, existsSync));
