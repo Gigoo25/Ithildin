@@ -26,7 +26,7 @@ const leaking: Redactors = {
     hits: 0,
     counts: { masked: 0, files: 0, lines: 0, images: 0 },
     tags: new Set(),
-    untrusted: false,
+    label: { untrusted: false, private: false },
     unguarded: [],
   }),
   query: redactQuery,

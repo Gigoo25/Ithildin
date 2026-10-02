@@ -13,6 +13,8 @@
 //          a badge reading "0" still shows the proxy is in the path
 //   untrusted  the conversation has read content from outside the machine,
 //          so commands that send data off it are blocked (trust.ts)
+//   private    the model has seen a secret file, or a command copied one:
+//          sends are blocked the same way
 //   ?Nt    tools the agent offers that act but that no guard reads
 //   +pii   allow tags the user's latest prompt carries (+pii, +secrets,
 //          +all, +protected, +send, +once). The proxy strips tags before
@@ -40,6 +42,8 @@ export interface Status extends Counts {
   allowed: string[];
   // The conversation has read outside content (trust.ts).
   untrusted: boolean;
+  // The conversation has seen or copied a secret file (trust.ts).
+  private: boolean;
   // Tools offered that act and that no guard reads (trust.ts).
   unguarded: number;
   badge: string;
@@ -53,9 +57,10 @@ interface Entry {
   baseline: number;
 }
 
-// What trust.ts found: an outside read, and unguarded tools offered.
+// What trust.ts found: the conversation's labels, and unguarded tools offered.
 export interface Trust {
   untrusted?: boolean;
+  private?: boolean;
   unguarded?: number;
 }
 
@@ -83,6 +88,7 @@ export function badgeText(
   const scanned =
     (requests > 0 ? ` · ${requests} req` : "") +
     (trust.untrusted ? " · untrusted" : "") +
+    (trust.private ? " · private" : "") +
     (trust.unguarded ? ` · ?${trust.unguarded}t` : "") +
     (allowed.length > 0 ? ` · ${allowed.map((tag) => `+${tag}`).join(" ")}` : "");
   const parts = [
@@ -131,6 +137,7 @@ export function createStatusBook() {
         requests,
         allowed,
         untrusted: trust.untrusted ?? false,
+        private: trust.private ?? false,
         unguarded: trust.unguarded ?? 0,
         badge,
       };

