@@ -179,13 +179,16 @@ is re-read when it changes.
 
 An entry is a tool name with `*` globs, plus optional argument patterns:
 `tool(arg:pattern, ...)` matches when every named argument matches whole. In
-a pattern `*` matches anything and `\` escapes `* ? , )`. A shell command is
-matched one command at a time, with the program named without its directory,
-so `git push origin *` never covers a `curl` chained after it.
+a pattern `*` matches anything, `?` one character, and `\` escapes
+`* ? , ) \` (any other backslash is just a backslash). `reviewedTools` takes
+tool names only. A shell command is matched one command at a time, with the
+program named without its directory, so `git push origin *` never covers a
+`curl` chained after it.
 
 **Checking it.** `ithildin check` lists the problems in the guard section and
 runs your guard tests: `*.guard` files in `~/.config/ithildin/guard-tests`,
-or the files and directories you name. Each file is one conversation, and
+or the files and directories you name (naming some that hold none fails).
+Each file is one conversation, and
 each call is judged by the history before it:
 
 ```
