@@ -68,7 +68,7 @@ describe("self-test", () => {
       WIRES.flatMap((wire) => [
         `${wire.name}: request not forwarded (status 500)`,
         `${wire.name} streamed: request not forwarded (status 500)`,
-      ]),
+      ]).concat("anthropic: send probe refused", "anthropic streamed: send probe refused"),
     );
   });
 

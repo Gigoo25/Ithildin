@@ -428,6 +428,9 @@ async function trustProbe(makeHandler: (fetchUpstream: typeof fetch) => Handler)
             headers: { "content-type": "text/event-stream" },
           })
         : Response.json(ANTHROPIC.json(send))) as unknown as typeof fetch;
+    // No session header: a nameless request keeps no labels (trust.ts), so
+    // each run is judged by this history alone, not by a label left over
+    // from the run before.
     const response = await makeHandler(upstream)(
       new Request(`http://127.0.0.1/anthropic${ANTHROPIC.path}`, {
         method: "POST",
@@ -449,9 +452,10 @@ async function trustProbe(makeHandler: (fetchUpstream: typeof fetch) => Handler)
         }),
       }),
     );
-    // A refusal runs nothing; the probes above already name it.
+    // A refusal would skip the check, so it fails the probe.
     if (!response.ok) {
       await response.body?.cancel();
+      failures.push(`${stream ? "anthropic streamed" : "anthropic"}: send probe refused`);
       continue;
     }
     const commands = replyCommands(ANTHROPIC, await response.text(), stream);

@@ -666,7 +666,8 @@ export async function selfTestCli(port: number, fetchProxy: typeof fetch = fetch
 }
 
 if (import.meta.main && process.argv[2] === "check") {
-  process.exit(runCheck(process.argv.slice(3), (text) => process.stdout.write(text)));
+  // exitCode, not exit(): stdout may still be draining into a pipe.
+  process.exitCode = runCheck(process.argv.slice(3), (text) => process.stdout.write(text));
 } else if (import.meta.main && process.argv[2] === "selftest") {
   process.exit(await selfTestCli(readOptions(process.argv, process.env, existsSync).port));
 } else if (import.meta.main) {

@@ -216,6 +216,9 @@ export const SUBAGENT_TOOLS = new Set(["task", "spawn_agent", "wait"]);
 // A parent the proxy cannot name has no previous request to date a subagent
 // from: subagents labelled this long before its answer count.
 const SUBAGENT_WINDOW_MS = 600_000;
+// Labels live in memory, least recently used first out. A session pushed out
+// by 256 newer ones starts clean if it comes back: a limit, as is a restart.
+// "" is shared by every nameless request, so its date may be another's.
 const SESSIONS_MAX = 256;
 const CALLS_MAX = 4096;
 
