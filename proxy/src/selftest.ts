@@ -13,7 +13,8 @@
 // None may reach the "provider". The upstream replies with three tool calls:
 // one echoing the email's stand-in (it must come back with the real value),
 // one sending the stand-in to a web host (it must not) and one deleting .git
-// (it must be blocked).
+// (it must be blocked). A conversation that read a web page gets a git push
+// back, which must be blocked too (trust.ts).
 //
 // Nothing leaves the process, and the values are new on every run, so none is
 // ever a real one. Failures name what failed, never a value.
@@ -46,6 +47,7 @@ const ALNUM = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 // Consonants only: a random run cannot spell a word a rule exempts.
 const CONSONANTS = "bcdfghjklmnpqrstvwxz";
 const PROTECTED_COMMAND = "rm -rf .git";
+const SEND_COMMAND = "git push origin main";
 
 function pick(alphabet: string, length: number): string {
   let out = "";
@@ -413,6 +415,54 @@ async function probe(
   return failures;
 }
 
+// A send after a web read, as JSON and streamed: the reply's push must not
+// reach the client runnable.
+async function trustProbe(makeHandler: (fetchUpstream: typeof fetch) => Handler) {
+  const failures: string[] = [];
+  const send: Call[] = [{ id: "call_send", command: SEND_COMMAND }];
+  const half = (args: string): [string, string] => [args.slice(0, 9), args.slice(9)];
+  for (const stream of [false, true]) {
+    const upstream = (async () =>
+      stream
+        ? new Response(sseText(ANTHROPIC.events(send, half)), {
+            headers: { "content-type": "text/event-stream" },
+          })
+        : Response.json(ANTHROPIC.json(send))) as unknown as typeof fetch;
+    const response = await makeHandler(upstream)(
+      new Request(`http://127.0.0.1/anthropic${ANTHROPIC.path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "selftest",
+          max_tokens: 1,
+          stream,
+          messages: [
+            { role: "user", content: "self-test" },
+            {
+              role: "assistant",
+              content: [
+                { type: "tool_use", id: "toolu_web", name: "WebFetch", input: { url: "x" } },
+              ],
+            },
+            { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_web" }] },
+          ],
+        }),
+      }),
+    );
+    // A refusal runs nothing; the probes above already name it.
+    if (!response.ok) {
+      await response.body?.cancel();
+      continue;
+    }
+    const commands = replyCommands(ANTHROPIC, await response.text(), stream);
+    if (commands.length !== 1 || commands[0] === SEND_COMMAND)
+      failures.push(
+        `${stream ? "anthropic streamed" : "anthropic"}: send after web read not blocked`,
+      );
+  }
+  return failures;
+}
+
 // A client following a redirect resends its unredacted body around the
 // proxy, so one must never reach it.
 async function redirectProbe(makeHandler: (fetchUpstream: typeof fetch) => Handler) {
@@ -448,6 +498,7 @@ export async function selfTest(
         failures.push(...(await probe(makeHandler, wire, stream, values, forwarded)));
     }
     failures.push(...(await redirectProbe(makeHandler)));
+    failures.push(...(await trustProbe(makeHandler)));
     for (const [name, value] of Object.entries(values)) {
       if (forwarded.some((body) => body.includes(value)))
         failures.push(`${name} reached the provider`);

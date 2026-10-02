@@ -26,6 +26,8 @@ const leaking: Redactors = {
     hits: 0,
     counts: { masked: 0, files: 0, lines: 0, images: 0 },
     tags: new Set(),
+    untrusted: false,
+    unguarded: [],
   }),
   query: redactQuery,
   headers: redactHeaders,
@@ -106,6 +108,10 @@ describe("self-test", () => {
       return new Response(rewrite(await reply.text(), real, standIn), reply);
     };
   const labels = WIRES.flatMap((wire) => [wire.name, `${wire.name} streamed`]);
+  const UNTRUSTED_SENDS = [
+    "anthropic: send after web read not blocked",
+    "anthropic streamed: send after web read not blocked",
+  ];
 
   it("names every reply check a proxy that never rewrites replies fails", async () => {
     const report = await selfTest(unguarded((text) => text));
@@ -115,7 +121,7 @@ describe("self-test", () => {
           `${label}: tool call not swapped back`,
           `${label}: protected change not blocked`,
         ])
-        .concat("redirect passed to the client"),
+        .concat("redirect passed to the client", ...UNTRUSTED_SENDS),
     );
   });
 
@@ -149,7 +155,7 @@ describe("self-test", () => {
             : `${label}: real value sent off the machine`,
           `${label}: protected change not blocked`,
         ])
-        .concat("redirect passed to the client"),
+        .concat("redirect passed to the client", ...UNTRUSTED_SENDS),
     );
   });
 

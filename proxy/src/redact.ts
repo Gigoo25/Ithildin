@@ -10,7 +10,7 @@
 // Every request carries the whole conversation, and redacting it re-mints
 // every stand-in the model can name, so the book never needs to be saved.
 
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
 import path from "node:path";
 import {
@@ -58,7 +58,14 @@ import {
 } from "../engine/lib/runtime-inventory.ts";
 import type { InventoryEntry } from "../engine/lib/rules.ts";
 import { planSwapBack, reachesNetwork } from "../engine/lib/swap-back.ts";
-import { protectedBlocked, protectedChange, shellWrites } from "./protect.ts";
+import { protectedBlocked, protectedFinding, shellWrites } from "./protect.ts";
+import {
+  conversationUntrusted,
+  readsOutside,
+  sendsOut,
+  unguardedTools,
+  UNTRUSTED_SEND,
+} from "./trust.ts";
 import { BASH_TOOLS, LOCAL_TOOLS, shellCommand, writeTargets } from "./tools.ts";
 import { argsKey, initReplay, recordOriginal, replayOriginal, saveReplay } from "./replay.ts";
 
@@ -191,6 +198,8 @@ function textBlocks(content: unknown): Array<{ type: "text"; text: string }> {
 }
 
 const PROTECTED_TAG = /\[allow-protected\]/i;
+const SEND_TAG = /\[allow-send\]/i;
+const ONCE_TAG = /\[allow-once:([0-9a-f]{8})\]/gi;
 
 // User text the user did not type: summaries and transcripts the agent
 // writes, which can quote tags (a tool's notice saying which to type). Claude
@@ -285,6 +294,8 @@ export function requestAllowTags(
   // Proxy-only, like [allow-images]: the latest typed prompt decides, not a
   // tool-result turn, whatever tags that carries.
   if (PROTECTED_TAG.test(typed)) tags.add("protected");
+  if (SEND_TAG.test(typed)) tags.add("send");
+  for (const match of typed.matchAll(ONCE_TAG)) tags.add(`once:${match[1]!.toLowerCase()}`);
   if (session) rememberTags(session, tags);
   return tags;
 }
@@ -554,16 +565,29 @@ export function redactRequest(
   format: Format,
   body: Record<string, unknown>,
   session?: string | null,
-): { body: Record<string, unknown>; hits: number; counts: Counts; tags: Set<string> } {
+): {
+  body: Record<string, unknown>;
+  hits: number;
+  counts: Counts;
+  tags: Set<string>;
+  untrusted: boolean;
+  unguarded: string[];
+} {
   const tags = requestAllowTags(format, body, session);
   requestDirs.set(tags, requestCwd(format, body));
+  const untrusted = conversationUntrusted(readOutside(format, body), session);
+  requestUntrusted.set(tags, untrusted);
   rememberLiterals(format, body);
   // A new stand-in must not equal a word the conversation already holds:
   // swap-back would turn that word into the real value.
   let corpus: string | undefined;
   aliases().setCorpus(() => (corpus ??= JSON.stringify(body)));
   try {
-    return redactWithCorpus(format, body, tags);
+    return {
+      ...redactWithCorpus(format, body, tags),
+      untrusted,
+      unguarded: unguardedTools(body.tools),
+    };
   } finally {
     aliases().setCorpus(undefined);
   }
@@ -862,6 +886,45 @@ function parseArgs(json: unknown): unknown {
   }
 }
 
+type ToolCall = { id: unknown; name: string; input: unknown };
+
+// Every tool call in a conversation, in each format's shape, with its
+// arguments parsed.
+function toolCalls(format: Format, list: unknown[]): ToolCall[] {
+  const out: ToolCall[] = [];
+  for (const item of list) {
+    if (!item || typeof item !== "object") continue;
+    const record = item as Record<string, unknown>;
+    if (format === "anthropic" && Array.isArray(record.content)) {
+      for (const block of record.content as Array<Record<string, unknown>>) {
+        if (block?.type === "tool_use")
+          out.push({ id: block.id, name: String(block.name), input: block.input });
+      }
+    } else if (format === "chat" && Array.isArray(record.tool_calls)) {
+      for (const call of record.tool_calls as Array<{
+        id?: unknown;
+        function?: { name?: unknown; arguments?: unknown };
+      }>) {
+        out.push({
+          id: call?.id,
+          name: String(call?.function?.name),
+          input: parseArgs(call?.function?.arguments),
+        });
+      }
+    } else if (
+      format === "responses" &&
+      (record.type === "function_call" || record.type === "custom_tool_call")
+    ) {
+      out.push({
+        id: record.call_id,
+        name: String(record.name),
+        input: parseArgs(record.arguments ?? record.input),
+      });
+    }
+  }
+  return out;
+}
+
 // Notices for the tool calls in a conversation that read something
 // protected, by call id.
 function secretCalls(
@@ -871,43 +934,19 @@ function secretCalls(
   cwd: string,
 ): Map<string, string> {
   const secret = new Map<string, string>();
-  const withhold = (id: unknown, notice: string | undefined) => {
-    if (notice) secret.set(String(id), notice);
-  };
-  for (const item of list) {
-    if (!item || typeof item !== "object") continue;
-    const record = item as Record<string, unknown>;
-    if (format === "anthropic" && Array.isArray(record.content)) {
-      for (const block of record.content as Array<Record<string, unknown>>) {
-        if (block?.type === "tool_use")
-          withhold(block.id, readsSecret(String(block.name), block.input, tags, cwd));
-      }
-    } else if (format === "chat" && Array.isArray(record.tool_calls)) {
-      for (const call of record.tool_calls as Array<{
-        id?: unknown;
-        function?: { name?: unknown; arguments?: unknown };
-      }>) {
-        withhold(
-          call.id,
-          readsSecret(
-            String(call?.function?.name),
-            parseArgs(call?.function?.arguments),
-            tags,
-            cwd,
-          ),
-        );
-      }
-    } else if (
-      format === "responses" &&
-      (record.type === "function_call" || record.type === "custom_tool_call")
-    ) {
-      withhold(
-        record.call_id,
-        readsSecret(String(record.name), parseArgs(record.arguments ?? record.input), tags, cwd),
-      );
-    }
+  for (const call of toolCalls(format, list)) {
+    const notice = readsSecret(call.name, call.input, tags, cwd);
+    if (notice) secret.set(String(call.id), notice);
   }
   return secret;
+}
+
+// Whether any tool call in the conversation brought in outside content
+// (trust.ts).
+function readOutside(format: Format, body: Record<string, unknown>): boolean {
+  const list = format === "responses" ? body.input : body.messages;
+  if (!Array.isArray(list)) return false;
+  return toolCalls(format, list).some((call) => readsOutside(call.name, call.input));
 }
 
 // The conversation with every tool result passed through `result`, which
@@ -1169,8 +1208,12 @@ export function withholdImages(
 // output keeps them: rewriting it would corrupt what a command printed.
 
 // Same tag set the engine parses (resolveTagPriority), plus [allow-images]
-// and [allow-protected].
-const ALLOW_TAG = /\[(?:(?:allow|mask)-(?:all|secrets?|pii)|allow-(?:images?|protected))\][ \t]?/gi;
+// [allow-protected], [allow-send] and [allow-once:<id>].
+const ALLOW_TAG = new RegExp(
+  "\\[(?:(?:allow|mask)-(?:all|secrets?|pii)" +
+    "|allow-(?:images?|protected|send|once:[0-9a-f]{8}))\\][ \\t]?",
+  "gi",
+);
 
 function stripTagText(content: unknown): unknown {
   if (typeof content === "string") return content.replace(ALLOW_TAG, "");
@@ -1230,6 +1273,26 @@ function block(callId: string | undefined, notice: string): Swapped {
 // The request's cwd, for protected paths named relative to it. Keyed by the
 // request's tag set, the one thing every reply rewriter is handed.
 const requestDirs = new WeakMap<Set<string>, string>();
+// Whether the request's conversation has read outside content (trust.ts).
+const requestUntrusted = new WeakMap<Set<string>, boolean>();
+
+// ── one-call approvals ──────────────────────────────────────────────────────
+// A guard's refusal names the call by an id, and [allow-once:<id>] typed by
+// the user lets that call alone through the guards below, for that prompt.
+// A tag would open every call of its kind; the id opens one. The id is a hash
+// of the call as the model wrote it, so the same call sent again matches;
+// whitespace in a command does not count.
+
+export function callApproval(toolName: string, args: unknown): string {
+  const command = shellCommand(args);
+  const text =
+    command !== undefined ? command.trim().replace(/\s+/g, " ") : JSON.stringify(args ?? null);
+  return createHash("sha256").update(`${toolName}\0${text}`).digest("hex").slice(0, 8);
+}
+
+export function approvalHint(notice: string, id: string): string {
+  return `${notice} To allow only this call, the user can include [allow-once:${id}] instead.`;
+}
 
 // Checked on the arguments as written and as swapped: a path may hold a
 // stand-in (a home directory) that only its real value resolves.
@@ -1241,14 +1304,34 @@ export function swapToolArguments(
 ): Swapped {
   const result = swapArguments(toolName, args, tags, callId);
   if (result.blocked) return result;
+  const id = callApproval(toolName, args);
+  if (tags.has(`once:${id}`)) return result;
+  const notice = guardNotice(toolName, args, result, tags);
+  return notice ? block(callId, approvalHint(notice, id)) : result;
+}
+
+// Why the guards refuse a call, or undefined when they let it run.
+function guardNotice(
+  toolName: string,
+  args: unknown,
+  result: Swapped,
+  tags: Set<string>,
+): string | undefined {
   const cwd = requestDirs.get(tags) ?? process.env.HOME ?? process.cwd();
   if (sendsSecret(toolName, args, tags, cwd) || sendsSecret(toolName, result.args, tags, cwd))
-    return block(callId, SECRET_SENT);
-  if (tags.has("protected")) return result;
-  const kind =
-    protectedChange(toolName, args, cwd) ??
-    (result.swapped > 0 ? protectedChange(toolName, result.args, cwd) : undefined);
-  return kind ? block(callId, protectedBlocked(kind)) : result;
+    return SECRET_SENT;
+  if (
+    requestUntrusted.get(tags) &&
+    !tags.has("send") &&
+    !tags.has("all") &&
+    (sendsOut(toolName, args) || sendsOut(toolName, result.args))
+  )
+    return UNTRUSTED_SEND;
+  if (tags.has("protected")) return undefined;
+  const found =
+    protectedFinding(toolName, args, cwd) ??
+    (result.swapped > 0 ? protectedFinding(toolName, result.args, cwd) : undefined);
+  return found ? protectedBlocked(found.kind, found.remedy) : undefined;
 }
 
 export const SECRET_SENT =

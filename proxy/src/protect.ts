@@ -18,7 +18,8 @@
 //   base URL would go in;
 // - git history: any path inside .git, removing a repo or a directory above
 //   one (rm, mv, a deleting find, xargs rm over a find, rsync --delete), and
-//   git commands that discard commits or refs.
+//   git commands that discard commits or refs;
+// - the paths the user lists under guard.protect (policy.ts).
 //
 // Like the read guards this is lexical, not a sandbox: paths computed at run
 // time ($(...), eval, a script that edits the file) are out of scope, and
@@ -28,18 +29,30 @@ import { existsSync, readdirSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { canonicalPath, commandPathCandidates, globRegExp } from "../engine/core.ts";
 import { NAME, setting } from "../engine/lib/names.ts";
+import { guardPolicy } from "./policy.ts";
 import { shellCommand, writeTargets } from "./tools.ts";
 
 export type ProtectedKind = "config" | "git";
 
-export function protectedBlocked(kind: ProtectedKind): string {
+// What was refused, and a safer way to the same end when there is one: an
+// agent told only "no" tries other spellings until one gets past.
+export interface ProtectedFinding {
+  kind: ProtectedKind;
+  remedy?: string;
+}
+
+export function protectedBlocked(kind: ProtectedKind, remedy?: string): string {
   const what =
     kind === "git" ? "would delete or rewrite git history" : "would change protected configuration";
   return (
-    `Not run: this call ${what}, so nothing was changed. If the change is intended, ask the user ` +
-    `to include [allow-protected] in their prompt.`
+    `Not run: this call ${what}, so nothing was changed. ${remedy ? `${remedy} ` : ""}` +
+    `Do not look for another command that makes the same change. If it is intended, ask the ` +
+    `user to include [allow-protected] in their prompt.`
   );
 }
+
+const CONFIG_REMEDY = "Show the user the change you want and let them make it.";
+const REMOVE_REMEDY = "Remove the files you mean by name, inside the repository.";
 
 function expandHome(filePath: string): string {
   const home = process.env.HOME ?? "";
@@ -106,6 +119,14 @@ function protectedRoots(): { dirs: string[]; files: string[] } {
     files.add(file);
     const resolved = real(file);
     if (resolved) files.add(resolved);
+  }
+  // A listed path may be a file or a directory; as a directory root it
+  // covers both.
+  for (const listed of guardPolicy().protect) {
+    const absolute = path.resolve(home, expandHome(listed));
+    dirs.add(absolute);
+    const resolved = real(absolute);
+    if (resolved) dirs.add(resolved);
   }
   return { dirs: [...dirs], files: [...files] };
 }
@@ -305,7 +326,8 @@ const GIT_READ_ONLY = new Set([
   "commit",
 ]);
 
-function gitArgs(argv: string[]): string[] {
+// A git command's subcommand and what follows it, past global options.
+export function gitArgs(argv: string[]): string[] {
   const args = argv.slice(1);
   while (args.length > 0 && /^-(?:C|c)$|^--(?:git-dir|work-tree)$/.test(args[0]!))
     args.splice(0, 2);
@@ -321,6 +343,26 @@ function readOnly(argv: string[], segment: string): boolean {
   if (name === "find") return !argv.some((arg) => /^-(?:delete|exec|execdir|ok|fprint)/.test(arg));
   if (name === "git") return GIT_READ_ONLY.has(gitArgs(argv)[0] ?? "status");
   return READ_ONLY.has(name);
+}
+
+// The safer way to each refused git change, by subcommand. Rewrites with no
+// safe form (filter-branch, reflog expire) have none.
+const GIT_REMEDIES: Record<string, string> = {
+  reset:
+    "To set work aside, use `git stash`; to move the branch and keep the changes, " +
+    "use `git reset --soft` or `git reset --mixed`.",
+  clean: "`git clean -n` lists what it would delete; remove the files you mean by name.",
+  push: "Push without force; if the remote moved, fetch and rebase onto it first.",
+  branch: "`git branch -d` deletes a branch once it is merged.",
+  stash: "Leave the stash in place; `git stash list` shows it, `git stash pop` applies it.",
+  "update-ref": "Leave the ref in place; `git branch -d` removes a merged branch.",
+  gc: "`git gc` without --prune keeps unreachable objects recoverable.",
+};
+
+function historyFinding(argv: string[]): ProtectedFinding | undefined {
+  if (!destroysHistory(argv)) return undefined;
+  const remedy = GIT_REMEDIES[gitArgs(argv)[0] ?? ""];
+  return remedy ? { kind: "git", remedy } : { kind: "git" };
 }
 
 // git subcommands that throw away commits, refs or uncommitted work beyond
@@ -451,11 +493,16 @@ function commandDirs(command: string, cwd: string): string[] {
   return dirs;
 }
 
+function withRemedy(kind: ProtectedKind, removing: boolean): ProtectedFinding {
+  if (kind === "config") return { kind, remedy: CONFIG_REMEDY };
+  return removing ? { kind, remedy: REMOVE_REMEDY } : { kind };
+}
+
 function bashChange(
   raw: string,
   cwd: string,
   roots: ReturnType<typeof protectedRoots>,
-): ProtectedKind | undefined {
+): ProtectedFinding | undefined {
   const command = heredocsAsData(raw);
   const dirs = commandDirs(command, cwd);
   let previous: string[] = [];
@@ -463,23 +510,30 @@ function bashChange(
     const argv = program(segment);
     const upstream = previous;
     previous = argv;
-    if (destroysHistory(argv)) return "git";
+    const history = historyFinding(argv);
+    if (history) return history;
     if (readOnly(argv, segment)) continue;
     const removed = removedPaths(argv, upstream, roots);
     for (const dir of dirs) {
       for (const candidate of commandPathCandidates(segment, dir)) {
         const kind = protectedPath(candidate, dir, roots);
-        if (kind) return kind;
+        if (kind) return withRemedy(kind, removed.length > 0);
       }
       for (const operand of removed) {
         for (const candidate of commandPathCandidates(operand, dir)) {
           const kind = holdsProtected(candidate, dir, roots);
-          if (kind) return kind;
+          if (kind) return withRemedy(kind, true);
         }
       }
     }
   }
   return undefined;
+}
+
+// Each simple command in a command line, as its program and arguments.
+// Heredoc bodies fed to anything but a shell are data, not commands.
+export function shellPrograms(command: string): string[][] {
+  return segments(heredocsAsData(command)).map(program);
 }
 
 // A shell call that may write something: a segment that is not a read.
@@ -489,13 +543,14 @@ export function shellWrites(args: unknown): boolean {
   return segments(command).some((segment) => !readOnly(program(segment), segment));
 }
 
-// What a tool call would change that is protected, or undefined. Shell and
-// write calls are known by their arguments as well as their name (tools.ts).
-export function protectedChange(
+// What a tool call would change that is protected, and the safer way to do
+// it, or undefined. Shell and write calls are known by their arguments as
+// well as their name (tools.ts).
+export function protectedFinding(
   toolName: string,
   args: unknown,
   cwd: string,
-): ProtectedKind | undefined {
+): ProtectedFinding | undefined {
   const command = shellCommand(args);
   if (command !== undefined) return bashChange(command, cwd, protectedRoots());
   const targets = writeTargets(toolName, args);
@@ -503,7 +558,15 @@ export function protectedChange(
   const roots = protectedRoots();
   for (const target of targets) {
     const kind = protectedPath(target, cwd, roots);
-    if (kind) return kind;
+    if (kind) return withRemedy(kind, false);
   }
   return undefined;
+}
+
+export function protectedChange(
+  toolName: string,
+  args: unknown,
+  cwd: string,
+): ProtectedKind | undefined {
+  return protectedFinding(toolName, args, cwd)?.kind;
 }

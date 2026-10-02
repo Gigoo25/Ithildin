@@ -313,6 +313,8 @@ const REDACTORS_PASSING = {
     hits: 0,
     counts: { masked: 0, files: 0, lines: 0, images: 0 },
     tags: new Set<string>(),
+    untrusted: false,
+    unguarded: [],
   }),
   query: (search: string) => ({ search, hits: 0, values: 0 }),
 };
@@ -337,6 +339,8 @@ describe("scan failures", () => {
         hits: 0,
         counts: { masked: 0, files: 0, lines: 0, images: 0 },
         tags: new Set(),
+        untrusted: false,
+        unguarded: [],
       }),
       query: fail,
       headers: () => ({ hits: 0, values: 0 }),

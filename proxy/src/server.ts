@@ -135,6 +135,18 @@ function log(line: string): void {
   process.stderr.write(`ithildin: ${line}\n`);
 }
 
+// Each tool no guard reads, named once, so the badge's ?Nt can be traced.
+const UNGUARDED_MAX = 1000;
+const unguardedSeen = new Set<string>();
+
+function noteUnguarded(names: string[]): void {
+  for (const name of names) {
+    if (unguardedSeen.has(name) || unguardedSeen.size >= UNGUARDED_MAX) continue;
+    unguardedSeen.add(name);
+    log(`tool ${name} acts, and no guard reads its calls`);
+  }
+}
+
 function refuse(status: number, message: string): Response {
   log(`refused (${status}): ${message}`);
   return Response.json(
@@ -200,10 +212,21 @@ type Scanned = {
   counts: Counts | undefined;
   prompts: number;
   scanMs: number;
+  untrusted: boolean;
+  unguarded: string[];
 };
 
 function unscanned(): Scanned {
-  return { body: undefined, tags: new Set(), hits: 0, counts: undefined, prompts: 0, scanMs: 0 };
+  return {
+    body: undefined,
+    tags: new Set(),
+    hits: 0,
+    counts: undefined,
+    prompts: 0,
+    scanMs: 0,
+    untrusted: false,
+    unguarded: [],
+  };
 }
 
 // The body as text, read no further than the cap: a chunked body declares no
@@ -275,6 +298,7 @@ function redactBody(
     const started = performance.now();
     const redacted = redact.request(format, parsed, session);
     const scanMs = Math.round(performance.now() - started);
+    noteUnguarded(redacted.unguarded);
     // Single-message side requests (titles, quota probes) are not the
     // conversation, so they do not set its badge.
     const turns = Array.isArray(parsed.messages) ? parsed.messages : parsed.input;
@@ -286,6 +310,8 @@ function redactBody(
       counts: conversation ? redacted.counts : undefined,
       prompts: conversation ? typedPromptCount(format, parsed) : 0,
       scanMs,
+      untrusted: redacted.untrusted,
+      unguarded: redacted.unguarded,
     };
   } catch (error) {
     return refuse(
@@ -410,11 +436,12 @@ export function createHandler(
 
     const scanned = await scanRequest(request, format, redact, session ?? null);
     if (scanned instanceof Response) return scanned;
-    const { body, tags, counts, prompts, scanMs } = scanned;
+    const { body, tags, counts, prompts, scanMs, untrusted, unguarded } = scanned;
     const search = redactSearch(url.search, headers, scanned, redact);
     if (typeof search !== "string") return search;
     const target = upstreamUrl(route, rest, search);
-    if (counts) book.record(session, match[1]!, counts, prompts, tags);
+    const trust = { untrusted, unguarded: unguarded.length };
+    if (counts) book.record(session, match[1]!, counts, prompts, tags, trust);
 
     let upstream: Response;
     try {
