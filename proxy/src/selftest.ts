@@ -34,6 +34,8 @@ type Wire = {
   name: string;
   path: string;
   body: (prompt: string, values: Values) => Record<string, unknown>;
+  // A request whose history holds one finished web read.
+  webRead: Record<string, unknown>;
   json: (calls: Call[]) => unknown;
   events: (calls: Call[], cut: (args: string) => [string, string]) => Event[];
   // From a streamed reply's events: [call key, argument fragment] pairs.
@@ -73,6 +75,18 @@ const array = (value: unknown): Array<Record<string, unknown>> =>
 const ANTHROPIC: Wire = {
   name: "anthropic",
   path: "/v1/messages",
+  webRead: {
+    model: "selftest",
+    max_tokens: 1,
+    messages: [
+      { role: "user", content: "self-test" },
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "call_web", name: "WebFetch", input: { url: "x" } }],
+      },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "call_web" }] },
+    ],
+  },
   body: (prompt, values) => ({
     model: "selftest",
     max_tokens: 1,
@@ -150,6 +164,20 @@ const ANTHROPIC: Wire = {
 const CHAT: Wire = {
   name: "chat",
   path: "/v1/chat/completions",
+  webRead: {
+    model: "selftest",
+    messages: [
+      { role: "user", content: "self-test" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          { id: "call_web", type: "function", function: { name: "WebFetch", arguments: "{}" } },
+        ],
+      },
+      { role: "tool", tool_call_id: "call_web", content: "" },
+    ],
+  },
   body: (prompt, values) => ({
     model: "selftest",
     messages: [
@@ -242,6 +270,14 @@ const responseItem = (call: Call, args = argsOf(call)) => ({
 const RESPONSES: Wire = {
   name: "responses",
   path: "/v1/responses",
+  webRead: {
+    model: "selftest",
+    input: [
+      { role: "user", content: "self-test" },
+      { type: "function_call", call_id: "call_web", name: "WebFetch", arguments: "{}" },
+      { type: "function_call_output", call_id: "call_web", output: "" },
+    ],
+  },
   body: (prompt, values) => ({
     model: "selftest",
     input: [
@@ -415,56 +451,41 @@ async function probe(
   return failures;
 }
 
-// A send after a web read, as JSON and streamed: the reply's push must not
-// reach the client runnable.
-async function trustProbe(makeHandler: (fetchUpstream: typeof fetch) => Handler) {
-  const failures: string[] = [];
+// A send after a web read: the reply's push must not reach the client
+// runnable.
+async function trustProbe(
+  makeHandler: (fetchUpstream: typeof fetch) => Handler,
+  wire: Wire,
+  stream: boolean,
+): Promise<string[]> {
+  const label = stream ? `${wire.name} streamed` : wire.name;
   const send: Call[] = [{ id: "call_send", command: SEND_COMMAND }];
   const half = (args: string): [string, string] => [args.slice(0, 9), args.slice(9)];
-  for (const stream of [false, true]) {
-    const upstream = (async () =>
-      stream
-        ? new Response(sseText(ANTHROPIC.events(send, half)), {
-            headers: { "content-type": "text/event-stream" },
-          })
-        : Response.json(ANTHROPIC.json(send))) as unknown as typeof fetch;
-    // No session header: a nameless request keeps no labels (trust.ts), so
-    // each run is judged by this history alone, not by a label left over
-    // from the run before.
-    const response = await makeHandler(upstream)(
-      new Request(`http://127.0.0.1/anthropic${ANTHROPIC.path}`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          model: "selftest",
-          max_tokens: 1,
-          stream,
-          messages: [
-            { role: "user", content: "self-test" },
-            {
-              role: "assistant",
-              content: [
-                { type: "tool_use", id: "toolu_web", name: "WebFetch", input: { url: "x" } },
-              ],
-            },
-            { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_web" }] },
-          ],
-        }),
-      }),
-    );
-    // A refusal would skip the check, so it fails the probe.
-    if (!response.ok) {
-      await response.body?.cancel();
-      failures.push(`${stream ? "anthropic streamed" : "anthropic"}: send probe refused`);
-      continue;
-    }
-    const commands = replyCommands(ANTHROPIC, await response.text(), stream);
-    if (commands.length !== 1 || commands[0] === SEND_COMMAND)
-      failures.push(
-        `${stream ? "anthropic streamed" : "anthropic"}: send after web read not blocked`,
-      );
+  const upstream = (async () =>
+    stream
+      ? new Response(sseText(wire.events(send, half)), {
+          headers: { "content-type": "text/event-stream" },
+        })
+      : Response.json(wire.json(send))) as unknown as typeof fetch;
+  // No session header: a nameless request keeps no labels (trust.ts), so
+  // each run is judged by this history alone, not by a label left over
+  // from the run before.
+  const response = await makeHandler(upstream)(
+    new Request(`http://127.0.0.1/anthropic${wire.path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...wire.webRead, stream }),
+    }),
+  );
+  // A refusal would skip the check, so it fails the probe.
+  if (!response.ok) {
+    await response.body?.cancel();
+    return [`${label}: send probe refused`];
   }
-  return failures;
+  const commands = replyCommands(wire, await response.text(), stream);
+  return commands.length !== 1 || commands[0] === SEND_COMMAND
+    ? [`${label}: send after web read not blocked`]
+    : [];
 }
 
 // A client following a redirect resends its unredacted body around the
@@ -502,7 +523,10 @@ export async function selfTest(
         failures.push(...(await probe(makeHandler, wire, stream, values, forwarded)));
     }
     failures.push(...(await redirectProbe(makeHandler)));
-    failures.push(...(await trustProbe(makeHandler)));
+    for (const wire of WIRES) {
+      for (const stream of [false, true])
+        failures.push(...(await trustProbe(makeHandler, wire, stream)));
+    }
     for (const [name, value] of Object.entries(values)) {
       if (forwarded.some((body) => body.includes(value)))
         failures.push(`${name} reached the provider`);

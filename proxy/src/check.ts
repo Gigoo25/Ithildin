@@ -69,7 +69,8 @@ let conversations = 0;
 
 // The steps as one conversation; a line per call the guards decided otherwise.
 export function runGuardTest(steps: Step[]): string[] {
-  const session = `ithildin-check-${process.pid}-${++conversations}`;
+  const conversation = ++conversations;
+  const session = `ithildin-check-${process.pid}-${conversation}`;
   const failures: string[] = [];
   const messages: unknown[] = [];
   let cwd = process.cwd();
@@ -82,7 +83,8 @@ export function runGuardTest(steps: Step[]): string[] {
     if (messages.length === 0) messages.push({ role: "user", content: "check" });
     const body = { system: `Primary working directory: ${cwd}`, messages: [...messages] };
     const { tags } = redactRequest("anthropic", body, session);
-    const id = `toolu_check_${step.line}`;
+    // Refusals are remembered by id, so ids stay apart across files.
+    const id = `toolu_check_${conversation}_${step.line}`;
     const blocked = swapToolArguments(step.tool, step.args, tags, id).blocked === true;
     const args = shellCommand(step.args) ?? JSON.stringify(step.args);
     const said = `line ${step.line}: ${step.expect} ${step.tool} ${args}`;
@@ -147,8 +149,12 @@ function runFile(file: string, out: (text: string) => void): boolean {
 export function runCheck(argv: string[], out: (text: string) => void): number {
   const names: string[] = [];
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--config") process.env.ITHILDIN_CONFIG = argv[++i];
-    else names.push(argv[i]!);
+    if (argv[i] !== "--config") names.push(argv[i]!);
+    else if (i + 1 < argv.length) process.env.ITHILDIN_CONFIG = argv[++i];
+    else {
+      out("--config needs a file\n");
+      return 1;
+    }
   }
   const problems = describeGuard(out);
   const defaults = configFile("guard-tests");

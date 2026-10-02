@@ -112,6 +112,9 @@ describe("guard policy", () => {
     expect(selects(numbered, "db", { limit: [10] })).toBe(false);
     expect(selects(numbered, "db", "raw")).toBe(false);
     expect(parseSelector("x(y)")).toContain("not argument:pattern");
+    expect(parseSelector("x(to:)")).toBe(`"x(to:)": "to" has no pattern`);
+    const padded = parseSelector("Bash(command:git push origin * )") as Selector;
+    expect(selects(padded, "Bash", { command: "git push origin main" })).toBe(true);
     expect(parseSelector("two words")).toContain("not a tool name");
     expect(namesTool([numbered], "db")).toBe(true);
     // A backslash escaping nothing is a backslash.
@@ -137,6 +140,9 @@ describe("guard policy", () => {
     expect(sendsOut("mcp__a__x", {})).toBe(true);
     write({ sendTools: ["mcp__bb__*"] }, 4_000);
     expect(sendsOut("mcp__a__x", {})).toBe(false);
+    // An mtime of 0 is a file all the same.
+    write({ sendTools: ["mcp__a__*"] }, 0);
+    expect(sendsOut("mcp__a__x", {})).toBe(true);
   });
 
   it("ignores a malformed section, keeping the parts that are right", () => {
