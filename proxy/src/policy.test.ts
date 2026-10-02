@@ -114,6 +114,29 @@ describe("guard policy", () => {
     expect(parseSelector("x(y)")).toContain("not argument:pattern");
     expect(parseSelector("two words")).toContain("not a tool name");
     expect(namesTool([numbered], "db")).toBe(true);
+    // A backslash escaping nothing is a backslash.
+    const path = parseSelector(String.raw`Read(file_path:C:\a\*)`) as Selector;
+    expect(selects(path, "Read", { file_path: String.raw`C:\a*` })).toBe(true);
+    expect(selects(path, "Read", { file_path: String.raw`C:\ab` })).toBe(false);
+    expect(selects(path, "Read", { file_path: "C:a*" })).toBe(false);
+  });
+
+  it("matches in linear steps, however many stars a pattern has", () => {
+    const stars = parseSelector(`Bash(command:${"*a".repeat(20)}b)`) as Selector;
+    const long = "a".repeat(50_000);
+    const started = performance.now();
+    expect(selects(stars, "Bash", { command: long })).toBe(false);
+    expect(performance.now() - started).toBeLessThan(1_000);
+    expect(selects(stars, "Bash", { command: `${"a".repeat(20)}b` })).toBe(true);
+    expect(selects(parseSelector("x(a:*)") as Selector, "x", { a: "" })).toBe(true);
+    expect(selects(parseSelector("x(a:?)") as Selector, "x", { a: "" })).toBe(false);
+  });
+
+  it("re-reads a file rewritten within one mtime tick", () => {
+    write({ sendTools: ["mcp__a__*"] }, 4_000);
+    expect(sendsOut("mcp__a__x", {})).toBe(true);
+    write({ sendTools: ["mcp__bb__*"] }, 4_000);
+    expect(sendsOut("mcp__a__x", {})).toBe(false);
   });
 
   it("ignores a malformed section, keeping the parts that are right", () => {
@@ -123,6 +146,11 @@ describe("guard policy", () => {
     expect(parseGuardPolicy({ guard: { sendTools: ["a(b)"] } }).problems[0]).toContain(
       "guard.sendTools",
     );
+    const reviewed = parseGuardPolicy({ guard: { reviewedTools: ["db(sql:select *)", "db2"] } });
+    expect(reviewed.problems).toEqual([
+      `guard.reviewedTools: "db(sql:select *)" takes a tool name, not arguments`,
+    ]);
+    expect(reviewed.reviewedTools.map((entry) => entry.source)).toEqual(["db2"]);
     expect(parseGuardPolicy(undefined).protect).toEqual([]);
     expect(parseGuardPolicy({ guard: [] }).sendTools).toEqual([]);
     const partial = parseGuardPolicy({ guard: { protect: "~/x", sendTools: ["a*"] } });

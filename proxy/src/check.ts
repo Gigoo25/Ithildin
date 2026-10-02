@@ -160,6 +160,11 @@ export function runCheck(argv: string[], out: (text: string) => void): number {
     out(`could not read the tests (${(error as NodeJS.ErrnoException).code ?? "error"})\n`);
     return 1;
   }
+  // Named tests that turn out to be none would otherwise pass in silence.
+  if (names.length > 0 && files.length === 0) {
+    out(`no *.guard files in ${names.join(", ")}\n`);
+    return 1;
+  }
   initEngine();
   const passed = files.filter((file) => runFile(file, out)).length;
   out(`${files.length} test files: ${passed} ok, ${files.length - passed} failed\n`);

@@ -113,6 +113,12 @@ describe("ithildin check", () => {
     const bad = join(dir, "bad.guard");
     writeFileSync(bad, "maybe Bash ls\n");
     expect(run([bad]).text).toContain("bad.guard: could not run: line 1");
+    const none = join(dir, "no-tests");
+    mkdirSync(none);
+    expect(run([none])).toEqual({
+      status: 1,
+      text: expect.stringContaining(`no *.guard files in ${none}\n`),
+    });
     expect(run([join(dir, "missing")])).toEqual({
       status: 1,
       text: expect.stringContaining("could not read the tests (ENOENT)"),
