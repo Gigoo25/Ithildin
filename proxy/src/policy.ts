@@ -140,7 +140,9 @@ export function parseSelector(source: string): Selector | string {
       const key = part.slice(0, colon).trim();
       if (colon < 0 || !/^\w+$/.test(key))
         return `"${source}": "${part.trim()}" is not argument:pattern`;
-      args.push([key, argPattern(part.slice(colon + 1).trimStart())]);
+      const pattern = part.slice(colon + 1).trim();
+      if (pattern === "") return `"${source}": "${key}" has no pattern`;
+      args.push([key, argPattern(pattern)]);
     }
   }
   return { source, tool: globRegExp(match[1]!), args };
@@ -187,17 +189,16 @@ export function guardConfigFile(): string {
 // Problems go to the log once per read; `ithildin check` lists them too.
 export function guardPolicy(): GuardPolicy {
   const file = guardConfigFile();
-  let mtime = 0;
-  let size = 0;
+  let stat: { mtimeMs: number; size: number } | undefined;
   try {
-    ({ mtimeMs: mtime, size } = statSync(file));
+    stat = statSync(file);
   } catch {
     // Absent: no policy.
   }
   // Size too: two edits within one coarse mtime tick still differ.
-  const key = `${file}\0${mtime}\0${size}`;
+  const key = stat ? `${file}\0${stat.mtimeMs}\0${stat.size}` : `${file}\0absent`;
   if (cached?.key !== key) {
-    const policy = mtime ? parseGuardPolicy(readConfigFile(file, "user config")) : empty();
+    const policy = stat ? parseGuardPolicy(readConfigFile(file, "user config")) : empty();
     for (const problem of policy.problems)
       process.stderr.write(`ithildin: user config: ${problem}, ignoring\n`);
     cached = { key, policy };

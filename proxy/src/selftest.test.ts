@@ -40,6 +40,8 @@ const broken: Redactors = {
   headers: redactHeaders,
 };
 
+const labels = WIRES.flatMap((wire) => [wire.name, `${wire.name} streamed`]);
+
 describe("self-test", () => {
   it("passes with the real engine, with fresh values each run", async () => {
     const report = await selfTest((upstream) => createHandler(DEFAULT_ROUTES, upstream));
@@ -68,7 +70,7 @@ describe("self-test", () => {
       WIRES.flatMap((wire) => [
         `${wire.name}: request not forwarded (status 500)`,
         `${wire.name} streamed: request not forwarded (status 500)`,
-      ]).concat("anthropic: send probe refused", "anthropic streamed: send probe refused"),
+      ]).concat(labels.map((label) => `${label}: send probe refused`)),
     );
   });
 
@@ -107,11 +109,7 @@ describe("self-test", () => {
       if (real === undefined || standIn === undefined) return reply;
       return new Response(rewrite(await reply.text(), real, standIn), reply);
     };
-  const labels = WIRES.flatMap((wire) => [wire.name, `${wire.name} streamed`]);
-  const UNTRUSTED_SENDS = [
-    "anthropic: send after web read not blocked",
-    "anthropic streamed: send after web read not blocked",
-  ];
+  const UNTRUSTED_SENDS = labels.map((label) => `${label}: send after web read not blocked`);
 
   it("names every reply check a proxy that never rewrites replies fails", async () => {
     const report = await selfTest(unguarded((text) => text));

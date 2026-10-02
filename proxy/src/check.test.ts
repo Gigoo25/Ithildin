@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseGuardTest, runCheck, runGuardTest } from "./check.ts";
-import { initEngine } from "./redact.ts";
+import { blockedNotice, initEngine } from "./redact.ts";
 
 let dir = "";
 const saved = { config: process.env.ITHILDIN_CONFIG, xdg: process.env.XDG_CONFIG_HOME };
@@ -88,6 +88,18 @@ describe("ithildin check", () => {
     expect(status).toBe(1);
     expect(text).toContain(`config: ${config}\n`);
     expect(text).toContain(`problem: "guard.sendTool" is not a guard setting`);
+  });
+
+  it("refuses a --config with no file", () => {
+    expect(run(["--config"])).toEqual({ status: 1, text: "--config needs a file\n" });
+  });
+
+  it("keeps each file's call ids apart", () => {
+    // A refusal on line 3 of one file is not line 3 of the next.
+    const deny = steps(`cwd ${dir}\nallow WebFetch {"url":"x"}\ndeny Bash git push origin main`);
+    expect(runGuardTest(deny)).toEqual([]);
+    expect(runGuardTest(steps(`cwd ${dir}\nallow Bash ls\nallow Bash ls`))).toEqual([]);
+    expect(blockedNotice("toolu_check_3")).toBeUndefined();
   });
 
   it("passes with no config and no tests", () => {
