@@ -138,8 +138,19 @@ outside reads:
 - `curl`, `wget`, `httpie`/`xh` and text browsers
 - `gh issue`, `gh pr`, `gh api` and other `gh` reads
 
-While a conversation is untrusted, calls that send data off the machine
-don't run:
+A conversation is *private* once the model has seen a secret file (output let
+through by `[allow-secrets]`), or a shell call copied one (`cp`, `tee`, a `>`
+redirect). A read whose output was withheld doesn't count: the model never saw
+the values.
+
+A subagent's answer carries the labels of what it read. Claude Code's
+subagents share their parent's session, so their reads mark it directly. For
+opencode's `task` and Codex's `spawn_agent`/`wait`, the answer counts as
+untrusted or private if another conversation took that label on while the
+work was out. A parallel session reading the web at the same moment counts too.
+
+While a conversation is untrusted or private, calls that send data off the
+machine don't run:
 
 - `git push`
 - `scp`, `ssh`, `nc`, `rsync` to a host
@@ -151,17 +162,44 @@ don't run:
 Plain downloads and local work go through. `[allow-send]` lifts the block.
 
 **Your own guard list.** Under `"guard"` in `config.json` you can protect
-more paths, name more tools as outside reads or sends, and mark tools you
-have reviewed. Tool names take `*` globs. The file is re-read when it changes.
+more paths, name more tools as outside reads or sends, mark tools you have
+reviewed, and take calls back out of the built-in reads and sends. The file
+is re-read when it changes.
 
 ```json
 "guard": {
   "protect": ["~/infra/deploy.yaml"],
   "outsideTools": ["mcp__jira__*"],
-  "sendTools": ["mcp__mail__*"],
-  "reviewedTools": ["mcp__db__run_query"]
+  "sendTools": ["mcp__mail__*", "Bash(command:deploy.sh *)"],
+  "reviewedTools": ["mcp__db__run_query"],
+  "trustedReads": ["Bash(command:gh issue view * --repo me/*)"],
+  "allowedSends": ["Bash(command:git push origin *)", "mcp__github__*(repo:me/*)"]
 }
 ```
+
+An entry is a tool name with `*` globs, plus optional argument patterns:
+`tool(arg:pattern, ...)` matches when every named argument matches whole. In
+a pattern `*` matches anything and `\` escapes `* ? , )`. A shell command is
+matched one command at a time, with the program named without its directory,
+so `git push origin *` never covers a `curl` chained after it.
+
+**Checking it.** `ithildin check` lists the problems in the guard section and
+runs your guard tests: `*.guard` files in `~/.config/ithildin/guard-tests`,
+or the files and directories you name. Each file is one conversation, and
+each call is judged by the history before it:
+
+```
+# reading the web stops a push, and [allow-send] lets it through
+allow WebFetch {"url": "https://example.com/"}
+deny  Bash git push origin main
+prompt [allow-send] push it
+allow Bash git push origin main
+```
+
+Arguments are a JSON object, or the rest of the line as the command. `prompt`
+is a typed prompt and `cwd` sets the working directory. The calls run through
+the proxy's own guards; no tool runs. It exits 1 on a problem or a failed
+test, so it can gate a dotfiles repo's CI.
 
 ## The footer
 
@@ -169,7 +207,7 @@ Claude Code's status line and Pi's footer both show the same badge, which
 the proxy builds:
 
 ```
-ITHILDIN ON · 12m 1f 3l 2i (+2) · 40 req · untrusted · ?1t · +pii
+ITHILDIN ON · 12m 1f 3l 2i (+2) · 40 req · untrusted · private · ?1t · +pii
 ```
 
 | Part        | Meaning                                                     |
@@ -181,6 +219,7 @@ ITHILDIN ON · 12m 1f 3l 2i (+2) · 40 req · untrusted · ?1t · +pii
 | `(+2)`      | how many of those arrived since your latest prompt          |
 | `40 req`    | requests scanned in this conversation                       |
 | `untrusted` | the conversation read outside content, so sends are blocked |
+| `private`   | a secret file was seen or copied, so sends are blocked      |
 | `?1t`       | tools the agent offers that act but no guard reads          |
 | `+pii`      | allow tags your latest prompt carries                       |
 
@@ -211,7 +250,7 @@ Sometimes the model needs a real value. Put a tag anywhere in your prompt:
 | `[allow-secrets]`   | secrets                                      |
 | `[allow-images]`    | the image hold                               |
 | `[allow-protected]` | the guard on config and git history          |
-| `[allow-send]`      | the send block in untrusted conversations    |
+| `[allow-send]`      | the send block in untrusted or private chats |
 | `[allow-once:<id>]` | the guards, for the one call a refusal named |
 | `[allow-all]`       | everything but `protected`                   |
 
@@ -245,6 +284,7 @@ Start the proxy, point your agent at it, and check it:
 ithildin --port 18733
 export ANTHROPIC_BASE_URL=http://127.0.0.1:18733/anthropic
 ithildin selftest        # runs the self-test inside the live proxy
+ithildin check           # checks the guard config and runs guard tests
 ```
 
 The built-in routes are `anthropic`, `openai-codex` and `opencode-go`. Add
@@ -275,7 +315,9 @@ It's a guardrail for a cooperative agent. It is not a sandbox.
   The send guard has the same limit: an interpreter's own HTTP client
   (`python -c 'requests.post(…)'`) or a web tool's URL is not read as a
   send. An outside read is known by the tool's name or command, so content
-  that arrives some other way does not mark the conversation.
+  that arrives some other way does not mark the conversation. Labels live in
+  memory: a restart, or a file written now and read in a later session,
+  starts clean.
 - **Some request parts go out unscanned.** Provider credentials and the
   cookie and beta headers, the URL path and query names, thinking blocks and
   encrypted reasoning (providers verify their signatures), and images the
