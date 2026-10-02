@@ -2,8 +2,14 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { initEngine, redactRequest, swapToolArguments } from "./redact.ts";
-import { protectedBlocked, protectedChange } from "./protect.ts";
+import {
+  approvalHint,
+  callApproval,
+  initEngine,
+  redactRequest,
+  swapToolArguments,
+} from "./redact.ts";
+import { protectedBlocked, protectedChange, protectedFinding } from "./protect.ts";
 
 // A fake home laid out like the real one: config links into a dotfiles repo.
 let home = "";
@@ -266,7 +272,12 @@ describe("protected calls through the proxy", () => {
       ],
     }).body as { messages: Array<{ content: Array<{ content?: unknown; is_error?: boolean }> }> };
     const result = next.messages[2]!.content[0]!;
-    expect(result.content).toBe(protectedBlocked("config"));
+    expect(result.content).toBe(
+      approvalHint(
+        protectedBlocked("config", "Show the user the change you want and let them make it."),
+        callApproval("Write", input),
+      ),
+    );
     expect(result.is_error).toBe(true);
     expect(String(result.content)).not.toMatch(/redact|stand-in|canary|ithildin/i);
   });
@@ -313,5 +324,40 @@ describe("protected calls through the proxy", () => {
         "protected",
       ),
     ).toBe(true);
+  });
+});
+
+describe("refusal remedies", () => {
+  const bash = (command: string) => protectedFinding("Bash", { command }, repo);
+
+  it("names the safer git command for each refused one", () => {
+    expect(bash("git reset --hard HEAD~1")?.remedy).toContain("git stash");
+    expect(bash("git clean -fdx")?.remedy).toContain("git clean -n");
+    expect(bash("git push --force origin main")?.remedy).toContain("Push without force");
+    expect(bash("git branch -D topic")?.remedy).toContain("git branch -d");
+    expect(bash("git stash clear")?.remedy).toContain("git stash list");
+  });
+
+  it("offers none where no safe form exists", () => {
+    expect(bash("git filter-branch --tree-filter x HEAD")).toEqual({ kind: "git" });
+    expect(bash("git reflog expire --expire=now --all")).toEqual({ kind: "git" });
+  });
+
+  it("points removals at files by name, and config changes at the user", () => {
+    expect(bash(`rm -rf ${repo}`)?.remedy).toContain("by name");
+    expect(bash("rm -rf .git")?.remedy).toContain("by name");
+    expect(bash("echo x > ~/.pi/agent/models.json")?.remedy).toContain("Show the user");
+    expect(
+      protectedFinding("Write", { file_path: "~/.claude/settings.json", content: "{}" }, home)
+        ?.remedy,
+    ).toContain("Show the user");
+  });
+
+  it("puts the remedy in the notice, and warns off other spellings", () => {
+    const notice = protectedBlocked("git", "Use `git stash`.");
+    expect(notice).toContain("Use `git stash`.");
+    expect(notice).toContain("Do not look for another command");
+    expect(notice).toContain("[allow-protected]");
+    expect(protectedBlocked("git")).not.toContain("undefined");
   });
 });

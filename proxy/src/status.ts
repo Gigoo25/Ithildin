@@ -11,9 +11,13 @@
 //   +N added since the user's latest prompt (all kinds)
 //   N req  requests scanned in this conversation: it ticks every turn, so
 //          a badge reading "0" still shows the proxy is in the path
+//   untrusted  the conversation has read content from outside the machine,
+//          so commands that send data off it are blocked (trust.ts)
+//   ?Nt    tools the agent offers that act but that no guard reads
 //   +pii   allow tags the user's latest prompt carries (+pii, +secrets,
-//          +all, +protected). The proxy strips tags before forwarding, so
-//          the model never sees them; this is how the user sees one landed.
+//          +all, +protected, +send, +once). The proxy strips tags before
+//          forwarding, so the model never sees them; this is how the user
+//          sees one landed.
 //
 // Counts cover the whole conversation, since every request carries all of
 // it. Zero kinds are left out; nothing hidden reads "ITHILDIN ON · 0".
@@ -34,6 +38,10 @@ export interface Status extends Counts {
   requests: number;
   // Allow tags in force for the latest prompt, as badgeText shows them.
   allowed: string[];
+  // The conversation has read outside content (trust.ts).
+  untrusted: boolean;
+  // Tools offered that act and that no guard reads (trust.ts).
+  unguarded: number;
   badge: string;
 }
 
@@ -45,6 +53,12 @@ interface Entry {
   baseline: number;
 }
 
+// What trust.ts found: an outside read, and unguarded tools offered.
+export interface Trust {
+  untrusted?: boolean;
+  unguarded?: number;
+}
+
 // Bounds memory across many short sessions; the oldest are dropped first.
 const MAX_SESSIONS = 256;
 
@@ -52,9 +66,11 @@ const MAX_SESSIONS = 256;
 // badge shows what the user typed.
 export function allowLabels(tags: ReadonlySet<string>): string[] {
   if (tags.has("all")) return ["all", ...(tags.has("protected") ? ["protected"] : [])];
-  return (["pii", "secret", "protected"] as const)
+  const once = [...tags].some((tag) => tag.startsWith("once:")) ? ["once"] : [];
+  return (["pii", "secret", "protected", "send"] as const)
     .filter((tag) => tags.has(tag))
-    .map((tag) => (tag === "secret" ? "secrets" : tag));
+    .map((tag): string => (tag === "secret" ? "secrets" : tag))
+    .concat(once);
 }
 
 export function badgeText(
@@ -62,9 +78,12 @@ export function badgeText(
   turn: number,
   requests = 0,
   allowed: readonly string[] = [],
+  trust: Trust = {},
 ): string {
   const scanned =
     (requests > 0 ? ` · ${requests} req` : "") +
+    (trust.untrusted ? " · untrusted" : "") +
+    (trust.unguarded ? ` · ?${trust.unguarded}t` : "") +
     (allowed.length > 0 ? ` · ${allowed.map((tag) => `+${tag}`).join(" ")}` : "");
   const parts = [
     counts.masked && `${counts.masked}m`,
@@ -89,6 +108,7 @@ export function createStatusBook() {
       counts: Counts,
       prompts: number,
       tags: ReadonlySet<string> = new Set(),
+      trust: Trust = {},
     ): void {
       const total = counts.masked + counts.files + counts.lines + counts.images;
       const key = session ?? `route:${route}`;
@@ -103,8 +123,17 @@ export function createStatusBook() {
       const turn = Math.max(0, total - baseline);
       const requests = (previous?.status.requests ?? 0) + 1;
       const allowed = allowLabels(tags);
-      const badge = badgeText(counts, turn, requests, allowed);
-      const status = { ...counts, route, turn, requests, allowed, badge };
+      const badge = badgeText(counts, turn, requests, allowed, trust);
+      const status = {
+        ...counts,
+        route,
+        turn,
+        requests,
+        allowed,
+        untrusted: trust.untrusted ?? false,
+        unguarded: trust.unguarded ?? 0,
+        badge,
+      };
       sessions.delete(key);
       sessions.set(key, { status, prompts, total, baseline });
       if (sessions.size > MAX_SESSIONS) sessions.delete(sessions.keys().next().value!);

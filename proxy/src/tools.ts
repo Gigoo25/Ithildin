@@ -70,7 +70,7 @@ export function patchPaths(patch: string): string[] {
 }
 
 // Keys only a file write or edit carries.
-const WRITE_KEYS = ["content", "new_string", "old_string", "edits", "new_source", "patch"];
+export const WRITE_KEYS = ["content", "new_string", "old_string", "edits", "new_source", "patch"];
 
 // The files a call writes, or undefined when it is not a write. A freeform
 // call's arguments are its raw input (an apply_patch envelope).
