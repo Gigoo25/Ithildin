@@ -1765,6 +1765,7 @@ interface CachedWindow {
 
 const WINDOW_CACHE = new Map<string, CachedWindow>();
 const WINDOW_CACHE_MAX_BYTES = 16_000_000;
+let windowCacheMaxBytes = WINDOW_CACHE_MAX_BYTES;
 let windowCacheBytes = 0;
 let windowCacheSerial = 0;
 
@@ -1836,6 +1837,12 @@ export function clearWindowCache(): void {
   invalidateWindowCache();
 }
 
+// Tests lower the byte budget to reach eviction; no argument restores it.
+export function setWindowCacheBudget(bytes = WINDOW_CACHE_MAX_BYTES): void {
+  invalidateWindowCache();
+  windowCacheMaxBytes = bytes;
+}
+
 // Monotonic counter for "did anything new complete since the last save".
 export function windowCacheRevision(): number {
   return windowCacheSerial;
@@ -1847,16 +1854,13 @@ function windowCacheCost(entry: CachedWindow): number {
   return cost;
 }
 
+// Callers store only after a miss, so a digest is never stored twice.
 function windowCacheStore(digest: string, size: number, findings: LocatedFinding[]): void {
-  const previous = WINDOW_CACHE.get(digest);
-  if (previous) {
-    WINDOW_CACHE.delete(digest);
-    windowCacheBytes -= windowCacheCost(previous);
-  }
+  assert(!WINDOW_CACHE.has(digest), "window stored once");
   const entry: CachedWindow = { size, findings };
   const cost = windowCacheCost(entry);
-  if (cost > WINDOW_CACHE_MAX_BYTES) return;
-  while (windowCacheBytes + cost > WINDOW_CACHE_MAX_BYTES) {
+  if (cost > windowCacheMaxBytes) return;
+  while (windowCacheBytes + cost > windowCacheMaxBytes) {
     const oldest = WINDOW_CACHE.keys().next().value;
     if (oldest === undefined) break;
     const evicted = WINDOW_CACHE.get(oldest);
@@ -1865,7 +1869,7 @@ function windowCacheStore(digest: string, size: number, findings: LocatedFinding
   }
   WINDOW_CACHE.set(digest, entry);
   windowCacheBytes += cost;
-  assert(windowCacheBytes <= WINDOW_CACHE_MAX_BYTES, "window cache within its bound");
+  assert(windowCacheBytes <= windowCacheMaxBytes, "window cache within its bound");
   windowCacheSerial++;
 }
 

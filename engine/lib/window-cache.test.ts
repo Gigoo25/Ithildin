@@ -5,6 +5,7 @@ import {
   exportWindowCache,
   importWindowCache,
   scanWindows,
+  setWindowCacheBudget,
   WINDOW_CACHE_VERSION,
   windowCacheRevision,
 } from "./rules.ts";
@@ -73,4 +74,26 @@ it("accepts only well-formed entries", () => {
     { digest, size: 10, findings: [record] },
   ];
   expect(importWindowCache(snapshot(entries))).toBe(1);
+});
+
+it("evicts the oldest windows past the budget", () => {
+  // One short text is one window costing 2 bytes a character.
+  const texts = ["a".repeat(100), "b".repeat(100), "c".repeat(100)];
+  setWindowCacheBudget(450);
+  try {
+    for (const each of texts) scanWindows(each);
+    expect(exportWindowCache().entries.map((entry) => entry.size)).toEqual([100, 100]);
+    const revision = windowCacheRevision();
+    // The first window was evicted, so it is scanned and stored again.
+    scanWindows(texts[0]!);
+    expect(windowCacheRevision()).toBe(revision + 1);
+    scanWindows(texts[2]!);
+    expect(windowCacheRevision()).toBe(revision + 1);
+    // Larger than the whole budget: not kept, and nothing evicted for it.
+    scanWindows("d".repeat(300));
+    expect(windowCacheRevision()).toBe(revision + 1);
+    expect(exportWindowCache().entries.length).toBe(2);
+  } finally {
+    setWindowCacheBudget();
+  }
 });

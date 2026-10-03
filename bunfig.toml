@@ -1,0 +1,2 @@
+[test]
+preload = ["./engine/test-setup.ts", "./proxy/test-setup.ts"]

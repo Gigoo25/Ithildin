@@ -1664,6 +1664,18 @@ describe("request edges", () => {
     expect(seen.headers.get("proxy-authorization")).toBeNull();
   });
 
+  it("redacts path segments but keeps provider ids", async () => {
+    const up = fakeUpstream(() => Response.json({}));
+    const handler = createHandler(DEFAULT_ROUTES, up.fetch);
+    const batch = "msgbatch_013Zva2CMHLNnXjNJJKqJ2EF";
+    await handler(
+      new Request(`http://127.0.0.1/anthropic/v1/users/${encodeURIComponent(EMAIL)}/${batch}`),
+    );
+    const path = new URL(up.seen[0]!.url).pathname;
+    expect(path).toBe(`/v1/users/${encodeURIComponent(standIn)}/${batch}`);
+    expect(decodeURIComponent(path)).not.toContain(EMAIL);
+  });
+
   it("redacts header values but passes the provider credentials", async () => {
     const up = fakeUpstream(() => Response.json({ content: [] }));
     const handler = createHandler(DEFAULT_ROUTES, up.fetch);

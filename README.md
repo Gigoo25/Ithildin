@@ -322,9 +322,10 @@ It's a guardrail for a cooperative agent. It is not a sandbox.
   memory: a restart, or a file written now and read in a later session,
   starts clean.
 - **Some request parts go out unscanned.** Provider credentials and the
-  cookie and beta headers, the URL path and query names, thinking blocks and
-  encrypted reasoning (providers verify their signatures), and images the
-  provider fetches by URL or file id.
+  cookie and beta headers, query names and path segments shaped like provider
+  object ids (`msgbatch_…`, `resp_…`), thinking blocks and encrypted reasoning
+  (providers verify their signatures), and images the provider fetches by URL
+  or file id.
 - **Routes in unread formats.** A route to a path the proxy can't parse
   (Ollama's `/api/chat`, a wrapping gateway) has its requests scanned, but a
   reply without model-shaped top-level keys passes unread.

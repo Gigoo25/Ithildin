@@ -72,6 +72,7 @@ const SCAN_CACHE = new Map<
 >();
 // Budget the memo by bytes, not entries: 512 × 2 MB keys is a gigabyte of RAM.
 const SCAN_CACHE_MAX_BYTES = 32_000_000;
+let scanCacheMaxBytes = SCAN_CACHE_MAX_BYTES;
 let scanCacheBytes = 0;
 
 function cachedScan(text: string): {
@@ -87,8 +88,8 @@ function cachedScan(text: string): {
   // so a tripped replay would later block the benign repeat call as a secret.
   if (found.trips.length > 0) return found;
   const cost = text.length * 2; // UTF-16 code units × 2 bytes
-  if (cost <= SCAN_CACHE_MAX_BYTES) {
-    while (scanCacheBytes + cost > SCAN_CACHE_MAX_BYTES) {
+  if (cost <= scanCacheMaxBytes) {
+    while (scanCacheBytes + cost > scanCacheMaxBytes) {
       const oldest = SCAN_CACHE.keys().next().value;
       if (oldest === undefined) break;
       SCAN_CACHE.delete(oldest);
@@ -96,6 +97,7 @@ function cachedScan(text: string): {
     }
     SCAN_CACHE.set(text, found);
     scanCacheBytes += cost;
+    assert(scanCacheBytes <= scanCacheMaxBytes, "scan cache within its bound");
   }
   return found;
 }
@@ -103,13 +105,16 @@ function cachedScan(text: string): {
 const SYNTHETIC_VALUES = new Map<string, string>();
 const SYNTHETIC_OUTPUTS = new Set<string>();
 const SYNTHETIC_VALUES_MAX_BYTES = 8_000_000;
+let syntheticValuesMaxBytes = SYNTHETIC_VALUES_MAX_BYTES;
 let syntheticValuesBytes = 0;
 const TOKEN_COUNTERS = new Map<string, number>();
 
+// Callers return the cached synthetic on a hit, so a value is never stored twice.
 function storeSynthetic(value: string, synthetic: string): void {
+  assert(!SYNTHETIC_VALUES.has(value), "synthetic value stored once");
   const cost = (value.length + synthetic.length) * 2;
-  if (cost > SYNTHETIC_VALUES_MAX_BYTES) return;
-  while (syntheticValuesBytes + cost > SYNTHETIC_VALUES_MAX_BYTES && SYNTHETIC_VALUES.size > 0) {
+  if (cost > syntheticValuesMaxBytes) return;
+  while (syntheticValuesBytes + cost > syntheticValuesMaxBytes && SYNTHETIC_VALUES.size > 0) {
     const oldest = SYNTHETIC_VALUES.keys().next().value;
     if (oldest === undefined) break;
     const oldValue = SYNTHETIC_VALUES.get(oldest);
@@ -120,6 +125,7 @@ function storeSynthetic(value: string, synthetic: string): void {
   SYNTHETIC_VALUES.set(value, synthetic);
   SYNTHETIC_OUTPUTS.add(synthetic);
   syntheticValuesBytes += cost;
+  assert(syntheticValuesBytes <= syntheticValuesMaxBytes, "synthetic values within their bound");
 }
 
 // PII placeholders are obviously fake (`__ITHILDIN_HOST_1__`), never
@@ -276,6 +282,13 @@ function isProtocolControl(
   if (key === "summary" && location.length === 3 && location[0] === "input")
     return parent?.type === "reasoning";
   return PROTOCOL_ENUM_FIELDS[key] === true && isProtocolEnum(value) && !inToolPayload(location);
+}
+
+// Tests lower the byte budgets to reach eviction; no argument restores them.
+export function setCacheBudgets(budgets: { scan?: number; synthetic?: number } = {}): void {
+  clearCaches();
+  scanCacheMaxBytes = budgets.scan ?? SCAN_CACHE_MAX_BYTES;
+  syntheticValuesMaxBytes = budgets.synthetic ?? SYNTHETIC_VALUES_MAX_BYTES;
 }
 
 export function clearCaches(): void {
