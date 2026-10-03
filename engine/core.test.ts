@@ -7,10 +7,12 @@ import {
   blocksInventoryAccess,
   blocksSecretAccess,
   commandPathCandidates,
+  isSyntheticValue,
   MAX_SCAN_BYTES,
   redactText,
   redactValue,
   SYNTHESIS_NOTICE,
+  setCacheBudgets,
   syntheticValue,
 } from "./core.ts";
 
@@ -237,6 +239,33 @@ describe("redactText", () => {
       expect(result.hits).toBe(1);
       expect(result.text).toStartWith("[ithildin: omitted ");
       expect(result.text).not.toContain("word word");
+    }
+  });
+});
+
+describe("bounded caches", () => {
+  afterAll(() => setCacheBudgets());
+
+  it("evicts the oldest synthetic values past the budget", () => {
+    // Each value and its synthetic cost 2 × (10 + 10) bytes: room for three.
+    setCacheBudgets({ synthetic: 120 });
+    const values = ["k1-AAAAAAA", "k2-BBBBBBB", "k3-CCCCCCC", "k4-DDDDDDD"];
+    const first = values.map((value) => syntheticValue(value));
+    expect(isSyntheticValue(first[0]!)).toBe(false);
+    for (const synthetic of first.slice(1)) expect(isSyntheticValue(synthetic)).toBe(true);
+    expect(syntheticValue(values[3]!)).toBe(first[3]!);
+    // Never kept at all: larger than the whole budget.
+    const huge = syntheticValue("Z".repeat(100));
+    expect(isSyntheticValue(huge)).toBe(false);
+  });
+
+  it("keeps redacting once the scan cache evicts", () => {
+    setCacheBudgets({ scan: 200 });
+    for (let round = 0; round < 2; round++) {
+      for (let i = 0; i < 5; i++) {
+        const result = redactText(`round ${round} entry ${i} token ${TOKEN}`);
+        expect(result.text).not.toContain(TOKEN);
+      }
     }
   });
 });

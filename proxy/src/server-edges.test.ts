@@ -13,6 +13,7 @@ import {
   jsonDepth,
   loadRoutes,
   readOptions,
+  REPLY_BYTES_MAX,
   REQUEST_BYTES_MAX,
   start,
   upstreamUrl,
@@ -110,6 +111,30 @@ describe("requests the proxy refuses", () => {
     expect((await refusal(await handler(chunked))).status).toBe(413);
     expect(pulled * chunk.byteLength).toBeLessThan(REQUEST_BYTES_MAX * 2);
     expect(up.calls).toHaveLength(0);
+  });
+
+  it("stops reading a JSON reply past the size limit", async () => {
+    let pulled = 0;
+    const chunk = new Uint8Array(1024 * 1024).fill(32);
+    const endless = () =>
+      new Response(
+        new ReadableStream({
+          pull(controller) {
+            pulled++;
+            controller.enqueue(chunk);
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+    const handler = createHandler(DEFAULT_ROUTES, upstream(endless).fetch);
+    const model = await handler(post("anthropic/v1/messages", messages));
+    const unread = await handler(new Request("http://127.0.0.1/anthropic/v1/models"));
+    for (const reply of [model, unread]) {
+      const refused = await refusal(reply);
+      expect(refused.status).toBe(502);
+      expect(refused.message).toContain(`over ${REPLY_BYTES_MAX} bytes`);
+    }
+    expect(pulled * chunk.byteLength).toBeLessThan(REPLY_BYTES_MAX * 3);
   });
 
   it("refuses nesting past the depth limit before scanning", async () => {
@@ -317,6 +342,7 @@ const REDACTORS_PASSING = {
     unguarded: [],
   }),
   query: (search: string) => ({ search, hits: 0, values: 0 }),
+  path: (path: string) => ({ path, hits: 0, values: 0 }),
 };
 
 describe("scan failures", () => {
@@ -328,6 +354,7 @@ describe("scan failures", () => {
     const body = createHandler(DEFAULT_ROUTES, up.fetch, {
       request: fail,
       query: (search) => ({ search, hits: 0, values: 0 }),
+      path: (path) => ({ path, hits: 0, values: 0 }),
       headers: () => ({ hits: 0, values: 0 }),
     });
     const first = await refusal(await body(post("anthropic/v1/messages", messages)));
@@ -343,10 +370,19 @@ describe("scan failures", () => {
         unguarded: [],
       }),
       query: fail,
+      path: (path) => ({ path, hits: 0, values: 0 }),
       headers: () => ({ hits: 0, values: 0 }),
     });
     expect(
       (await refusal(await query(new Request("http://127.0.0.1/anthropic/v1/models?q=1")))).status,
+    ).toBe(500);
+    const path = createHandler(DEFAULT_ROUTES, up.fetch, {
+      ...REDACTORS_PASSING,
+      headers: () => ({ hits: 0, values: 0 }),
+      path: fail,
+    });
+    expect(
+      (await refusal(await path(new Request("http://127.0.0.1/anthropic/v1/models")))).status,
     ).toBe(500);
     const headers = createHandler(DEFAULT_ROUTES, up.fetch, {
       ...REDACTORS_PASSING,

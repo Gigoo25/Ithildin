@@ -714,8 +714,10 @@ export class AliasBook {
   private countersDirty = false;
   private corpus: (() => string) | undefined;
   private corpusTokens: Set<string> | undefined;
-  private pattern: RegExp | undefined;
-  private glued: RegExp | undefined;
+  // Exact stand-ins and parts as whole words; multi-part stand-ins anywhere,
+  // to find the mangled ones.
+  private readonly words = new WordIndex();
+  private readonly multiPart = new WordIndex();
   private longest = 0;
   private readonly key: Buffer;
 
@@ -862,8 +864,7 @@ export class AliasBook {
       () => `n${this.hex("part", lower)}`,
     );
     remember(this.parts, out, lower);
-    this.pattern = undefined;
-    this.glued = undefined;
+    this.words.add(out);
     return out;
   }
 
@@ -1023,8 +1024,8 @@ export class AliasBook {
     if (known === undefined) {
       this.reverse.set(standIn, { value, ruleId });
       this.longest = Math.max(this.longest, standIn.length);
-      this.pattern = undefined;
-      this.glued = undefined;
+      this.words.add(standIn);
+      if (/[-_.]/.test(standIn)) this.multiPart.add(standIn);
     } else if (known !== null && known.value.toLowerCase() !== value.toLowerCase()) {
       this.reverse.set(standIn, null);
     }
@@ -1096,9 +1097,8 @@ export class AliasBook {
   // stand-ins as whole words, and names or addresses built from known parts.
   matches(text: string): Array<{ text: string; start: number; end: number }> {
     const found: Array<{ text: string; start: number; end: number }> = [];
-    this.pattern ??= this.compile();
-    for (const match of text.matchAll(this.pattern))
-      found.push({ text: match[0], start: match.index, end: match.index + match[0].length });
+    for (const { start, end } of this.words.find(text, true))
+      found.push({ text: text.slice(start, end), start, end });
     const exact = found.filter((span) => this.reverse.has(span.text));
     for (const match of text.matchAll(COMPOSITE)) {
       // An exact stand-in inside keeps its case; the parts map is lowercase.
@@ -1114,31 +1114,14 @@ export class AliasBook {
     // A whole multi-part stand-in glued into a longer word: the model mangled
     // it, so none of its parts is swapped either (a lone last part came back
     // lowercased).
-    this.glued ??= this.compile(true);
     const glued: Array<{ start: number; end: number }> = [];
-    for (const match of text.matchAll(this.glued)) {
-      const end = match.index + match[0].length;
-      if (/[A-Za-z0-9]/.test(text[match.index - 1] ?? "") || /[A-Za-z0-9]/.test(text[end] ?? ""))
-        glued.push({ start: match.index, end });
+    for (const { start, end } of this.multiPart.find(text, false)) {
+      if (/[A-Za-z0-9]/.test(text[start - 1] ?? "") || /[A-Za-z0-9]/.test(text[end] ?? ""))
+        glued.push({ start, end });
     }
     return found.filter(
       (span) => !glued.some((range) => span.start < range.end && span.end > range.start),
     );
-  }
-
-  // `glued`: multi-part stand-ins anywhere, to find the mangled ones.
-  private compile(glued = false): RegExp {
-    const words = (
-      glued
-        ? [...this.reverse.keys()].filter((word) => /[-_.]/.test(word))
-        : [...this.reverse.keys(), ...this.parts.keys()]
-    ).sort((left, right) => right.length - left.length);
-    if (words.length === 0) return /$^/g;
-    const alternatives = words.map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
-    // Glued into a longer word, a stand-in is something else.
-    return glued
-      ? new RegExp(alternatives, "g")
-      : new RegExp(`(?<![A-Za-z0-9])(?:${alternatives})(?![A-Za-z0-9])`, "g");
   }
 
   isStandIn(text: string): boolean {
@@ -1182,10 +1165,80 @@ export class AliasBook {
     this.parts.clear();
     this.prefixes.clear();
     this.minted.clear();
-    this.pattern = undefined;
-    this.glued = undefined;
+    this.words.clear();
+    this.multiPart.clear();
   }
 }
+
+// Known words found in text without one alternation of all of them: a new
+// word costs a set insert, where a rebuilt alternation cost a sort and a
+// compile of every word. Words are bucketed by their first HEAD characters,
+// so each position costs one lookup and a few slices.
+const HEAD = 2;
+
+class WordIndex {
+  private readonly known = new Set<string>();
+  // First HEAD characters (the whole word if shorter) -> lengths, longest first.
+  private readonly heads = new Map<string, number[]>();
+  private short = false;
+
+  add(word: string): void {
+    if (word === "" || this.known.has(word)) return;
+    this.known.add(word);
+    if (word.length < HEAD) this.short = true;
+    const head = word.slice(0, HEAD);
+    const lengths = this.heads.get(head) ?? [];
+    if (!lengths.includes(word.length)) {
+      lengths.push(word.length);
+      lengths.sort((left, right) => right - left);
+    }
+    this.heads.set(head, lengths);
+  }
+
+  clear(): void {
+    this.known.clear();
+    this.heads.clear();
+    this.short = false;
+  }
+
+  // Leftmost, then longest, never overlapping: what one alternation of the
+  // words sorted longest first matched. `whole`: no letter or digit either
+  // side.
+  *find(text: string, whole: boolean): Generator<{ start: number; end: number }> {
+    if (this.known.size === 0) return;
+    let at = 0;
+    while (at < text.length) {
+      const end =
+        whole && WORD_CHAR.test(text[at - 1] ?? "") ? undefined : this.longestAt(text, at, whole);
+      if (end === undefined) {
+        at++;
+        continue;
+      }
+      yield { start: at, end };
+      at = end;
+    }
+  }
+
+  private longestAt(text: string, at: number, whole: boolean): number | undefined {
+    const heads = [text.slice(at, at + HEAD)];
+    if (this.short)
+      for (let size = HEAD - 1; size > 0; size--) heads.push(text.slice(at, at + size));
+    let best: number | undefined;
+    for (const head of heads) {
+      for (const length of this.heads.get(head) ?? []) {
+        const end = at + length;
+        if (end > text.length || (best !== undefined && end <= best)) continue;
+        if (!this.known.has(text.slice(at, end))) continue;
+        if (whole && WORD_CHAR.test(text[end] ?? "")) continue;
+        best = end;
+        break;
+      }
+    }
+    return best;
+  }
+}
+
+const WORD_CHAR = /[A-Za-z0-9]/;
 
 // A name, an email address, or a dotted/dashed word, taken whole.
 const WORD = "[A-Za-z0-9](?:[A-Za-z0-9_-]*[A-Za-z0-9])?";

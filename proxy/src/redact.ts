@@ -756,6 +756,42 @@ export function redactQuery(
   return hits === 0 ? { search, hits, values } : { search: `?${out}`, hits, values };
 }
 
+// Provider object ids (msgbatch_013Zva…, resp_67cb…) look random enough to
+// read as a credential, and a rewritten one only breaks the call.
+const PROVIDER_ID =
+  /^(?:msgbatch|msg|batch|resp|file|toolu|call|run|thread|asst|chatcmpl|ft|vs)[-_][A-Za-z0-9]+$/;
+
+// Path segments, scanned like query values: the path after the route goes
+// upstream too, and GET and HEAD carry no body to catch a value in. A segment
+// that is not valid percent-encoding is scanned as it is.
+export function redactPath(
+  rest: string,
+  tags: Set<string>,
+): { path: string; hits: number; values: number } {
+  if (rest === "" || rest === "/" || tags.has("all")) return { path: rest, hits: 0, values: 0 };
+  let hits = 0;
+  const { result: segments, values } = collectValues(() =>
+    withScanBudget(() =>
+      rest.split("/").map((segment, index) => {
+        if (segment === "" || PROVIDER_ID.test(segment)) return segment;
+        const decoded = decodeSegment(segment);
+        const result = redactValue(decoded, tags, "path", undefined, ["path", index], true);
+        hits += result.hits;
+        return result.hits === 0 ? segment : encodeURIComponent(String(result.value));
+      }),
+    ),
+  );
+  return { path: hits === 0 ? rest : segments.join("/"), hits, values };
+}
+
+function decodeSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
+
 // Request headers the agent sends to its own provider: the user's credentials
 // for it (masked, the provider refuses the call) and protocol fields.
 const PASSED_HEADERS = new Set([

@@ -22,6 +22,7 @@ import {
   type Format,
   initEngine,
   redactHeaders,
+  redactPath,
   redactQuery,
   redactRequest,
   refreshIdentity,
@@ -113,6 +114,8 @@ const HOP_HEADERS = [
 // would be refused upstream anyway, and holding it would cost that much memory
 // per request here.
 export const REQUEST_BYTES_MAX = 32 * 1024 * 1024;
+// A JSON reply is read whole before it is parsed and checked.
+export const REPLY_BYTES_MAX = 32 * 1024 * 1024;
 
 // Deepest JSON nesting scanned. Provider requests nest about 20 deep (tool
 // schemas included); redaction recurses, and 20,000 levels overflowed the
@@ -198,11 +201,13 @@ function rewriteSse(
 export type Redactors = {
   request: typeof redactRequest;
   query: typeof redactQuery;
+  path: typeof redactPath;
   headers: typeof redactHeaders;
 };
 const REDACTORS: Redactors = {
   request: redactRequest,
   query: redactQuery,
+  path: redactPath,
   headers: redactHeaders,
 };
 
@@ -231,16 +236,19 @@ function unscanned(): Scanned {
   };
 }
 
-// The body as text, read no further than the cap: a chunked body declares no
+// A body as text, read no further than the cap: a chunked body declares no
 // length. Undefined when it runs over.
-async function readCapped(request: Request): Promise<string | undefined> {
-  if (!request.body) return "";
+async function readCapped(
+  body: ReadableStream<Uint8Array> | null,
+  max: number,
+): Promise<string | undefined> {
+  if (!body) return "";
   const chunks: Uint8Array[] = [];
   let size = 0;
-  for await (const chunk of request.body) {
+  for await (const chunk of body) {
     size += chunk.byteLength;
     // Leaving the loop cancels the rest of the stream.
-    if (size > REQUEST_BYTES_MAX) return undefined;
+    if (size > max) return undefined;
     chunks.push(chunk);
   }
   return Buffer.concat(chunks).toString("utf8");
@@ -261,7 +269,7 @@ async function scanRequest(
   const declared = Number(request.headers.get("content-length") ?? 0);
   if (declared > REQUEST_BYTES_MAX)
     return refuse(413, `request body over ${REQUEST_BYTES_MAX} bytes`);
-  const raw = await readCapped(request);
+  const raw = await readCapped(request.body, REQUEST_BYTES_MAX);
   if (raw === undefined) return refuse(413, `request body over ${REQUEST_BYTES_MAX} bytes`);
   const type = request.headers.get("content-type") ?? "";
   if (type.includes("json") || (format !== undefined && raw.trimStart().startsWith("{"))) {
@@ -323,24 +331,26 @@ function redactBody(
   }
 }
 
-// The query string redacted and the headers redacted in place, their hits
-// added to the body's; or the refusal.
-function redactSearch(
+// The path and query string redacted and the headers redacted in place,
+// their hits added to the body's; or the refusal.
+function redactUrl(
+  rest: string,
   search: string,
   headers: Headers,
   scanned: Scanned,
   redact: Redactors,
-): string | Response {
+): { rest: string; search: string } | Response {
   try {
+    const path = redact.path(rest, scanned.tags);
     const query = redact.query(search, scanned.tags);
     const sent = redact.headers(headers, scanned.tags);
-    scanned.hits += query.hits + sent.hits;
-    if (scanned.counts) scanned.counts.masked += query.values + sent.values;
-    return query.search;
+    scanned.hits += path.hits + query.hits + sent.hits;
+    if (scanned.counts) scanned.counts.masked += path.values + query.values + sent.values;
+    return { rest: path.path, search: query.search };
   } catch (error) {
     return refuse(
       500,
-      `query or header redaction failed (${(error as Error).name}), refusing to forward unscanned`,
+      `URL or header redaction failed (${(error as Error).name}), refusing to forward unscanned`,
     );
   }
 }
@@ -439,9 +449,9 @@ export function createHandler(
     const scanned = await scanRequest(request, format, redact, session ?? null);
     if (scanned instanceof Response) return scanned;
     const { body, tags, counts, prompts, scanMs, label, unguarded } = scanned;
-    const search = redactSearch(url.search, headers, scanned, redact);
-    if (typeof search !== "string") return search;
-    const target = upstreamUrl(route, rest, search);
+    const sent = redactUrl(rest, url.search, headers, scanned, redact);
+    if (sent instanceof Response) return sent;
+    const target = upstreamUrl(route, sent.rest, sent.search);
     const trust = { ...label, unguarded: unguarded.length };
     if (counts) book.record(session, match[1]!, counts, prompts, tags, trust);
 
@@ -463,7 +473,7 @@ export function createHandler(
     // the journal shows when masking or a guard was lifted.
     const allowed = tags.size > 0 ? ` allow=${[...tags].sort().join(",")}` : "";
     const line =
-      `${match[1]}${rest} ${upstream.status} scan=${scanMs}ms${allowed}` +
+      `${match[1]}${sent.rest} ${upstream.status} scan=${scanMs}ms${allowed}` +
       ` redacted=${scanned.hits}`;
     return relayReply(upstream, format, tags, line);
   };
@@ -530,7 +540,8 @@ async function relayUnread(upstream: Response, init: ResponseInit, line: string)
     log(line);
     return new Response(upstream.body, init);
   }
-  const text = await upstream.text();
+  const text = await readCapped(upstream.body, REPLY_BYTES_MAX);
+  if (text === undefined) return refuse(502, `upstream reply over ${REPLY_BYTES_MAX} bytes`);
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -548,7 +559,8 @@ async function swapJsonReply(
   format: Format,
   tags: Set<string>,
 ): Promise<{ body: Record<string, unknown>; swapped: number } | Response> {
-  const text = await upstream.text();
+  const text = await readCapped(upstream.body, REPLY_BYTES_MAX);
+  if (text === undefined) return refuse(502, `upstream reply over ${REPLY_BYTES_MAX} bytes`);
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);

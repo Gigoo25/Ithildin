@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it, spyOn } from "bun:test";
-import { initEngine, redactHeaders, redactQuery, redactRequest } from "./redact.ts";
+import { initEngine, redactHeaders, redactPath, redactQuery, redactRequest } from "./redact.ts";
 import {
   createHandler,
   DEFAULT_ROUTES,
@@ -30,6 +30,7 @@ const leaking: Redactors = {
     unguarded: [],
   }),
   query: redactQuery,
+  path: redactPath,
   headers: redactHeaders,
 };
 const broken: Redactors = {
@@ -37,6 +38,7 @@ const broken: Redactors = {
     throw new TypeError("broken");
   },
   query: redactQuery,
+  path: redactPath,
   headers: redactHeaders,
 };
 
