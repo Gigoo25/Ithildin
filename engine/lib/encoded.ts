@@ -149,13 +149,13 @@ export function rot13(text: string): string {
   });
 }
 
-// Below this, a rot13 value is too short to tell from ordinary text.
-const MIN_ROT13_LETTERS = 3;
+// Below this, a rotated value turns up inside ordinary words: a three-letter
+// username rotated is a piece of "Notebook".
+const MIN_ROT13_LETTERS = 5;
 
-// Withholds rot13 copies of values already masked (`tr 'A-Za-z'
-// 'N-ZA-Mn-za-m'`, Python's codecs). rot13 has no shape of its own, so this
-// matches known values exactly rather than scanning a decoding with the
-// shape rules, which would fire on gibberish.
+// Withholds rot13 copies of values already masked. rot13 has no shape of its
+// own, so this matches known values exactly, as whole tokens, rather than
+// scanning a decoding with the shape rules, which would fire on gibberish.
 export function redactRot13(
   text: string,
   values: string[],
@@ -168,13 +168,11 @@ export function redactRot13(
     if (rotated !== value) targets.add(rotated);
   }
   if (!targets.size) return { text, hits: 0 };
-  const pattern = new RegExp(
-    [...targets]
-      .sort((a, b) => b.length - a.length)
-      .map(escapeRegExp)
-      .join("|"),
-    "g",
-  );
+  const alternatives = [...targets]
+    .sort((a, b) => b.length - a.length)
+    .map(escapeRegExp)
+    .join("|");
+  const pattern = new RegExp(`(?<![\\p{L}\\p{N}_])(?:${alternatives})(?![\\p{L}\\p{N}_])`, "gu");
   let out = "";
   let last = 0;
   let hits = 0;

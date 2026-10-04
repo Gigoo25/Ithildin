@@ -29,7 +29,13 @@ const INTERPRETERS = new Set([
   "gawk",
 ]);
 const ROTATORS = new Set(["rot13", "rot-13", "caesar", "rot"]);
-const ROT_CODEC = /\brot[-_]?13\b/i;
+// A codec call naming rot13, not the word anywhere on the line: `bun test -t
+// "rot13 copies"` and a grep for it are ordinary.
+const ROT_CODEC = new RegExp(
+  String.raw`\b(?:codecs\.\w+|getencoder|getdecoder|lookup|encode|decode)\s*\(` +
+    String.raw`[^\n]{0,200}?['"]rot[-_]?13['"]`,
+  "i",
+);
 
 // A tr set expanded to its characters. Undefined when it holds anything but
 // letters and ranges of them: digits, escapes and classes are other jobs.

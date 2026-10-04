@@ -71,6 +71,13 @@ describe("rot13 copies of a masked value", () => {
     expect(result.text).toEndWith(" done");
   });
 
+  it("matches whole tokens only, and no short values", () => {
+    expect(redactRot13("open the Notebook tab", ["rob"], () => {}).hits).toBe(0);
+    const inside = `x${rot13("zqxlab")}y`;
+    expect(redactRot13(inside, ["zqxlab"], () => {}).hits).toBe(0);
+    expect(redactRot13(`see ${rot13("zqxlab")}.`, ["zqxlab"], () => {}).hits).toBe(1);
+  });
+
   it("leaves rot13 of unmasked text alone", () => {
     const text = `notes ${rot13("ordinary words here")}`;
     expect(redactRot13(text, ["zqxlab"], () => {}).text).toBe(text);

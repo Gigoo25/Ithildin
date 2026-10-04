@@ -33,6 +33,9 @@ describe("letter substitution guard", () => {
       "grep -rn rot13 engine/",
       "sed 's/foo/bar/' f",
       "git log --format=%s",
+      'bun test engine/lib/encoded.test.ts -t "rot13 copies"',
+      "grep -rn rot13 engine && python3 tools/report.py",
+      "cat > /tmp/p.ts <<'EOF'\nimport { redactRot13 } from './encoded.ts';\nEOF\nbun /tmp/p.ts",
     ]) {
       expect({ command, refused: unmasks(command) }).toEqual({ command, refused: false });
     }
