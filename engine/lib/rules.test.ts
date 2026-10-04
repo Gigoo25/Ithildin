@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { redactText } from "../core.ts";
 import {
   aliasKeyScope,
   beginScanBudget,
@@ -633,6 +634,11 @@ describe("freeform name recall", () => {
     ]) {
       expect(scan(text).filter((f) => f.ruleId === "pii-gazetteer-name")).toEqual([]);
     }
+  });
+
+  it("masks no one- or two-letter personal value, whatever the rule", () => {
+    const text = "user x logged in; see /home/ab/src and x@example.org";
+    expect(redactText(text).text).toBe(text);
   });
 
   it("takes no one- or two-letter usernames", () => {

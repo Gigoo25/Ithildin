@@ -515,6 +515,13 @@ function reportPlanned(
   });
 }
 
+// Personal data under three characters identifies no one, and its stand-in
+// swaps back in every later tool call: one learned letter rewrote each `%v`
+// and `-v` the model wrote. Secrets keep any length.
+function tooShortForPii(finding: LocatedFinding): boolean {
+  return finding.category === "pii" && [...finding.secretValue].length < 3;
+}
+
 export function redactText(
   source: string,
   allowTags: Set<string> = new Set(),
@@ -524,7 +531,9 @@ export function redactText(
   const { findings: raw, trips } = cachedScan(text);
   const allowed = allowTags.has("all")
     ? []
-    : [...raw, ...swappedFindings(text)].filter((f) => !isSyntheticValue(f.secretValue));
+    : [...raw, ...swappedFindings(text)].filter(
+        (f) => !isSyntheticValue(f.secretValue) && !tooShortForPii(f),
+      );
   // Structured document edits join the same renderer. Filter them by the
   // same allow-tags before planning so an allowed category cannot exempt an
   // overlapping forbidden secret.
