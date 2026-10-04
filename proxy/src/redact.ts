@@ -59,6 +59,7 @@ import {
 import type { InventoryEntry } from "../engine/lib/rules.ts";
 import { planSwapBack, reachesNetwork } from "../engine/lib/swap-back.ts";
 import { protectedBlocked, protectedFinding, shellWrites } from "./protect.ts";
+import { UNMASK_BLOCKED, unmasksText } from "./unmask.ts";
 import {
   conversationLabel,
   copiesData,
@@ -1384,6 +1385,7 @@ function guardNotice(
     (sendsOut(toolName, args) || sendsOut(toolName, result.args))
   )
     return label.private ? PRIVATE_SEND : UNTRUSTED_SEND;
+  if (!tags.has("pii") && !tags.has("all") && unmasksText(args)) return UNMASK_BLOCKED;
   if (tags.has("protected")) return undefined;
   const found =
     protectedFinding(toolName, args, cwd) ??
