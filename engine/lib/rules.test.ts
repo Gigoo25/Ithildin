@@ -635,6 +635,16 @@ describe("freeform name recall", () => {
     }
   });
 
+  it("takes no one- or two-letter usernames", () => {
+    for (const text of ["x@example.org", "ab@example.org", "/home/x/src", "/Users/ab/src"]) {
+      expect(
+        scan(text).filter((f) => f.ruleId === "pii-user-at-host" || f.ruleId === "pii-home-user"),
+      ).toEqual([]);
+    }
+    expect(scan("deploy@example.org").some((f) => f.ruleId === "pii-user-at-host")).toBe(true);
+    expect(scan("/home/deploy/src").some((f) => f.ruleId === "pii-home-user")).toBe(true);
+  });
+
   it("leaves commit subjects and file names alone", () => {
     for (const text of [
       "Add CLAUDE.md",

@@ -960,7 +960,8 @@ const LOCAL_RULES: Rule[] = [
   {
     id: "pii-home-user",
     description: "Username in home-directory path (generic)",
-    regex: /\/(?:home|Users)\/([a-z_][a-z0-9_-]{0,30})/gi,
+    // Three characters at least, as in pii-user-at-host.
+    regex: /\/(?:home|Users)\/([a-z_][a-z0-9_-]{2,30})/gi,
     secretGroup: 1,
     category: "pii",
   },
@@ -1273,7 +1274,9 @@ const LOCAL_RULES: Rule[] = [
     regex:
       /\b([a-z_][a-z0-9_.-]{0,30}[a-z0-9_-]?)@(?![Vv]?\d+(\.\d+)*\b)(?=[A-Za-z0-9.-]*[A-Za-z])/gi,
     secretGroup: 1,
-    validate: (value: string) => !PLACEHOLDER_NAMES.test(value),
+    // Under three characters is a loop variable or a format verb (`%x@%s`),
+    // and one learned letter would be masked in every later `-x` and `%x`.
+    validate: (value: string) => value.length >= 3 && !PLACEHOLDER_NAMES.test(value),
     category: "pii",
   },
   {
