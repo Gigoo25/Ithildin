@@ -1,11 +1,14 @@
 // Common US first names, SSA-derived (public domain upstream data).
 // Source: hadley/data-baby-names/baby-names.csv (US Social Security
 // Administration baby-name shares by year). Generated 2026-09-18.
-// Kept: alpha names with length>=3 present in >=3 years (5565 of 6782
+// Kept: alpha names with length>=3 present in >=3 years (5561 of 6782
 // distinct). Dropped: one-year blips (typos) and 8 two-letter entries
 // (Ab, Al, Bo, Ed, Jo, Lu, Ty, Wm) whose prose FP cost ("Al Jazeera")
 // outweighs their recall. Dual-use words that are also common names
 // (Mark, Bill, Grace, Art) stay: "Grace Hopper" is worth "Grace Period".
+// Also dropped: Add, Case, Else and Claude. They are commit, code and
+// product words far more often than names ("Add CLAUDE.md" read as a
+// person), so a real "Claude Moreau" is the accepted residual.
 // Gazetteer use only: membership backs pii-gazetteer-name, never a
 // standalone finding. Refresh: re-run the filter on upstream.
 export const FIRST_NAMES: ReadonlySet<string> = new Set([
@@ -35,7 +38,6 @@ export const FIRST_NAMES: ReadonlySet<string> = new Set([
   "adaline",
   "adam",
   "adan",
-  "add",
   "adda",
   "addie",
   "addison",
@@ -887,7 +889,6 @@ export const FIRST_NAMES: ReadonlySet<string> = new Set([
   "caryl",
   "caryn",
   "casandra",
-  "case",
   "casey",
   "cash",
   "casie",
@@ -1056,7 +1057,6 @@ export const FIRST_NAMES: ReadonlySet<string> = new Set([
   "clarnce",
   "classie",
   "claud",
-  "claude",
   "claudette",
   "claudia",
   "claudie",
@@ -1729,7 +1729,6 @@ export const FIRST_NAMES: ReadonlySet<string> = new Set([
   "eloy",
   "elroy",
   "elsa",
-  "else",
   "elsie",
   "elsworth",
   "elta",

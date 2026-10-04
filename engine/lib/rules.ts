@@ -166,6 +166,56 @@ const KEY_WORDS = new Set([
   "up",
 ]);
 
+// Extensions that make a capitalized last word a file name rather than a
+// surname. An allowlist, not a general `.[a-z]+` shape: "Mark Shelton.jr" is
+// a person, and a privacy tool keeps that finding.
+const FILE_EXTENSIONS = new Set([
+  "c",
+  "cc",
+  "cfg",
+  "conf",
+  "cpp",
+  "cs",
+  "css",
+  "csv",
+  "go",
+  "h",
+  "hpp",
+  "htm",
+  "html",
+  "ini",
+  "java",
+  "jpg",
+  "js",
+  "json",
+  "jsx",
+  "kt",
+  "lock",
+  "log",
+  "lua",
+  "md",
+  "mjs",
+  "nix",
+  "pdf",
+  "php",
+  "png",
+  "py",
+  "rb",
+  "rs",
+  "sh",
+  "sql",
+  "svg",
+  "swift",
+  "toml",
+  "ts",
+  "tsx",
+  "txt",
+  "xml",
+  "yaml",
+  "yml",
+  "zsh",
+]);
+
 export function escapeRegExp(literal: string): string {
   return literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -1154,6 +1204,10 @@ const LOCAL_RULES: Rule[] = [
     category: "pii",
     validate: (value: string) => {
       if (!FIRST_NAMES.has(value.split(/[ -]/)[0]!.toLowerCase())) return false;
+      // A last word ending in a known extension is a file name ("Read
+      // README.md", "Open Main.ts"), never a surname.
+      const ext = /\.([a-z0-9]+)$/.exec(value)?.[1];
+      if (ext !== undefined && FILE_EXTENSIONS.has(ext)) return false;
       // "press" is a gazetteer name, so the pair shape alone also matches UI
       // key names and chords. The pattern rejects key chords that carry a "+".
       // The second word catches the rest. Split on non-letters so "Ctrl+Tab"

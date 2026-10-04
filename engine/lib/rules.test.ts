@@ -635,6 +635,23 @@ describe("freeform name recall", () => {
     }
   });
 
+  it("leaves commit subjects and file names alone", () => {
+    for (const text of [
+      "Add CLAUDE.md",
+      "Add Search Tests",
+      "Case Studies follow",
+      "Else Branch removed",
+      "Claude Code wrote this",
+      "Mark README.md as stale",
+      "Open Main.ts first",
+    ]) {
+      expect(scan(text).filter((f) => f.ruleId === "pii-gazetteer-name")).toEqual([]);
+    }
+    expect(scan("Mark Shelton.jr signed").some((f) => f.ruleId === "pii-gazetteer-name")).toBe(
+      true,
+    );
+  });
+
   it("catches names behind titles without keeping the title", () => {
     const titled = scan("Please contact Dr. Elena Vasquez before noon");
     const hit = titled.find((f) => f.ruleId === "pii-titled-name");
