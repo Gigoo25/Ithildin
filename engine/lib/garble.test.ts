@@ -4,6 +4,7 @@
 // that swap-back then missed, so the stand-in landed on disk. Add a line to
 // a list here whenever a new case turns up.
 import { afterEach, describe, expect, it } from "bun:test";
+import { readFileSync } from "node:fs";
 import { aliases, redactText } from "../core.ts";
 import { setRuntimeInventory } from "./rules.ts";
 import { collectRuntimeIdentity } from "./runtime-inventory.ts";
@@ -65,11 +66,29 @@ describe("ordinary text passes through unchanged", () => {
     "user = await getUser()",
     "owner: root",
     "user: test",
+    // found by scanning real repos: Go sources, Bun's type docs, git logs
+    "return math.Pow((s+0.055)/1.055, 2.4)",
+    "Sends an HTTP/1.1 103 Early Hints message",
+    'h.add("Early May bank holiday", d)',
+    "Copyright (c) Meta Platforms, Inc. and affiliates.",
+    "Inline images using the Kitty Graphics Protocol",
+    'native functions show up as "Unknown Executable"',
+    "Emit ANSI color escape sequences",
+    "Emit OSC 8 hyperlinks",
+    'data: {user: "John Doe"}',
+    "Merge pull request #16 from org/feature-branch",
   ];
   for (const text of ORDINARY)
     it(text, () => {
       expect(redactText(text).text).toBe(text);
     });
+});
+
+// A long document of prose, commands and config. Anything this rewrites is
+// a false positive an agent would trip over.
+it("passes the README through unchanged", () => {
+  const readme = readFileSync(new URL("../../README.md", import.meta.url), "utf8");
+  expect(redactText(readme).text).toBe(readme);
 });
 
 describe("real names are still caught", () => {

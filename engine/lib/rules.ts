@@ -217,6 +217,9 @@ const FILE_EXTENSIONS = new Set([
   "zsh",
 ]);
 
+// Stock example names in docs and fixtures.
+const PLACEHOLDER_PEOPLE = new Set(["john doe", "jane doe", "john smith", "jane smith"]);
+
 export function escapeRegExp(literal: string): string {
   return literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -1216,6 +1219,9 @@ const LOCAL_RULES: Rule[] = [
       // still yields "ctrl".
       const words = value.split(/[^A-Za-z]+/).filter(Boolean);
       const second = (words[1] ?? "").toLowerCase();
+      // An acronym after the name is a term ("Emit ANSI", "Cap JSON").
+      if (/^[A-Z]{2,4}$/.test(words[1] ?? "")) return false;
+      if (PLACEHOLDER_PEOPLE.has(`${words[0]} ${words[1]}`.toLowerCase())) return false;
       // A dual-use name before an ordinary word is a phrase ("Mark Done").
       return !KEY_WORDS.has(second) && !COMMON_SECOND_WORDS.has(second);
     },
@@ -1239,7 +1245,9 @@ const LOCAL_RULES: Rule[] = [
       if (!match) return false;
       const [, latRaw = "", ns, lonRaw = "", ew] = match;
       if (Math.abs(Number(latRaw)) > 90 || Math.abs(Number(lonRaw)) > 180) return false;
-      const frac = (part: string): boolean => part.includes(".");
+      // Three decimals at least, about a street block: shorter pairs are
+      // arithmetic and constants ("/1.055, 2.4"), not a location.
+      const frac = (part: string): boolean => /\.\d{3,}$/.test(part);
       const marked = value.includes("°") || ns !== undefined || ew !== undefined;
       return (
         (frac(latRaw) && frac(lonRaw)) ||

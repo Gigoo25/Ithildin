@@ -335,6 +335,11 @@ export const COMMON_SECOND_WORDS: ReadonlySet<string> = new Set([
   "week",
   "world",
   "year",
+  // web and platform terms ("Early Hints", "Meta Platforms")
+  "executable",
+  "graphics",
+  "hints",
+  "platforms",
   // days and months
   "monday",
   "tuesday",
@@ -346,6 +351,7 @@ export const COMMON_SECOND_WORDS: ReadonlySet<string> = new Set([
   "january",
   "february",
   "march",
+  "may",
   "april",
   "june",
   "july",
