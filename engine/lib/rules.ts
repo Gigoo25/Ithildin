@@ -50,7 +50,8 @@ interface Rule {
   regex: RegExp;
   secretGroup?: number;
   entropyThreshold?: number;
-  validate?: (str: string) => boolean;
+  // `match` is the whole match, for rules that check which label fired.
+  validate?: (str: string, match?: RegExpMatchArray) => boolean;
   category: Category;
   contextWords?: string[];
   requireContext?: boolean;
@@ -748,7 +749,7 @@ const PLACEHOLDER_NAMES = new RegExp(
     String.raw`nobody|root|admin|git|group|password|passwd|pass|secret|token|email|mail|` +
     String.raw`noreply|no-reply|path|paths|port|dir|file|files|addr|address|ip|domain|remote|` +
     String.raw`target|dest|destination|await|async|new|this|self|typeof|function|require|` +
-    String.raw`import)$`,
+    String.raw`import|demo|test|tester|example|sample|default|dummy|fake|bench)$`,
   "i",
 );
 
@@ -1164,17 +1165,27 @@ const LOCAL_RULES: Rule[] = [
     id: "pii-labeled-name",
     description: "Personal name behind an identity label",
     regex: new RegExp(
-      String.raw`(?:\bname|\bfull name|\bpatient|\bcustomer|\bcontact|\battn|\bauthor|` +
+      String.raw`(?:\b(name)|\bfull name|\bpatient|\bcustomer|\bcontact|\battn|\bauthor|` +
         String.raw`\bsender|\brecipient|\bregistrant|\bsigner|\bfrom|\bto|` +
         String.raw`\bcc)\s*[:=]\s*([A-Z][a-z]+(?:[ -][A-Z][a-z.]+){1,2})`,
       "gi",
     ),
-    secretGroup: 1,
+    secretGroup: 2,
     category: "pii",
     // The "i" flag makes the value pattern case-insensitive too, so a YAML
     // slug (name: design-discipline) matches on its second word. Require real
     // capitalization instead, which is what the pattern intends.
-    validate: (value: string) => value.split(/[ -]/).every((word) => /^[A-Z]/.test(word)),
+    validate: (value: string, match?: RegExpMatchArray) => {
+      const words = value.split(/[ -]/);
+      if (!words.every((word) => /^[A-Z]/.test(word))) return false;
+      // A bare "name:" labels workflow steps, devices and packages ("name:
+      // Checkout Repo"): only a known first name before a non-common word.
+      if (match?.[1] === undefined) return true;
+      return (
+        FIRST_NAMES.has(words[0]!.toLowerCase()) &&
+        !COMMON_SECOND_WORDS.has((words[1] ?? "").toLowerCase())
+      );
+    },
   },
   // Titles are nearly unambiguous person markers: no prose shape looks
   // like "Dr Smith". Case-sensitive on purpose (lowercase "dr jones" is
@@ -1236,7 +1247,14 @@ const LOCAL_RULES: Rule[] = [
   {
     id: "pii-geo-decimal",
     description: "Lat/long decimal pair",
-    regex: /\b(-?\d{1,3}(?:\.\d+)?)\s*°?\s*([NS])?[\s,;]+(-?\d{1,3}(?:\.\d+)?)\s*°?\s*([EW])?\b/gi,
+    // Not inside a longer run of numbers: SVG path data and colour triples
+    // ({0.313725, 0.478431, 0.721569}) are not locations.
+    regex: new RegExp(
+      String.raw`(?<![\d.][\s,;]*-?)\b(-?\d{1,3}(?:\.\d+)?)\s*°?\s*([NS])?[\s,;]+` +
+        String.raw`(-?\d{1,3}(?:\.\d+)?)\s*°?\s*([EW])?\b` +
+        String.raw`(?![\s,;]*-?\.?\d)`,
+      "gi",
+    ),
     validate: (value: string) => {
       const match =
         /^(-?\d{1,3}(?:\.\d+)?)\s*°?\s*([NS])?[\s,;]+(-?\d{1,3}(?:\.\d+)?)\s*°?\s*([EW])?$/i.exec(
@@ -1280,10 +1298,21 @@ const LOCAL_RULES: Rule[] = [
   {
     id: "pii-user-at-host",
     description: "Username in user@host address (generic)",
-    // The host must contain a letter and must not be a version pin:
-    // npm `repo@v1` / `bar@1.0.0` are packages, not addresses.
-    regex:
-      /\b([a-z_][a-z0-9_.-]{0,30}[a-z0-9_-]?)@(?![Vv]?\d+(\.\d+)*\b)(?=[A-Za-z0-9.-]*[A-Za-z])/gi,
+    // The host must contain a letter and must not be a version pin or a
+    // ref: npm `repo@v1` / `bar@1.0.0`, `go install …/cmd/tool@latest`,
+    // `uses: actions/checkout@main`, `image@sha256:…`. An `org/name@` is a
+    // package or action, never a login. Reserved example domains, as in
+    // pii-email: test fixtures, whose usernames would be learned.
+    regex: new RegExp(
+      String.raw`(?<![A-Za-z0-9_.-]\/)\b([a-z_][a-z0-9_.-]{0,30}[a-z0-9_-]?)@` +
+        String.raw`(?![Vv]?\d+(\.\d+)*\b)` +
+        String.raw`(?!(?:latest|main|master|stable|next|nightly|beta|alpha|canary|edge|head|` +
+        String.raw`trunk|sha\d+)\b)` +
+        String.raw`(?!example\.(?:com|net|org|edu)\b)` +
+        String.raw`(?![A-Za-z0-9.-]{0,255}\.(?:test|invalid|example|localhost)\b)` +
+        String.raw`(?!localhost\b)(?=[A-Za-z0-9.-]*[A-Za-z])`,
+      "gi",
+    ),
     secretGroup: 1,
     // Under three characters is a loop variable or a format verb (`%x@%s`),
     // and one learned letter would be masked in every later `-x` and `%x`.
@@ -1643,7 +1672,7 @@ function scanRule(rule: Rule, text: string): LocatedFinding[] {
     const following = text.slice(matchEnd, matchEnd + 64);
     if (!secretShaped(rule, secretValue, match, following)) continue;
     if (rule.entropyThreshold != null && entropy(secretValue) < rule.entropyThreshold) continue;
-    if (rule.validate != null && !rule.validate(secretValue)) continue;
+    if (rule.validate != null && !rule.validate(secretValue, match)) continue;
 
     const score = contextScore(rule, text, matchStart, matchEnd);
     if (score === undefined) continue;

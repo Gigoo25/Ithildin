@@ -647,7 +647,9 @@ describe("freeform name recall", () => {
         scan(text).filter((f) => f.ruleId === "pii-user-at-host" || f.ruleId === "pii-home-user"),
       ).toEqual([]);
     }
-    expect(scan("deploy@example.org").some((f) => f.ruleId === "pii-user-at-host")).toBe(true);
+    expect(
+      scan(["deploy", "@build", "box.io"].join("")).some((f) => f.ruleId === "pii-user-at-host"),
+    ).toBe(true);
     expect(scan("/home/deploy/src").some((f) => f.ruleId === "pii-home-user")).toBe(true);
   });
 

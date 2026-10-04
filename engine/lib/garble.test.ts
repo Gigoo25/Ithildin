@@ -77,6 +77,17 @@ describe("ordinary text passes through unchanged", () => {
     "Emit OSC 8 hyperlinks",
     'data: {user: "John Doe"}',
     "Merge pull request #16 from org/feature-branch",
+    // found scanning other personal repos: workflows, Dockerfiles, configs
+    "uses: actions/checkout@main",
+    "uses: docker/setup-buildx-action@master",
+    "uses: dtolnay/rust-toolchain@stable",
+    "go install golang.org/x/vuln/cmd/govulncheck@latest",
+    "FROM gcr.io/distroless/static-debian12@sha256:a9fcaedd4c9b",
+    "logs in as demo@example.com / demo1234",
+    "- name: Checkout GitHub Action",
+    "    name: Bed Exit Confirmation",
+    j('<path d="M7.503 0c3.09 0 ', "6.3", "13 5.7", '31 2.841 6.214 0"/>'),
+    j("colorful.Color{0.31", "3725, 0.47", "8431, 0.721569}"),
   ];
   for (const text of ORDINARY)
     it(text, () => {
@@ -98,6 +109,9 @@ describe("real names are still caught", () => {
     "Dean Price",
     "Mark Shelton",
     j("Error: Mark Shel", "ton.jr"),
+    j("name: Neil Arm", "strong"),
+    j("author: Bed", "ford Falls"),
+    j("ssh ", "deploy", "@build", "box.lan"),
   ])
     it(text, () => {
       expect(redactText(text).text).not.toBe(text);
