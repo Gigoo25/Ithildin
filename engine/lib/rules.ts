@@ -10,6 +10,7 @@ import {
   keyDescribesRatherThanHolds,
 } from "./shapes.ts";
 import { getValidator, isReservedIpv4 } from "./validators.ts";
+import { COMMON_SECOND_WORDS } from "./common-words.ts";
 import { FIRST_NAMES } from "./first-names.ts";
 import { ALIAS_LABEL } from "./aliases.ts";
 import { configFile, setting } from "./names.ts";
@@ -1214,7 +1215,9 @@ const LOCAL_RULES: Rule[] = [
       // The second word catches the rest. Split on non-letters so "Ctrl+Tab"
       // still yields "ctrl".
       const words = value.split(/[^A-Za-z]+/).filter(Boolean);
-      return !KEY_WORDS.has((words[1] ?? "").toLowerCase());
+      const second = (words[1] ?? "").toLowerCase();
+      // A dual-use name before an ordinary word is a phrase ("Mark Done").
+      return !KEY_WORDS.has(second) && !COMMON_SECOND_WORDS.has(second);
     },
   },
   // Street addresses carry their own suffix vocabulary, so the shape is
@@ -1295,7 +1298,7 @@ const LOCAL_RULES: Rule[] = [
     // names ("Jane") and booleans out without a per-word denylist.
     validate: (value: string) =>
       /^[a-z0-9._][a-z0-9._-]*$/.test(value) &&
-      !/^(?:true|false|null|none|yes|no|on|off)$/.test(value) &&
+      !/^(?:true|false|null|none|yes|no|on|off|test|demo|example|sample|default)$/.test(value) &&
       !PLACEHOLDER_NAMES.test(value) &&
       !TYPE_NAMES.test(value),
     category: "pii",

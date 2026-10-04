@@ -686,11 +686,10 @@ describe("freeform name recall", () => {
   });
 
   it("documents dual-use residuals as limitations, not regressions", () => {
-    // Common names that are also ordinary words fire on prose uses.
-    // "Grace Hopper" is worth "Grace Period": fail-closed beats clever.
-    expect(scan("Grace Period ends Friday").some((f) => f.ruleId === "pii-gazetteer-name")).toBe(
-      true,
-    );
+    // A dual-use name before an ordinary word is a phrase (COMMON_SECOND_WORDS);
+    // before a word off that list it still fires, surname or not.
+    expect(scan("Mark Done").some((f) => f.ruleId === "pii-gazetteer-name")).toBe(false);
+    expect(scan("Grace Hopper retired").some((f) => f.ruleId === "pii-gazetteer-name")).toBe(true);
     expect(scan("Dr Pepper is in the fridge").some((f) => f.ruleId === "pii-titled-name")).toBe(
       true,
     );
