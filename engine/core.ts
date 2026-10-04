@@ -36,6 +36,7 @@ import {
   inventoryStandInValue,
   isPromptOnlyRule,
   GENERALIZE_PATH,
+  escapeRegExp,
 } from "./lib/rules.ts";
 import {
   AliasBook,
@@ -531,7 +532,7 @@ export function redactText(
   const { findings: raw, trips } = cachedScan(text);
   const allowed = allowTags.has("all")
     ? []
-    : [...raw, ...swappedFindings(text)].filter(
+    : [...raw, ...swappedFindings(text), ...respelledFindings(text, raw)].filter(
         (f) => !isSyntheticValue(f.secretValue) && !tooShortForPii(f),
       );
   // Structured document edits join the same renderer. Filter them by the
@@ -1061,6 +1062,61 @@ export function rememberSwapped(value: string, ruleId: string): void {
   if (value.length < 3 || SWAPPED.has(value)) return;
   if (SWAPPED.size >= SWAPPED_MAX) SWAPPED.delete(SWAPPED.keys().next().value!);
   SWAPPED.set(value, ruleId);
+}
+
+// Multi-word personal values already masked, found again in another case or
+// spelling: lowercased, upper-cased, snake_cased, run together, or with
+// two words in the other order. A rule that
+// wants capitals ("Bernard Kwasniew") missed `bernard kwasniew`, so an agent
+// could read past a stand-in by lowercasing its input. Values this text is
+// masking count too, so a respelled copy beside the first is caught. Single
+// words stay out: a lowercased one-word name is too often a plain word.
+function respelledFindings(text: string, raw: LocatedFinding[]): LocatedFinding[] {
+  const values = new Map<string, string>();
+  const add = (value: string, ruleId: string) => {
+    const words = value.split(/[\s_.-]+/).filter(Boolean);
+    if (words.length < 2 || !words.every((word) => /^\p{L}{2,}$/u.test(word))) return;
+    const key = words.join(" ").toLowerCase();
+    if (!values.has(key)) values.set(key, ruleId);
+    // Surname first, as exports and forms write it ("Kwasniew, Bernard").
+    if (words.length === 2) {
+      const reversed = [words[1], words[0]].join(" ").toLowerCase();
+      if (!values.has(reversed)) values.set(reversed, ruleId);
+    }
+  };
+  for (const known of aliases().known())
+    if (known.ruleId.startsWith("pii-")) add(known.value, known.ruleId);
+  for (const finding of raw)
+    if (finding.category === "pii") add(finding.secretValue, finding.ruleId);
+  if (values.size === 0) return [];
+  const pattern = new RegExp(
+    `(?<![\\p{L}\\p{N}])(?:${[...values.keys()]
+      .sort((a, b) => b.length - a.length)
+      .map((key) => key.split(" ").map(escapeRegExp).join("[\\s_.,-]*"))
+      .join("|")})(?![\\p{L}\\p{N}])`,
+    "giu",
+  );
+  const out: LocatedFinding[] = [];
+  for (const match of text.matchAll(pattern)) {
+    const key = match[0]
+      .split(/[\s_.,-]+/)
+      .join(" ")
+      .toLowerCase();
+    const ruleId =
+      values.get(key) ??
+      [...values].find(([value]) => value.replace(/ /g, "") === key.replace(/ /g, ""))?.[1];
+    if (!ruleId) continue;
+    out.push({
+      ruleId,
+      description: "Masked value in another case or spelling",
+      category: "pii",
+      matchRedacted: "[respelled]",
+      secretValue: match[0],
+      start: match.index,
+      end: match.index + match[0].length,
+    });
+  }
+  return out;
 }
 
 function swappedFindings(text: string): LocatedFinding[] {

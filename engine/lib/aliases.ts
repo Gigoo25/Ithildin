@@ -1181,9 +1181,15 @@ export class AliasBook {
   // Real values behind the stand-ins, to catch transformed copies of them
   // (rot13). Used only locally; never sent anywhere.
   values(): string[] {
-    const out = new Set<string>();
-    for (const known of this.reverse.values()) if (known) out.add(known.value);
-    return [...out];
+    return [...new Set(this.known().map((known) => known.value))];
+  }
+
+  // Real values behind the stand-ins with the rule that found each, to mask
+  // copies of them in another case or spelling. Used only locally.
+  known(): Resolved[] {
+    const out: Resolved[] = [];
+    for (const known of this.reverse.values()) if (known) out.push(known);
+    return out;
   }
 
   // Keeps each stand-in where it was first minted across restarts. The file

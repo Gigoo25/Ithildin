@@ -1,7 +1,10 @@
 // Finds text the engine would rewrite in real repositories: candidates for
 // false positives that garble what an agent reads. Prints counts per rule
-// and a few samples per rule, each matched value shown only as its shape
-// (Aaaa 99), so real personal data in a scanned repo is not printed.
+// and a few samples per rule shown only as shapes (Aaaa 99), the match and
+// the text around it alike: context carries values no rule matched (a name
+// written surname first), so nothing from a scanned repo is printed as is.
+// Common words in the context stay readable, which is enough to tell a
+// workflow step from a person.
 //
 //   bun checks/garble-scan.ts [--samples N] <repo>...
 //
@@ -31,6 +34,34 @@ for (let i = 0; i < args.length; i++) {
 const shape = (value: string) =>
   value.replace(/[A-Z]/g, "A").replace(/[a-z]/g, "a").replace(/[0-9]/g, "9");
 const oneLine = (text: string) => text.replace(/\s+/g, " ");
+// Lowercase words of four letters or more from a short, fixed list stay;
+// everything else becomes its shape.
+const READABLE = new Set([
+  "name",
+  "uses",
+  "from",
+  "title",
+  "author",
+  "email",
+  "user",
+  "login",
+  "host",
+  "home",
+  "path",
+  "file",
+  "test",
+  "copyright",
+  "license",
+  "step",
+  "with",
+  "version",
+  "image",
+  "install",
+]);
+const masked = (text: string) =>
+  oneLine(text).replace(/\p{L}+|\p{N}+/gu, (word) =>
+    READABLE.has(word.toLowerCase()) ? word : shape(word),
+  );
 
 function trackedFiles(repo: string): string[] {
   try {
@@ -67,8 +98,8 @@ for (const repo of repos) {
         if (list.length >= samples) continue;
         const start = finding.start;
         const end = finding.end;
-        const before = oneLine(chunk.slice(Math.max(0, start - 40), start));
-        const after = oneLine(chunk.slice(end, end + 30));
+        const before = masked(chunk.slice(Math.max(0, start - 40), start));
+        const after = masked(chunk.slice(end, end + 30));
         list.push(`${path.relative(repo, file)}: ${before}⟨${shape(finding.secretValue)}⟩${after}`);
         shown.set(id, list);
       }

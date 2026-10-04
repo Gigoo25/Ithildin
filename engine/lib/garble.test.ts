@@ -194,3 +194,37 @@ describe("stand-ins survive the edits a model makes", () => {
       expect(swapped(mangled)).toBe(mangled);
   });
 });
+
+// Masking that a change of case or spelling undoes is no masking: an agent
+// lowercased its output and read a name the rule only knew capitalized.
+describe("respelled copies of a masked name", () => {
+  const NAME = j("Bern", "ard ", "Kwa", "sniew");
+  const respellings = [
+    NAME.toLowerCase(),
+    NAME.toUpperCase(),
+    NAME.replace(" ", "_").toLowerCase(),
+    NAME.replace(" ", "").toLowerCase(),
+    NAME.replace(" ", "-"),
+    NAME.split(" ").reverse().join(" "),
+    NAME.split(" ").reverse().join(", "),
+  ];
+
+  it("masks them in later text", () => {
+    expect(redactText(`signed ${NAME}`).text).not.toContain(NAME);
+    for (const spelled of respellings)
+      expect({ spelled, out: redactText(`x ${spelled} y`).text.includes(spelled) }).toEqual({
+        spelled,
+        out: false,
+      });
+  });
+
+  it("masks them beside the first copy in the same text", () => {
+    const out = redactText(`${NAME}\t${NAME.toLowerCase()}`).text;
+    expect(out).not.toContain(NAME.toLowerCase());
+  });
+
+  it("leaves a lone first name in lowercase alone", () => {
+    redactText(`signed ${NAME}`);
+    expect(redactText("bernard said hi").text).toBe("bernard said hi");
+  });
+});
