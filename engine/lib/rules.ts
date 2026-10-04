@@ -1263,7 +1263,9 @@ const LOCAL_RULES: Rule[] = [
         );
       if (!match) return false;
       const [, latRaw = "", ns, lonRaw = "", ew] = match;
-      if (Math.abs(Number(latRaw)) > 90 || Math.abs(Number(lonRaw)) > 180) return false;
+      // Either order: GeoJSON and most APIs write longitude first.
+      const [a, b] = [Math.abs(Number(latRaw)), Math.abs(Number(lonRaw))];
+      if (!((a <= 90 && b <= 180) || (b <= 90 && a <= 180))) return false;
       // Three decimals at least, about a street block: shorter pairs are
       // arithmetic and constants ("/1.055, 2.4"), not a location.
       const frac = (part: string): boolean => /\.\d{3,}$/.test(part);
@@ -1272,6 +1274,20 @@ const LOCAL_RULES: Rule[] = [
         (frac(latRaw) && frac(lonRaw)) ||
         (marked && (frac(latRaw) || frac(lonRaw) || (!!ns && !!ew)))
       );
+    },
+    category: "pii",
+  },
+  // GeoJSON positions carry an altitude ([lon, lat, alt]), which the pair
+  // rule's no-run-of-numbers guard excludes. Brackets and four or more
+  // decimals on both coordinates keep it from vectors and colours.
+  {
+    id: "pii-geo-geojson",
+    description: "GeoJSON position with altitude",
+    regex: /\[\s*((-?\d{1,3}\.\d{4,})\s*,\s*(-?\d{1,2}\.\d{4,}))\s*,\s*-?\d+(?:\.\d+)?\s*\]/g,
+    secretGroup: 1,
+    validate: (value: string) => {
+      const [lon, lat] = value.split(",").map((part) => Math.abs(Number(part)));
+      return lon! <= 180 && lat! <= 90;
     },
     category: "pii",
   },
@@ -1303,15 +1319,17 @@ const LOCAL_RULES: Rule[] = [
     id: "pii-user-at-host",
     description: "Username in user@host address (generic)",
     // The host must contain a letter and must not be a version pin or a
-    // ref: npm `repo@v1` / `bar@1.0.0`, `go install …/cmd/tool@latest`,
+    // release tag: npm `repo@v1` / `bar@1.0.0`, `npx create-app@latest`,
+    // `image@sha256:…`. Branch-like refs (main, master, edge, head) are
+    // hostnames too, so they are skipped only in the `org/name@` form,
+    // which the lookbehind already excludes: `go install …/cmd/tool@latest`,
     // `uses: actions/checkout@main`, `image@sha256:…`. An `org/name@` is a
     // package or action, never a login. Reserved example domains, as in
     // pii-email: test fixtures, whose usernames would be learned.
     regex: new RegExp(
-      String.raw`(?<![A-Za-z0-9_.-]\/)\b([a-z_][a-z0-9_.-]{0,30}[a-z0-9_-]?)@` +
+      String.raw`(?<![A-Za-z0-9_.-]\/)(?<![A-Za-z0-9_.-])([a-z_][a-z0-9_.-]{0,30}[a-z0-9_-]?)@` +
         String.raw`(?![Vv]?\d+(\.\d+)*\b)` +
-        String.raw`(?!(?:latest|main|master|stable|next|nightly|beta|alpha|canary|edge|head|` +
-        String.raw`trunk|sha\d+)\b)` +
+        String.raw`(?!(?:latest|stable|next|nightly|beta|alpha|canary)\b)(?!sha\d+:)` +
         String.raw`(?!example\.(?:com|net|org|edu)\b)` +
         String.raw`(?![A-Za-z0-9.-]{0,255}\.(?:test|invalid|example|localhost)\b)` +
         String.raw`(?!localhost\b)(?=[A-Za-z0-9.-]*[A-Za-z])`,

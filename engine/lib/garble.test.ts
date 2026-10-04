@@ -88,6 +88,11 @@ describe("ordinary text passes through unchanged", () => {
     "    name: Bed Exit Confirmation",
     j('<path d="M7.503 0c3.09 0 ', "6.3", "13 5.7", '31 2.841 6.214 0"/>'),
     j("colorful.Color{0.31", "3725, 0.47", "8431, 0.721569}"),
+    "uses: actions/checkout@main",
+    "npx create-next-app@latest",
+    "[0.250, 0.500, 1.000]",
+    "[1.5, 2.25, 3]",
+    "vec3 = [12.5, 41.75, 2]",
     // an insurance contents list: tab-separated item rows
     "Toy Car Set",
     "Mason Jar Lids",
@@ -129,6 +134,12 @@ describe("real names are still caught", () => {
     j("name: Neil Arm", "strong"),
     j("author: Bed", "ford Falls"),
     j("ssh ", "deploy", "@build", "box.lan"),
+    // a login to a host whose name is also a branch word
+    j("ssh ", "opsadm", "@edge"),
+    j("scp f ", "opsadm", "@main:/tmp"),
+    // GeoJSON, longitude first, with altitude
+    j('"coordinates": [-63.28', "54, 28.55", "56, 10]"),
+    j("[12.49", "22, 41.89", "02, 21.5]"),
   ])
     it(text, () => {
       expect(redactText(text).text).not.toBe(text);
