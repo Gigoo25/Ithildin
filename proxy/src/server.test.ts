@@ -439,6 +439,45 @@ describe("reply text", () => {
     expect(JSON.stringify(out)).not.toContain(standIn);
   });
 
+  it("releases held Responses text before the item closes without output_text.done", async () => {
+    const res = await handler(() =>
+      sse([
+        {
+          data: {
+            type: "response.output_item.added",
+            item: { type: "message", id: "m", content: [] },
+          },
+        },
+        {
+          data: {
+            type: "response.output_text.delta",
+            item_id: "m",
+            content_index: 0,
+            delta: `to ${standIn}`,
+          },
+        },
+        {
+          data: {
+            type: "response.output_item.done",
+            item: {
+              type: "message",
+              id: "m",
+              content: [{ type: "output_text", text: `to ${standIn}` }],
+            },
+          },
+        },
+        { data: { type: "response.completed", response: { output: [] } } },
+      ]),
+    )(post("opencode-go/responses", { stream: true, input: "hi" }));
+    const out = events(await res.text());
+    const closed = out.findIndex((e) => e.type === "response.output_item.done");
+    const deltas = out.filter((e) => e.type === "response.output_text.delta");
+    expect(deltas.map((e) => e.delta).join("")).toBe(`to ${EMAIL}`);
+    expect(out.findLastIndex((e) => e.type === "response.output_text.delta")).toBeLessThan(closed);
+    expect(deltas.every((e) => e.item_id === "m")).toBe(true);
+    expect(JSON.stringify(out)).not.toContain(standIn);
+  });
+
   it("swaps non-streaming text", async () => {
     const res = await handler(() =>
       Response.json({ content: [{ type: "text", text: `to ${standIn}` }] }),

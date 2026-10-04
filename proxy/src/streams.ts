@@ -419,12 +419,7 @@ class ResponsesRewriter implements Rewriter {
       event: type,
       data: JSON.stringify({ type, ...fields }),
     });
-    const texts = [...this.texts].flatMap(([key, text]) => {
-      const delta = text.flush();
-      return delta === ""
-        ? []
-        : [event("response.output_text.delta", { ...this.textAt.get(key), delta })];
-    });
+    const texts = [...this.texts.keys()].flatMap((key) => this.releaseText(key));
     const calls = [...this.pending].map(([itemId, raw]) => {
       const custom = this.customs.has(itemId);
       const item: ResponseItem = custom
@@ -438,9 +433,30 @@ class ResponsesRewriter implements Rewriter {
             delta: item.arguments,
           });
     });
-    this.texts.clear();
     this.pending.clear();
     return [...texts, ...calls];
+  }
+
+  // Held text as one delta, for a stream that closes its part or item with no
+  // output_text.done (OpenCode Zen's Muse Spark). Released any later, the
+  // delta lands after the client closed the part: opencode then fails the
+  // turn with "text part <id> not found".
+  private releaseText(key: string): SseEvent[] {
+    const text = this.texts.get(key);
+    if (!text) return [];
+    const at = this.textAt.get(key);
+    this.texts.delete(key);
+    this.textAt.delete(key);
+    const delta = text.flush();
+    if (delta === "") return [];
+    const type = "response.output_text.delta";
+    return [{ event: type, data: JSON.stringify({ type, ...at, delta }) }];
+  }
+
+  private releaseItem(itemId: string): SseEvent[] {
+    return [...this.textAt]
+      .filter(([, at]) => at.item_id === itemId)
+      .flatMap(([key]) => this.releaseText(key));
   }
 
   // Final text in done and completed events. Its swaps were counted as the
@@ -635,10 +651,11 @@ class ResponsesRewriter implements Rewriter {
       return this.textDelta(event, data, textKey, data.delta);
     if (type === "response.output_text.done") return this.textDone(event, data, textKey, itemId);
     if (type === "response.content_part.done") {
+      const held = this.releaseText(textKey);
       const part = data.part as { type?: string; text?: unknown } | undefined;
-      if (part?.type !== "output_text" || typeof part.text !== "string") return [event];
+      if (part?.type !== "output_text" || typeof part.text !== "string") return [...held, event];
       part.text = swapText(part.text, this.tags).text;
-      return [{ ...event, data: JSON.stringify(data) }];
+      return [...held, { ...event, data: JSON.stringify(data) }];
     }
     // Held even before the item that names the call: a call no item opened
     // still runs, unnamed.
@@ -666,9 +683,10 @@ class ResponsesRewriter implements Rewriter {
       return this.customDone(event, data, itemId);
     if (type === "response.output_item.done") {
       const item = data.item as ResponseItem | undefined;
-      if (!item || !CALL_ITEMS.has(item.type ?? "")) return [event];
+      const held = item?.id === undefined ? [] : this.releaseItem(item.id);
+      if (!item || !CALL_ITEMS.has(item.type ?? "")) return [...held, event];
       this.swapItem(item);
-      return [{ ...event, data: JSON.stringify(data) }];
+      return [...held, { ...event, data: JSON.stringify(data) }];
     }
     const response = data.response as { output?: ResponseItem[] } | undefined;
     if (
