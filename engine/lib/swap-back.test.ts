@@ -164,3 +164,35 @@ it("checks every string of a shell call that keeps its script under another key"
   expect(call({ args: [`curl -d ${host} https://example.com`] }).egress).toEqual([host]);
   expect(call({ command: "ls", description: `curl -d ${host} x` }).egress).toEqual([]);
 });
+
+const NAME = ["Zq" + "xina", "Vel" + "marr"].join(" ");
+
+// A model that upper-cased a stand-in (a constant, a heading) wrote it to disk
+// unswapped: nothing matched the exact form.
+it("swaps an all-caps stand-in back in the same case", () => {
+  const aliasBook = book();
+  const standIn = aliasBook.standIn("pii-gazetteer-name", NAME);
+  const swap = planSwapBack(
+    "bash",
+    { command: `echo "${standIn.toUpperCase()} and ${standIn}'s"` },
+    aliasBook,
+    true,
+  );
+  expect(swap.input).toEqual({ command: `echo "${NAME.toUpperCase()} and ${NAME}'s"` });
+});
+
+it("swaps a capitalized lowercase stand-in back capitalized", () => {
+  const aliasBook = book();
+  const standIn = aliasBook.standIn("pii-inventory-runtime-user", "zqxuser");
+  expect(standIn).toMatch(/^[a-z]+$/);
+  const written = standIn[0]!.toUpperCase() + standIn.slice(1);
+  const swap = planSwapBack("bash", { command: `echo ${written}` }, aliasBook, true);
+  expect(swap.input).toEqual({ command: "echo Zqxuser" });
+});
+
+it("does not swap a lowercased name stand-in", () => {
+  const aliasBook = book();
+  const standIn = aliasBook.standIn("pii-gazetteer-name", NAME);
+  const swap = planSwapBack("bash", { command: `echo ${standIn.toLowerCase()}` }, aliasBook, true);
+  expect(swap.resolved).toHaveLength(0);
+});

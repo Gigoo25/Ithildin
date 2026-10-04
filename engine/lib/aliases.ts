@@ -718,6 +718,13 @@ export class AliasBook {
   // to find the mangled ones.
   private readonly words = new WordIndex();
   private readonly multiPart = new WordIndex();
+  // Recased forms the model writes (AYDIN for Aydin, Rook for rook) -> the
+  // stand-in, or null when two stand-ins share one. Only all-caps and
+  // capitalized forms: a lowercased name stand-in is often a common word.
+  private readonly recased = new Map<string, string | null>();
+  private readonly recasedWords = new WordIndex();
+  // Built on first use, dropped when a stand-in is minted.
+  private mangledPattern: RegExp | null | undefined;
   private longest = 0;
   private readonly key: Buffer;
 
@@ -1023,9 +1030,15 @@ export class AliasBook {
     const known = this.reverse.get(standIn);
     if (known === undefined) {
       this.reverse.set(standIn, { value, ruleId });
+      this.mangledPattern = undefined;
       this.longest = Math.max(this.longest, standIn.length);
       this.words.add(standIn);
       if (/[-_.]/.test(standIn)) this.multiPart.add(standIn);
+      for (const form of recasedForms(standIn)) {
+        const known = this.recased.get(form);
+        this.recased.set(form, known === undefined || known === standIn ? standIn : null);
+        this.recasedWords.add(form);
+      }
     } else if (known !== null && known.value.toLowerCase() !== value.toLowerCase()) {
       this.reverse.set(standIn, null);
     }
@@ -1069,6 +1082,21 @@ export class AliasBook {
   resolve(standIn: string): Resolved | null | undefined {
     const exact = this.reverse.get(standIn);
     if (exact !== undefined) return exact;
+    const original = this.recased.get(standIn);
+    if (original === null) return null;
+    if (original !== undefined) {
+      const known = this.reverse.get(original);
+      if (!known) return known;
+      return { ...known, value: recase(known.value, original, standIn) };
+    }
+    // Mail ignores case in practice, and an upper-cased address was kept as
+    // a stand-in.
+    if (standIn.includes("@") && standIn !== standIn.toLowerCase()) {
+      const lower = this.resolve(standIn.toLowerCase());
+      if (!lower) return lower;
+      const upper = standIn === standIn.toUpperCase();
+      return { ...lower, value: upper ? lower.value.toUpperCase() : lower.value };
+    }
     const at = standIn.lastIndexOf("@");
     if (at > 0) {
       const user = this.resolve(standIn.slice(0, at));
@@ -1099,7 +1127,13 @@ export class AliasBook {
     const found: Array<{ text: string; start: number; end: number }> = [];
     for (const { start, end } of this.words.find(text, true))
       found.push({ text: text.slice(start, end), start, end });
-    const exact = found.filter((span) => this.reverse.has(span.text));
+    // Overlaps resolve leftmost-longest in the caller, so a recased address
+    // wins over the stand-in domain inside it.
+    for (const { start, end } of this.recasedWords.find(text, true))
+      found.push({ text: text.slice(start, end), start, end });
+    const exact = found.filter(
+      (span) => this.reverse.has(span.text) || this.recased.has(span.text),
+    );
     for (const match of text.matchAll(COMPOSITE)) {
       // An exact stand-in inside keeps its case; the parts map is lowercase.
       const end = match.index + match[0].length;
@@ -1122,6 +1156,18 @@ export class AliasBook {
     return found.filter(
       (span) => !glued.some((range) => span.start < range.end && span.end > range.start),
     );
+  }
+
+  // Stand-ins in text in a form swap-back does not take: glued to a suffix
+  // (Genes), slugged (makayla-gene), re-spaced, or in another case. Checked
+  // after swap-back, so what is left would be written as a placeholder.
+  mangled(text: string): string[] {
+    this.mangledPattern ??= mangledPattern(this.reverse.keys());
+    if (!this.mangledPattern) return [];
+    // An exact stand-in left in place (bound off the machine, or a tool
+    // that keeps them) is deliberate, not reworded.
+    const found = [...text.matchAll(this.mangledPattern)].map((match) => match[0]);
+    return [...new Set(found.filter((token) => !this.reverse.has(token)))];
   }
 
   isStandIn(text: string): boolean {
@@ -1175,7 +1221,51 @@ export class AliasBook {
     this.minted.clear();
     this.words.clear();
     this.multiPart.clear();
+    this.recased.clear();
+    this.recasedWords.clear();
+    this.mangledPattern = undefined;
   }
+}
+
+// Every word stand-in, any case, any run of separators between its words,
+// and a plural or possessive glued on. Null when there is none: addresses
+// and numbers have no such forms.
+function mangledPattern(standIns: Iterable<string>): RegExp | null {
+  const sources: string[] = [];
+  for (const standIn of standIns) {
+    const words = standIn.split(/[\s_.-]+/).filter(Boolean);
+    if (standIn.length < MIN_RECASED || !words.every((word) => /^[A-Za-z]+$/.test(word))) continue;
+    sources.push(words.map(escapeLiteral).join("[\\s_.-]+"));
+  }
+  if (!sources.length) return null;
+  sources.sort((a, b) => b.length - a.length);
+  return new RegExp(
+    `(?<![\\p{L}\\p{N}])(?:${sources.join("|")})(?:'?s|es)?(?![\\p{L}\\p{N}])`,
+    "giu",
+  );
+}
+
+function escapeLiteral(literal: string): string {
+  return literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Below this, an all-caps form is too likely an acronym in its own right.
+const MIN_RECASED = 4;
+
+function recasedForms(standIn: string): string[] {
+  // Mail ignores case: an address in capitals is the same address.
+  if (/^[^\s@]+@[^\s@]+$/.test(standIn))
+    return [standIn.toUpperCase(), standIn[0]!.toUpperCase() + standIn.slice(1)];
+  if (standIn.length < MIN_RECASED || !/^[A-Za-z]+(?:[ '-][A-Za-z]+)*$/.test(standIn)) return [];
+  const forms = [standIn.toUpperCase()];
+  if (standIn === standIn.toLowerCase()) forms.push(standIn[0]!.toUpperCase() + standIn.slice(1));
+  return forms.filter((form) => form !== standIn);
+}
+
+// The real value in the case the model gave the stand-in: AYDIN -> CLAUDE.
+function recase(value: string, standIn: string, written: string): string {
+  if (written === standIn.toUpperCase()) return value.toUpperCase();
+  return value[0]!.toUpperCase() + value.slice(1);
 }
 
 // Known words found in text without one alternation of all of them: a new
