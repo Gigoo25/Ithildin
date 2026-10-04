@@ -1132,6 +1132,14 @@ export class AliasBook {
     return [...this.reverse.keys()];
   }
 
+  // Real values behind the stand-ins, to catch transformed copies of them
+  // (rot13). Used only locally; never sent anywhere.
+  values(): string[] {
+    const out = new Set<string>();
+    for (const known of this.reverse.values()) if (known) out.add(known.value);
+    return [...out];
+  }
+
   // Keeps each stand-in where it was first minted across restarts. The file
   // holds keyed hashes of values and attempt numbers, never a value.
   loadCounters(file: string): void {

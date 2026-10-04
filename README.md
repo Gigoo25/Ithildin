@@ -73,7 +73,8 @@ swapped back:
   headers, credentials in URLs, connection strings, TOTP URIs, Wi-Fi PSKs.
 - Generic `KEY=value` assignments and high-entropy tokens next to words like
   `secret` or `token`.
-- Base64 and hex dumps of any of the above.
+- Base64 and hex dumps of any of the above, and rot13 copies of a value
+  already masked.
 
 **Personal and infrastructure details** get stand-ins that swap back:
 

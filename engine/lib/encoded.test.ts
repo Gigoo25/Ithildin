@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
 import { redactText } from "../core.ts";
 import { base64Wrapped, hexdumpC, odX, xxd, xxdPlain } from "./encoded-fixtures.ts";
-import { encodedBlocks } from "./encoded.ts";
+import { encodedBlocks, redactRot13, rot13 } from "./encoded.ts";
 import { setRuntimeInventory } from "./rules.ts";
 import { collectRuntimeIdentity } from "./runtime-inventory.ts";
 
@@ -57,5 +57,34 @@ describe("encoded copies of a value", () => {
     setRuntimeInventory(collectRuntimeIdentity({ hostname: HOST }));
     const text = xxd(file);
     expect(redactText(text, new Set(["pii"])).text).toBe(text);
+  });
+});
+
+describe("rot13 copies of a masked value", () => {
+  it("withholds a rot13 copy of a value already masked", () => {
+    setRuntimeInventory(collectRuntimeIdentity({ hostname: HOST }));
+    expect(redactText(`ssh ${HOST}`).text).not.toContain(HOST);
+    const result = redactText(`decoded: ${rot13(HOST)} done`);
+    expect(result.text).not.toContain(rot13(HOST));
+    expect(result.text).toContain("(rot13 of a masked value)");
+    expect(result.text).toStartWith("decoded: ");
+    expect(result.text).toEndWith(" done");
+  });
+
+  it("leaves rot13 of unmasked text alone", () => {
+    const text = `notes ${rot13("ordinary words here")}`;
+    expect(redactRot13(text, ["zqxlab"], () => {}).text).toBe(text);
+  });
+
+  it("skips values too short or without letters to rotate", () => {
+    const text = `ab ${rot13("ab")} 10.0.0.1`;
+    expect(redactRot13(text, ["ab", "10.0.0.1"], () => {}).hits).toBe(0);
+  });
+
+  it("is lifted by [allow-all]", () => {
+    setRuntimeInventory(collectRuntimeIdentity({ hostname: HOST }));
+    redactText(`ssh ${HOST}`);
+    const text = `decoded: ${rot13(HOST)}`;
+    expect(redactText(text, new Set(["all"])).text).toBe(text);
   });
 });

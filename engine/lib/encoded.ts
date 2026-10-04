@@ -4,7 +4,7 @@
 // holds a finding is withheld whole. `od -c` needs no decoding: its spaced
 // characters are matched by the inventory rules directly.
 
-import type { Category, LocatedFinding } from "./rules.ts";
+import { type Category, escapeRegExp, type LocatedFinding } from "./rules.ts";
 
 export interface EncodedBlock {
   start: number;
@@ -140,6 +140,53 @@ export function encodedBlocks(text: string): EncodedBlock[] {
   return [...dumpBlocks(text), ...runBlocks(text)].sort(
     (a, b) => a.start - b.start || b.end - a.end,
   );
+}
+
+export function rot13(text: string): string {
+  return text.replace(/[A-Za-z]/g, (c) => {
+    const base = c <= "Z" ? 65 : 97;
+    return String.fromCharCode(((c.charCodeAt(0) - base + 13) % 26) + base);
+  });
+}
+
+// Below this, a rot13 value is too short to tell from ordinary text.
+const MIN_ROT13_LETTERS = 3;
+
+// Withholds rot13 copies of values already masked (`tr 'A-Za-z'
+// 'N-ZA-Mn-za-m'`, Python's codecs). rot13 has no shape of its own, so this
+// matches known values exactly rather than scanning a decoding with the
+// shape rules, which would fire on gibberish.
+export function redactRot13(
+  text: string,
+  values: string[],
+  onEdit: (start: number, end: number, replacementLength: number) => void,
+): { text: string; hits: number } {
+  const targets = new Set<string>();
+  for (const value of values) {
+    if ((value.match(/[A-Za-z]/g)?.length ?? 0) < MIN_ROT13_LETTERS) continue;
+    const rotated = rot13(value);
+    if (rotated !== value) targets.add(rotated);
+  }
+  if (!targets.size) return { text, hits: 0 };
+  const pattern = new RegExp(
+    [...targets]
+      .sort((a, b) => b.length - a.length)
+      .map(escapeRegExp)
+      .join("|"),
+    "g",
+  );
+  let out = "";
+  let last = 0;
+  let hits = 0;
+  for (const match of text.matchAll(pattern)) {
+    const marker = `[ithildin: omitted ${match[0].length} chars (rot13 of a masked value)]`;
+    out += text.slice(last, match.index);
+    onEdit(match.index, match.index + match[0].length, marker.length);
+    out += marker;
+    last = match.index + match[0].length;
+    hits++;
+  }
+  return hits ? { text: out + text.slice(last), hits } : { text, hits: 0 };
 }
 
 // Withholds every block whose decoding holds a finding in a category not

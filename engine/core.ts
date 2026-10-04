@@ -47,7 +47,7 @@ import {
 import { assert } from "./lib/assert.ts";
 import { NAME, sessionFile as sessionPath, setting } from "./lib/names.ts";
 import { planRedaction } from "./lib/redaction-spans.ts";
-import { redactEncoded } from "./lib/encoded.ts";
+import { redactEncoded, redactRot13 } from "./lib/encoded.ts";
 import { reportRedaction } from "./lib/redaction-audit.ts";
 import { assignmentEdits, inspectDocument } from "./lib/structured-text.ts";
 import {
@@ -403,11 +403,18 @@ function toOriginal(passes: PassEdit[][], range: Range): Range {
   return { start, end };
 }
 
-type PrePassed = { text: string; hits: number; encoded: PassEdit[]; cookies: PassEdit[] };
+type PrePassed = {
+  text: string;
+  hits: number;
+  encoded: PassEdit[];
+  rot13: PassEdit[];
+  cookies: PassEdit[];
+};
 
-// Encoded payloads, then Cookie headers, redacted ahead of the main scan.
+// Encoded payloads, rot13 copies of masked values, then Cookie headers,
+// redacted ahead of the main scan.
 function redactPrePasses(text: string, allowTags: Set<string>): PrePassed {
-  const out: PrePassed = { text, hits: 0, encoded: [], cookies: [] };
+  const out: PrePassed = { text, hits: 0, encoded: [], rot13: [], cookies: [] };
   if (!allowTags.has("all")) {
     const encoded = redactEncoded(
       out.text,
@@ -421,6 +428,11 @@ function redactPrePasses(text: string, allowTags: Set<string>): PrePassed {
     );
     out.text = encoded.text;
     out.hits += encoded.hits;
+    const rotated = redactRot13(out.text, aliases().values(), (start, end, replacementLength) =>
+      out.rot13.push({ start, end, replacementLength }),
+    );
+    out.text = rotated.text;
+    out.hits += rotated.hits;
   }
   if (!allowTags.has("secret")) {
     const cookies = redactCookieHeaders(
@@ -484,9 +496,10 @@ function reportPlanned(
   findings: Range[],
   edits: Array<Range & { replacement: string }>,
 ): void {
-  const passes = [pre.cookies, pre.encoded];
+  const passes = [pre.cookies, pre.rot13, pre.encoded];
   const passEdits = [
     ...pre.encoded.map(({ start, end }) => ({ start, end })),
+    ...pre.rot13.map((edit) => toOriginal([pre.rot13, pre.encoded], edit)),
     ...pre.cookies.map((edit) => toOriginal(passes, { start: edit.start, end: edit.end })),
   ];
   const omitted = (e: { replacement: string }) => e.replacement.startsWith("[ithildin: omitted");
