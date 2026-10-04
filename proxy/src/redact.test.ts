@@ -13,6 +13,7 @@ import {
   WITHHELD_NOTICE,
 } from "./redact.ts";
 import { formatSse, parseSseBlock } from "./streams.ts";
+import { aliases } from "../engine/core.ts";
 import { argsKey, recordOriginal, replayOriginal } from "./replay.ts";
 
 beforeAll(() => initEngine());
@@ -204,6 +205,39 @@ describe("invented stand-ins by shape", () => {
 
   it("lets a shell read naming one through", () => {
     expect(blocked("bash", { command: `grep -r ${INVENTED} .` })).toBe(false);
+  });
+});
+
+describe("reworded stand-ins in writes", () => {
+  // Built from pieces so no rule matches this source.
+  const NAME = ["Zq", "xina ", "Vel", "marr"].join("");
+  const blocked = (name: string, args: unknown, tags = new Set<string>()) =>
+    swapToolArguments(name, args, tags).blocked === true;
+
+  it("drops a write that glues, slugs or re-spaces one", () => {
+    const standIn = aliases().standIn("pii-gazetteer-name", NAME);
+    const slug = standIn.toLowerCase().replace(/\s+/g, "-");
+    expect(blocked("write", { path: "a.md", content: `by ${standIn}s` })).toBe(true);
+    expect(blocked("write", { path: `${slug}.md`, content: "x" })).toBe(true);
+    expect(blocked("bash", { command: `echo "${standIn.replace(" ", "  ")}" > a.md` })).toBe(true);
+  });
+
+  it("lets exact, all-caps and possessive forms through, swapped", () => {
+    const standIn = aliases().standIn("pii-gazetteer-name", NAME);
+    for (const content of [standIn, standIn.toUpperCase(), `${standIn}'s`]) {
+      const result = swapToolArguments("write", { path: "a.md", content }, new Set());
+      expect(result.blocked).toBeUndefined();
+      expect((result.args as { content: string }).content.toLowerCase()).toContain(
+        NAME.toLowerCase(),
+      );
+    }
+  });
+
+  it("is lifted by [allow-pii], and ignores reads", () => {
+    const standIn = aliases().standIn("pii-gazetteer-name", NAME);
+    const args = { path: "a.md", content: `${standIn}s` };
+    expect(blocked("write", args, new Set(["pii"]))).toBe(false);
+    expect(blocked("bash", { command: `grep -r "${standIn}s" .` })).toBe(false);
   });
 });
 

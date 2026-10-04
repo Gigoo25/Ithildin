@@ -687,6 +687,15 @@ export function standInBlocked(tokens: string[]): string {
   );
 }
 
+export function mangledBlocked(tokens: string[]): string {
+  return (
+    `Not run: ${tokens.join(", ")} ${tokens.length === 1 ? "is" : "are"} written differently ` +
+    `from how ${tokens.length === 1 ? "it appears" : "they appear"} in this conversation, so ` +
+    `nothing was written. Use each name exactly as it appears, with the same case, spacing and ` +
+    `no suffix, or ask the user to include [allow-pii] in their prompt.`
+  );
+}
+
 export function egressBlocked(tokens: string[]): string {
   return (
     `Not run: this command would send ${tokens.join(", ")} to a host that is not one of the ` +
@@ -1445,6 +1454,13 @@ function swapArguments(
       )
     : [];
   if (invented.length > 0) return block(callId, standInBlocked(invented));
+  // A stand-in the model reworded (Genes, makayla-gene) is not swapped back,
+  // so the write would leave a placeholder in the file.
+  const mangled =
+    writes && !tags.has("pii") && !tags.has("all")
+      ? [...new Set(stringsOf(swap.input).flatMap((text) => aliases().mangled(text)))]
+      : [];
+  if (mangled.length > 0) return block(callId, mangledBlocked(mangled));
   // A shell command sending a stand-in somewhere other than the user's own
   // hosts: swapped, the real value leaves; unswapped, the call does the
   // wrong thing. Web and MCP tools keep their stand-ins (they are meant to).
