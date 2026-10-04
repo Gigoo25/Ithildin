@@ -46,6 +46,7 @@ import {
   SESSION_KEY_SUFFIX,
 } from "./lib/aliases.ts";
 import { assert } from "./lib/assert.ts";
+import { FIRST_NAMES } from "./lib/first-names.ts";
 import { NAME, sessionFile as sessionPath, setting } from "./lib/names.ts";
 import { planRedaction } from "./lib/redaction-spans.ts";
 import { redactEncoded, redactRot13 } from "./lib/encoded.ts";
@@ -1065,55 +1066,69 @@ export function rememberSwapped(value: string, ruleId: string): void {
 }
 
 // Multi-word personal values already masked, found again in another case or
-// spelling: lowercased, upper-cased, snake_cased, run together, or with
-// two words in the other order. A rule that
+// spelling: lowercased, upper-cased, snake_cased, or with two words in the
+// other order. Run together (bernardkwasniew) is out: it hit identifiers. A rule that
 // wants capitals ("Bernard Kwasniew") missed `bernard kwasniew`, so an agent
 // could read past a stand-in by lowercasing its input. Values this text is
 // masking count too, so a respelled copy beside the first is caught. Single
 // words stay out: a lowercased one-word name is too often a plain word.
-function respelledFindings(text: string, raw: LocatedFinding[]): LocatedFinding[] {
-  const values = new Map<string, string>();
+// Rules whose values are people's names. Logins and hosts (first.last,
+// build-box) have their own caseless matching, and as names they turned
+// "first last" in prose into a stand-in.
+const NAME_RULE =
+  /^pii-(?:gazetteer-name|labeled-name|titled-name|customer-name|personal-name|inventory-)/;
+
+export function respelledFindings(text: string, raw: LocatedFinding[]): LocatedFinding[] {
+  // Lowercased key -> the rule that found it; `plain`: every word is also a
+  // first name ("Will Mark"), so lowercased or reversed it is ordinary prose
+  // and only capitals or joining punctuation count.
+  const values = new Map<string, { ruleId: string; plain: boolean; reversed: boolean }>();
   const add = (value: string, ruleId: string) => {
     const words = value.split(/[\s_.-]+/).filter(Boolean);
     if (words.length < 2 || !words.every((word) => /^\p{L}{2,}$/u.test(word))) return;
+    const plain = words.every((word) => FIRST_NAMES.has(word.toLowerCase()));
     const key = words.join(" ").toLowerCase();
-    if (!values.has(key)) values.set(key, ruleId);
+    if (!values.has(key)) values.set(key, { ruleId, plain, reversed: false });
     // Surname first, as exports and forms write it ("Kwasniew, Bernard").
     if (words.length === 2) {
       const reversed = [words[1], words[0]].join(" ").toLowerCase();
-      if (!values.has(reversed)) values.set(reversed, ruleId);
+      if (!values.has(reversed)) values.set(reversed, { ruleId, plain, reversed: true });
     }
   };
   for (const known of aliases().known())
-    if (known.ruleId.startsWith("pii-")) add(known.value, known.ruleId);
+    if (NAME_RULE.test(known.ruleId)) add(known.value, known.ruleId);
   for (const finding of raw)
-    if (finding.category === "pii") add(finding.secretValue, finding.ruleId);
+    if (NAME_RULE.test(finding.ruleId)) add(finding.secretValue, finding.ruleId);
   if (values.size === 0) return [];
+  // Separators on one line only: a name's first word at a line end and a
+  // plain word starting the next are not a name.
   const pattern = new RegExp(
     `(?<![\\p{L}\\p{N}])(?:${[...values.keys()]
       .sort((a, b) => b.length - a.length)
-      .map((key) => key.split(" ").map(escapeRegExp).join("[\\s_.,-]*"))
+      .map((key) => key.split(" ").map(escapeRegExp).join("[ _.,-]+"))
       .join("|")})(?![\\p{L}\\p{N}])`,
     "giu",
   );
   const out: LocatedFinding[] = [];
   for (const match of text.matchAll(pattern)) {
-    const key = match[0]
-      .split(/[\s_.,-]+/)
-      .join(" ")
-      .toLowerCase();
-    const ruleId =
-      values.get(key) ??
-      [...values].find(([value]) => value.replace(/ /g, "") === key.replace(/ /g, ""))?.[1];
-    if (!ruleId) continue;
+    const spelled = match[0];
+    const entry = values.get(
+      spelled
+        .split(/[ _.,-]+/)
+        .join(" ")
+        .toLowerCase(),
+    );
+    if (!entry) continue;
+    if (entry.plain && (entry.reversed || (/ /.test(spelled) && spelled !== spelled.toUpperCase())))
+      continue;
     out.push({
-      ruleId,
+      ruleId: entry.ruleId,
       description: "Masked value in another case or spelling",
       category: "pii",
       matchRedacted: "[respelled]",
-      secretValue: match[0],
+      secretValue: spelled,
       start: match.index,
-      end: match.index + match[0].length,
+      end: match.index + spelled.length,
     });
   }
   return out;

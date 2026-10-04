@@ -203,7 +203,6 @@ describe("respelled copies of a masked name", () => {
     NAME.toLowerCase(),
     NAME.toUpperCase(),
     NAME.replace(" ", "_").toLowerCase(),
-    NAME.replace(" ", "").toLowerCase(),
     NAME.replace(" ", "-"),
     NAME.split(" ").reverse().join(" "),
     NAME.split(" ").reverse().join(", "),
@@ -221,6 +220,32 @@ describe("respelled copies of a masked name", () => {
   it("masks them beside the first copy in the same text", () => {
     const out = redactText(`${NAME}\t${NAME.toLowerCase()}`).text;
     expect(out).not.toContain(NAME.toLowerCase());
+  });
+
+  it("leaves run-together forms and login-shaped values alone", () => {
+    redactText(`signed ${NAME}`);
+    const joined = NAME.replace(" ", "").toLowerCase();
+    expect(redactText(`const ${joined} = 1`).text).toBe(`const ${joined} = 1`);
+    redactText(j("user: ", "first", ".last", "y"));
+    expect(redactText("the first lasty idea").text).toBe("the first lasty idea");
+  });
+
+  it("takes only capitals and joined forms of a name made of first names", () => {
+    const plain = j("Rob", "ert ", "Jam", "es");
+    redactText(`signed ${plain}`);
+    expect(redactText(`x ${plain.toUpperCase()} y`).text).not.toContain(plain.toUpperCase());
+    expect(redactText(`x ${plain.replace(" ", "_").toLowerCase()} y`).text).not.toContain(
+      plain.replace(" ", "_").toLowerCase(),
+    );
+    const prose = `we ${plain.toLowerCase()} it`;
+    expect(redactText(prose).text).toBe(prose);
+  });
+
+  it("does not join words across a line break", () => {
+    redactText(`signed ${NAME}`);
+    const [first, last] = NAME.split(" ");
+    const text = `${first}\n${last!.toLowerCase()}`;
+    expect(redactText(text).text).toContain(last!.toLowerCase());
   });
 
   it("leaves a lone first name in lowercase alone", () => {
