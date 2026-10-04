@@ -88,6 +88,23 @@ describe("ordinary text passes through unchanged", () => {
     "    name: Bed Exit Confirmation",
     j('<path d="M7.503 0c3.09 0 ', "6.3", "13 5.7", '31 2.841 6.214 0"/>'),
     j("colorful.Color{0.31", "3725, 0.47", "8431, 0.721569}"),
+    // an insurance contents list: tab-separated item rows
+    "Toy Car Set",
+    "Mason Jar Lids",
+    "Teddy Bear",
+    "General Electric Microwave",
+    "Mickey Mouse Clubhouse",
+    "King Bed Frame",
+    "West Side Story DVD",
+    "Little Christmas Tree",
+    "Baby Gate",
+    "Easter Decoration",
+    "Hoover Vacuum",
+    "Jack Handle",
+    "Clay Bowl",
+    "Fanny Pack",
+    "03-31-2026\t91020747\tElectric Wire",
+    "Waiting For Disposal\t03-30-2026\n91020747\tSt. Patrick's Day Decoration",
   ];
   for (const text of ORDINARY)
     it(text, () => {

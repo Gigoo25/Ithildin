@@ -1,7 +1,7 @@
 // Common US first names, SSA-derived (public domain upstream data).
 // Source: hadley/data-baby-names/baby-names.csv (US Social Security
 // Administration baby-name shares by year). Generated 2026-09-18.
-// Kept: alpha names with length>=3 present in >=3 years (5561 of 6782
+// Kept: alpha names with length>=3 present in >=3 years (5547 of 6782
 // distinct). Dropped: one-year blips (typos) and 8 two-letter entries
 // (Ab, Al, Bo, Ed, Jo, Lu, Ty, Wm) whose prose FP cost ("Al Jazeera")
 // outweighs their recall. Dual-use words that are also common names
@@ -9,6 +9,9 @@
 // Also dropped: Add, Case, Else and Claude. They are commit, code and
 // product words far more often than names ("Add CLAUDE.md" read as a
 // person), so a real "Claude Moreau" is the accepted residual.
+// Also dropped, found as item names in an inventory export ("Toy Car",
+// "King Bed", "General Electric"): Toy, Santa, General, Bird, King, Little,
+// Orange, Male, West, Velvet, Baby, Easter, Green, China.
 // Gazetteer use only: membership backs pii-gazetteer-name, never a
 // standalone finding. Refresh: re-run the filter on upstream.
 export const FIRST_NAMES: ReadonlySet<string> = new Set([
@@ -504,7 +507,6 @@ export const FIRST_NAMES: ReadonlySet<string> = new Set([
   "azzie",
   "babe",
   "babette",
-  "baby",
   "bailee",
   "bailey",
   "ballard",
@@ -618,7 +620,6 @@ export const FIRST_NAMES: ReadonlySet<string> = new Set([
   "billy",
   "billye",
   "bina",
-  "bird",
   "birdie",
   "birt",
   "birtha",
@@ -1003,7 +1004,6 @@ export const FIRST_NAMES: ReadonlySet<string> = new Set([
   "cheyanne",
   "cheyenne",
   "chin",
-  "china",
   "chip",
   "chiquita",
   "chloe",
@@ -1601,7 +1601,6 @@ export const FIRST_NAMES: ReadonlySet<string> = new Set([
   "earnest",
   "earnestine",
   "eartha",
-  "easter",
   "easton",
   "eathel",
   "ebb",
@@ -2067,7 +2066,6 @@ export const FIRST_NAMES: ReadonlySet<string> = new Set([
   "gena",
   "genaro",
   "gene",
-  "general",
   "genesis",
   "geneva",
   "genevieve",
@@ -2169,7 +2167,6 @@ export const FIRST_NAMES: ReadonlySet<string> = new Set([
   "gray",
   "grayce",
   "grayson",
-  "green",
   "greg",
   "gregg",
   "greggory",
@@ -3094,7 +3091,6 @@ export const FIRST_NAMES: ReadonlySet<string> = new Set([
   "kimberlie",
   "kimberly",
   "kimora",
-  "king",
   "kingston",
   "kinley",
   "kinsey",
@@ -3424,7 +3420,6 @@ export const FIRST_NAMES: ReadonlySet<string> = new Set([
   "lissie",
   "lita",
   "littie",
-  "little",
   "litzy",
   "livia",
   "liz",
@@ -3632,7 +3627,6 @@ export const FIRST_NAMES: ReadonlySet<string> = new Set([
   "malaki",
   "malcolm",
   "malcom",
-  "male",
   "maleah",
   "malia",
   "malik",
@@ -4225,7 +4219,6 @@ export const FIRST_NAMES: ReadonlySet<string> = new Set([
   "oral",
   "oralia",
   "oran",
-  "orange",
   "oren",
   "orie",
   "orin",
@@ -4711,7 +4704,6 @@ export const FIRST_NAMES: ReadonlySet<string> = new Set([
   "saniya",
   "saniyah",
   "sanjuanita",
-  "santa",
   "santana",
   "santiago",
   "santina",
@@ -5189,7 +5181,6 @@ export const FIRST_NAMES: ReadonlySet<string> = new Set([
   "tory",
   "tosha",
   "towanda",
-  "toy",
   "toya",
   "trace",
   "tracee",
@@ -5296,7 +5287,6 @@ export const FIRST_NAMES: ReadonlySet<string> = new Set([
   "vella",
   "velma",
   "velva",
-  "velvet",
   "vena",
   "venessa",
   "venie",
@@ -5422,7 +5412,6 @@ export const FIRST_NAMES: ReadonlySet<string> = new Set([
   "werner",
   "wes",
   "wesley",
-  "west",
   "westley",
   "weston",
   "wheeler",

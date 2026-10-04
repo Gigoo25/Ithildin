@@ -1049,7 +1049,8 @@ const LOCAL_RULES: Rule[] = [
     description: "US bank account number (context-gated)",
     regex: /\b\d{8,17}\b/g,
     requireContext: true,
-    contextWords: ["bank", "account", "routing", "aba", "ach", "wire", "checking", "savings"],
+    // No "wire": item lists say "Electric Wire" beside 8-digit item numbers.
+    contextWords: ["bank", "account", "routing", "aba", "ach", "checking", "savings"],
     category: "pii",
   },
   {
@@ -1286,9 +1287,12 @@ const LOCAL_RULES: Rule[] = [
   },
   {
     id: "pii-street-address",
+    // Spaces only: a tab or line break is a column or row edge (a date
+    // year, a newline, then "St. Patrick's Day" read as an address).
     description: "US street address",
     regex: new RegExp(
-      String.raw`\b\d{1,5}[A-Za-z]?\s+[A-Za-z0-9][\w.'-]*(?:\s+[A-Za-z0-9][\w.'-]*){0,3}\s+` +
+      String.raw`\b\d{1,5}[A-Za-z]?[^\S\t\r\n]+[A-Za-z0-9][\w.'-]*` +
+        String.raw`(?:[^\S\t\r\n]+[A-Za-z0-9][\w.'-]*){0,3}[^\S\t\r\n]+` +
         String.raw`(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Lane|Ln|Drive|Dr|Court|Ct|C` +
         String.raw`ircle|Cir|Parkway|Pkwy|Terrace|Place|Pl|Plaza)\.?\b`,
       "g",
