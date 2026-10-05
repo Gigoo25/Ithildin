@@ -1,5 +1,5 @@
 # ithildin: the redaction engine (../engine) as a local
-# HTTP proxy in front of model providers (see src/server.ts). The engine is
+# HTTP proxy in front of model providers (see src/server.ts; entry is src/cli.ts). The engine is
 # copied in beside the proxy, matching the `engine` symlink the repo checkout
 # uses.
 #
@@ -35,7 +35,7 @@ stdenvNoCC.mkDerivation {
     find "$src" -maxdepth 1 -name '*.ts' ! -name '*.test.ts' ! -name '*.node-check.ts' \
       -exec cp {} "$share/src/" \;
     makeWrapper ${lib.getExe bun} "$out/bin/ithildin" \
-      --add-flags "run $share/src/server.ts"
+      --add-flags "run $share/src/cli.ts"
     runHook postInstall
   '';
 

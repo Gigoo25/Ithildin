@@ -1,5 +1,6 @@
 // Line and function coverage floors over an lcov report, for source files only:
-// tests, Node-only gates and the bench (test infrastructure) are not measured.
+// tests, Node-only gates, the bench and the process entry (test infrastructure)
+// are not measured.
 //
 //   bun checks/coverage.ts <lcov.info>
 //
@@ -10,7 +11,7 @@ import { readFileSync } from "node:fs";
 const TOTAL_LINES_MIN = 99;
 const FILE_LINES_MIN = 97;
 const FILE_FUNCTIONS_MIN = 90;
-const EXCLUDED = /\.(test|node-check)\.ts$|(^|\/)bench\//;
+const EXCLUDED = /\.(test|node-check)\.ts$|(^|\/)bench\/|(^|\/)cli\.ts$/;
 
 type Counts = { lines: number; linesHit: number; functions: number; functionsHit: number };
 

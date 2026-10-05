@@ -15,7 +15,7 @@
 // It fails closed: an unknown route, an unreadable JSON body, a compressed
 // request body, or a WebSocket upgrade is refused instead of forwarded raw.
 
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import {
   type Counts,
@@ -35,7 +35,6 @@ import { createStatusBook } from "./status.ts";
 import { type SelfTest, selfTest } from "./selftest.ts";
 import { createRewriter, formatSse, parseSseBlock, swapResponseBody } from "./streams.ts";
 import type { Label } from "./trust.ts";
-import { runCheck } from "./check.ts";
 
 export interface Route {
   upstream: string;
@@ -366,12 +365,10 @@ async function runSelfTest(routes: Record<string, Route>, redact: Redactors): Pr
 }
 
 function refuseUnproven(proof: SelfTest | undefined): Response {
-  return refuse(
-    503,
-    proof
-      ? `self-test failed (${proof.failures.join("; ")}), refusing to forward`
-      : "self-test has not run yet",
-  );
+  const message = proof
+    ? `self-test failed (${proof.failures.join("; ")}), refusing to forward`
+    : "self-test has not run yet";
+  return refuse(503, message);
 }
 
 // Why a gated handler is not serving, for the badge; undefined while it is.
@@ -583,7 +580,7 @@ async function swapJsonReply(
 
 // Longest a stop waits for in-flight replies. modules/ithildin.nix sets
 // TimeoutStopSec above it.
-const DRAIN_MS = 300_000;
+export const DRAIN_MS = 300_000;
 
 export type Options = { port: number; routesFile: string | undefined };
 
@@ -675,18 +672,4 @@ export async function selfTestCli(port: number, fetchProxy: typeof fetch = fetch
       : `FAILED: ${report.failures.join("; ")}\n`,
   );
   return report.ok ? 0 : 1;
-}
-
-if (import.meta.main && process.argv[2] === "check") {
-  // exitCode, not exit(): stdout may still be draining into a pipe.
-  process.exitCode = runCheck(process.argv.slice(3), (text) => process.stdout.write(text));
-} else if (import.meta.main && process.argv[2] === "selftest") {
-  process.exit(await selfTestCli(readOptions(process.argv, process.env, existsSync).port));
-} else if (import.meta.main) {
-  const { drain } = start(readOptions(process.argv, process.env, existsSync));
-  // systemd's TimeoutStopSec is the backstop past DRAIN_MS.
-  process.on("SIGTERM", () => {
-    void drain().then(() => process.exit(0));
-    setTimeout(() => process.exit(0), DRAIN_MS).unref();
-  });
 }
