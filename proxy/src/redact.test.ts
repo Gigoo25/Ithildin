@@ -5,6 +5,7 @@ import {
   IDENTITY_ENTRIES_MAX,
   initEngine,
   mergeIdentity,
+  redactPath,
   redactQuery,
   redactRequest,
   refreshIdentity,
@@ -259,5 +260,25 @@ describe("query and stream fidelity", () => {
     expect(formatSse(event!)).toBe("event: ping\nid: 7\nretry: 500\ndata: {}\n\n");
     expect(formatSse(parseSseBlock("id: 9")!)).toBe("id: 9\n\n");
     expect(parseSseBlock(": comment")).toBeUndefined();
+  });
+
+  it("leaves invalid percent-encoding in paths as it is", () => {
+    expect(redactPath("/v1/%", new Set()).path).toBe("/v1/%");
+  });
+
+  it("ignores non-string leaves when swapping tool arguments", () => {
+    const result = swapToolArguments("write", { path: "a.md", content: 42 }, new Set());
+    expect(result.blocked).toBeUndefined();
+  });
+
+  it("collects infra inventory when not off", () => {
+    const saved = process.env.ITHILDIN_INFRA_INVENTORY;
+    process.env.ITHILDIN_INFRA_INVENTORY = "on";
+    try {
+      refreshIdentity();
+    } finally {
+      if (saved === undefined) delete process.env.ITHILDIN_INFRA_INVENTORY;
+      else process.env.ITHILDIN_INFRA_INVENTORY = saved;
+    }
   });
 });

@@ -30,6 +30,15 @@ describe("identityFromSsh on disk", () => {
     expect(identity.sshHosts ?? []).toEqual([]);
     expect(identity.sshHostNames ?? []).toEqual([]);
   });
+
+  it("ignores include globs in directories that cannot be listed", () => {
+    const home = path.join(root, "home-missing-include");
+    const sshDir = path.join(home, ".ssh");
+    mkdirSync(sshDir, { recursive: true });
+    writeFileSync(path.join(sshDir, "config"), "Include missing-dir/*\nHost zzlonely\n");
+    const identity = identityFromSsh(home);
+    expect(identity.sshHosts).toContain("zzlonely");
+  });
 });
 
 describe("identityFromGitRemotes on disk", () => {

@@ -8,7 +8,7 @@ import {
   selfTestCli,
   start,
 } from "./server.ts";
-import { selfTest, syntheticValues, WIRES } from "./selftest.ts";
+import { selfTest, syntheticValues, WIRES, commandOf, replyCommands } from "./selftest.ts";
 
 beforeAll(() => initEngine());
 
@@ -164,6 +164,27 @@ describe("self-test", () => {
       throw new RangeError("x");
     });
     expect(report.failures).toEqual(["self-test threw RangeError"]);
+  });
+
+  it("reads a non-JSON reply as unreadable", async () => {
+    const report = await selfTest((upstream) =>
+      createHandler(DEFAULT_ROUTES, (async (url: string, init?: RequestInit) => {
+        await upstream(url, init);
+        return new Response("not json", { headers: { "content-type": "application/json" } });
+      }) as unknown as typeof fetch),
+    );
+    expect(report.failures.length).toBeGreaterThan(0);
+    expect(report.failures.some((failure) => failure.includes("reply unreadable"))).toBe(true);
+  });
+
+  it("reads malformed call arguments as undefined", () => {
+    expect(commandOf("{not json")).toBeUndefined();
+    expect(commandOf(JSON.stringify({ command: "echo hi" }))).toBe("echo hi");
+  });
+
+  it("reads an unreadable reply as no commands", () => {
+    expect(replyCommands(WIRES[0]!, "not json", false)).toEqual([]);
+    expect(replyCommands(WIRES[0]!, "data: {not json\n\n", true)).toEqual([]);
   });
 });
 

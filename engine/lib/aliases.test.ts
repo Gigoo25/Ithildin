@@ -233,3 +233,12 @@ it("knows its longest stand-in, for a stream's hold", () => {
   const long = b.standIn("pii-swapback-host", "a.very.long.host.name.zqxcorp.internal");
   expect(b.longestStandIn()).toBe(Math.max(short.length, long.length));
 });
+
+it("lists minted stand-ins, values and resolved entries", () => {
+  const b = book();
+  expect(b.standIns()).toEqual([]);
+  const ticket = b.standIn("pii-custom-ticket", "ZQX-1234", "ticket");
+  expect(b.standIns()).toContain(ticket);
+  expect(b.values()).toContain("ZQX-1234");
+  expect(b.known().map((entry) => entry.value)).toContain("ZQX-1234");
+});

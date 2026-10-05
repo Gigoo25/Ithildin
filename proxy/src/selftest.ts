@@ -357,7 +357,7 @@ function sseEvents(text: string): Array<Record<string, unknown>> {
     .map((line) => JSON.parse(line.slice(6)) as Record<string, unknown>);
 }
 
-function commandOf(args: unknown): unknown {
+export function commandOf(args: unknown): unknown {
   try {
     const parsed = typeof args === "string" ? JSON.parse(args) : args;
     return (parsed as { command?: unknown } | undefined)?.command;
@@ -368,7 +368,7 @@ function commandOf(args: unknown): unknown {
 
 // The command each tool call in a reply carries, in order, as a client would
 // read it: streamed fragments joined per call. Empty for a refusal.
-function replyCommands(wire: Wire, text: string, stream: boolean): unknown[] {
+export function replyCommands(wire: Wire, text: string, stream: boolean): unknown[] {
   try {
     if (!stream) return wire.calls(JSON.parse(text) as Record<string, unknown>).map(commandOf);
     const joined = new Map<unknown, string>();

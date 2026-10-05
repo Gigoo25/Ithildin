@@ -232,6 +232,18 @@ describe("redactText", () => {
     }
   });
 
+  it("names other PII kinds PII when aliases are tokens", () => {
+    const style = process.env.ITHILDIN_ALIASES;
+    try {
+      process.env.ITHILDIN_ALIASES = "tokens";
+      const text = redactText("call +14155552671 now").text;
+      expect(text).toContain("__ITHILDIN_PII_");
+    } finally {
+      if (style === undefined) delete process.env.ITHILDIN_ALIASES;
+      else process.env.ITHILDIN_ALIASES = style;
+    }
+  });
+
   it("omits the text, plain or JSON, when the scan budget runs out", () => {
     const long = "word ".repeat(400_000);
     for (const source of [long, JSON.stringify({ a: long })]) {

@@ -360,4 +360,21 @@ describe("refusal remedies", () => {
     expect(notice).toContain("[allow-protected]");
     expect(protectedBlocked("git")).not.toContain("undefined");
   });
+
+  it("skips protected roots it cannot list", () => {
+    const target = join(home, ".config/ithildin");
+    rmSync(target, { recursive: true, force: true });
+    writeFileSync(target, "x");
+    try {
+      expect(
+        protectedChange("Write", { file_path: join(repo, "src/app.ts") }, home),
+      ).toBeUndefined();
+      expect(
+        protectedChange("Bash", { command: "find . -name '*.pyc' -delete" }, repo),
+      ).toBeUndefined();
+    } finally {
+      rmSync(target, { force: true });
+      mkdirSync(target, { recursive: true });
+    }
+  });
 });

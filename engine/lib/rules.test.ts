@@ -772,7 +772,15 @@ describe("rules added at runtime", () => {
         { start: 0, end: spent.length },
       ]);
     });
-  });
+  }, 30_000);
+
+  it("redacts through tripped windows", () => {
+    withRule(POISON, () => {
+      const text = `tripped ${"a".repeat(40)}c`;
+      const result = withScanBudget(() => redactText(text), 5_000);
+      expect(result.hits).toBeGreaterThan(0);
+    });
+  }, 30_000);
 });
 
 describe("aliasKeyScope", () => {

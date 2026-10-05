@@ -95,4 +95,28 @@ describe("redaction spans", () => {
     });
     expect(out.text).toContain("omitted 5 chars (invalid scan offsets)");
   });
+  it("fails closed when rendering throws", () => {
+    const out = planRedaction({
+      text: "hello world",
+      findings: [loc({ secretValue: "hello", start: 0, end: 5 })],
+      trips: [],
+      replacementFor: () => {
+        throw new Error("test");
+      },
+    });
+    expect(out.text).toContain("omitted 11 chars (invalid scan offsets)");
+  });
+  it("fails closed when the budget check throws", () => {
+    let calls = 0;
+    const out = planRedaction({
+      text: "hello world",
+      findings: [loc({ secretValue: "hello", start: 0, end: 5 })],
+      trips: [],
+      replacementFor: () => "X",
+      checkBudget: () => {
+        if (++calls > 1) throw new Error("budget");
+      },
+    });
+    expect(out.text).toContain("omitted 11 chars (invalid scan offsets)");
+  });
 });

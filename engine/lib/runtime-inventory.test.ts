@@ -85,6 +85,11 @@ describe("setRuntimeInventory", () => {
     expect(after.some((f) => f.secretValue === UNIQUE_USER)).toBe(false);
     expect(after.some((f) => f.secretValue === UNIQUE_HOST)).toBe(false);
   });
+
+  it("rejects invalid entries without installing them", () => {
+    setRuntimeInventory([{ id: "bad id!", literal: "", match: "token" } as never]);
+    expect(scan("bad id!")).toEqual([]);
+  });
 });
 
 describe("identityFromGit", () => {

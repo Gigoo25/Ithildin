@@ -72,3 +72,15 @@ it("compacts once the journal holds far more than is live", () => {
   initReplay(key, file);
   expect(replayOriginal("text", "harness")).toBe(`11${big}`);
 });
+
+it("marks compact when the journal cannot be written", () => {
+  const missing = path.join(
+    mkdtempSync(path.join(tmpdir(), "ithildin-replay-")),
+    "nope",
+    "replay.json",
+  );
+  initReplay(key, missing);
+  recordOriginal("text", "harness", "original");
+  expect(() => saveReplay()).not.toThrow();
+  initReplay(key);
+});

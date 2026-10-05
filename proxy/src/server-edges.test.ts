@@ -83,6 +83,33 @@ describe("requests the proxy refuses", () => {
     expect(up.calls).toHaveLength(0);
   });
 
+  it("forwards an empty non-JSON body unscanned", async () => {
+    const up = upstream(() => Response.json({}));
+    const handler = createHandler(DEFAULT_ROUTES, up.fetch);
+    const response = await handler(
+      post("anthropic/v1/messages", "", { "content-type": "text/plain" }),
+    );
+    expect(response.status).toBe(200);
+    expect(up.calls).toHaveLength(1);
+  });
+
+  it("names unguarded tools once", async () => {
+    const up = upstream(() => Response.json({ content: [] }));
+    const handler = createHandler(DEFAULT_ROUTES, up.fetch);
+    const name = `mcp__db__drop_coverage_${Date.now()}`;
+    const body = JSON.stringify({
+      messages: [{ role: "user", content: "hi" }],
+      tools: [
+        { name, input_schema: { type: "object", properties: { table: { type: "string" } } } },
+      ],
+    });
+    for (let i = 0; i < 2; i++) {
+      const response = await handler(post("anthropic/v1/messages", body));
+      expect(response.status).toBe(200);
+    }
+    expect(up.calls).toHaveLength(2);
+  });
+
   it("refuses bodies over the size limit, declared or actual", async () => {
     const up = upstream(() => Response.json({}));
     const handler = createHandler(DEFAULT_ROUTES, up.fetch);
