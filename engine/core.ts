@@ -50,6 +50,7 @@ import { FIRST_NAMES } from "./lib/first-names.ts";
 import { NAME, sessionFile as sessionPath, setting } from "./lib/names.ts";
 import { planRedaction } from "./lib/redaction-spans.ts";
 import { redactEncoded, redactRot13 } from "./lib/encoded.ts";
+import { reportActivity } from "./lib/activity.ts";
 import { reportRedaction } from "./lib/redaction-audit.ts";
 import { assignmentEdits, inspectDocument } from "./lib/structured-text.ts";
 import {
@@ -486,6 +487,18 @@ function documentFindings(
 }
 
 function replacementFor(finding: LocatedFinding): string {
+  const standIn = chooseReplacement(finding);
+  reportActivity({
+    type: "masked",
+    ruleId: finding.ruleId,
+    category: finding.category,
+    value: finding.secretValue,
+    standIn,
+  });
+  return standIn;
+}
+
+function chooseReplacement(finding: LocatedFinding): string {
   if ((finding as { jsonKind?: string }).jsonKind || finding.ruleId.startsWith("structured-"))
     return structuredReplacement(finding);
   if (finding.category === "pii") return piiReplacement(finding.ruleId, finding.secretValue);

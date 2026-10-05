@@ -17,6 +17,7 @@
 // its reach.
 
 import type { AliasBook, Resolved } from "./aliases.ts";
+import { reportActivity } from "./activity.ts";
 import { assert } from "./assert.ts";
 
 export interface Swap {
@@ -219,6 +220,7 @@ function swapString(
   book: AliasBook,
   out: Swap,
   egress: (span: Span) => boolean,
+  tool: string,
 ): string {
   let result = "";
   let last = 0;
@@ -235,6 +237,7 @@ function swapString(
       continue;
     }
     out.resolved.push(resolved);
+    reportActivity({ type: "swapped", ...resolved, standIn: span.text, tool });
     result += text.slice(last, span.start) + resolved.value;
     last = span.end;
   }
@@ -310,7 +313,7 @@ export function planSwapBack(
       else if (toolName === "bash" && (!keyed || (key !== undefined && COMMAND_KEYS.has(key))))
         egress = list ? argvEgress(list, index!, book) : commandEgress(text, book);
     }
-    return swapString(text, book, out, egress);
+    return swapString(text, book, out, egress, toolName);
   });
   return out;
 }

@@ -36,6 +36,7 @@ import {
   loadAliasKey,
   registerAliasLabels,
 } from "../engine/lib/aliases.ts";
+import { REPLY_TEXT, reportActivity } from "../engine/lib/activity.ts";
 import { assert } from "../engine/lib/assert.ts";
 import { type Message, userTypedText } from "../engine/lib/inspector.ts";
 import { setting } from "../engine/lib/names.ts";
@@ -1329,6 +1330,7 @@ function swapToolName(name: string): string {
 type Swapped = { args: unknown; swapped: number; blocked?: boolean };
 
 function block(callId: string | undefined, notice: string): Swapped {
+  reportActivity({ type: "blocked", notice });
   if (callId) {
     if (blockedCalls.size > MAX_REMEMBERED) blockedCalls.clear();
     blockedCalls.set(callId, notice);
@@ -1485,7 +1487,7 @@ function swapArguments(
 // provider sees the bytes it wrote and the prompt cache holds.
 export function swapText(text: string, tags: Set<string>): { text: string; swapped: number } {
   if (aliasStyle() !== "stand-ins" || text === "") return { text, swapped: 0 };
-  const swap = planSwapBack("read", text, aliases(), tags.has("pii") || tags.has("all"));
+  const swap = planSwapBack(REPLY_TEXT, text, aliases(), tags.has("pii") || tags.has("all"));
   if (swap.resolved.length === 0) return { text, swapped: 0 };
   for (const resolved of swap.resolved) rememberSwapped(resolved.value, resolved.ruleId);
   return { text: swap.input as string, swapped: swap.resolved.length };
