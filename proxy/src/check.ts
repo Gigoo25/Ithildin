@@ -1,4 +1,4 @@
-// `ithildin check`: the guard section of the user config, and the decisions
+// `ithildin check`: the guard and watch sections of the user config, and the decisions
 // you expect from the guards, checked without an agent or a provider.
 //
 //   ithildin check [--config FILE] [TEST.guard | DIR ...]
@@ -25,6 +25,7 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { configFile } from "../engine/lib/names.ts";
 import { guardConfigFile, guardPolicy } from "./policy.ts";
+import { watchPolicy } from "./watch.ts";
 import { shellCommand } from "./tools.ts";
 import { blockedNotice, initEngine, redactRequest, swapToolArguments } from "./redact.ts";
 
@@ -123,8 +124,12 @@ function describeGuard(out: (text: string) => void): number {
     .map((key) => `${key} ${policy[key].length}`)
     .join(", ");
   out(`guard: protect ${policy.protect.length}, ${lists}\n`);
-  for (const problem of policy.problems) out(`problem: ${problem}\n`);
-  return policy.problems.length;
+  const watch = watchPolicy();
+  const known = watch.known ? "on" : "off";
+  out(`watch: ${watch.terms.length} string(s), ${watch.action}, known ${known}\n`);
+  const problems = [...policy.problems, ...watch.problems];
+  for (const problem of problems) out(`problem: ${problem}\n`);
+  return problems.length;
 }
 
 function runFile(file: string, out: (text: string) => void): boolean {

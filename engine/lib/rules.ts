@@ -1519,15 +1519,27 @@ export function isPromptOnlyRule(ruleId: string): boolean {
   );
 }
 
+// `caseSensitive` and `token` say how the rule matches the literal: whether
+// case counts, and whether it needs a Unicode word boundary on both sides.
 export function inventoryLiterals(): Array<{
   ruleId: string;
   literal: string;
   label?: string | undefined;
+  caseSensitive: boolean;
+  token: boolean;
 }> {
   return activeRules().flatMap((rule) =>
     rule.inventoryLiteral === undefined
       ? []
-      : [{ ruleId: rule.id, literal: rule.inventoryLiteral, label: rule.label }],
+      : [
+          {
+            ruleId: rule.id,
+            literal: rule.inventoryLiteral,
+            label: rule.label,
+            caseSensitive: !rule.regex.flags.includes("i"),
+            token: rule.regex.source.startsWith("(?<![\\p{L}"),
+          },
+        ],
   );
 }
 

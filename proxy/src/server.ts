@@ -31,7 +31,12 @@ import {
 } from "./redact.ts";
 import { configHome, NAME } from "../engine/lib/names.ts";
 import { aliasStyle } from "../engine/lib/rules.ts";
+import { type ActivityEvent, observeActivity } from "../engine/lib/activity.ts";
+import { DASHBOARD_CSP, DASHBOARD_HTML, DASHBOARD_PATH } from "./dashboard.ts";
+import { type Context, EventLog } from "./events.ts";
+import { SentRequests } from "./requests.ts";
 import { createStatusBook } from "./status.ts";
+import { findWatched, knownValues, watchPolicy } from "./watch.ts";
 import { type SelfTest, selfTest } from "./selftest.ts";
 import { createRewriter, formatSse, parseSseBlock, swapResponseBody } from "./streams.ts";
 import type { Label } from "./trust.ts";
@@ -93,7 +98,13 @@ export function upstreamUrl(route: Route, rest: string, search: string): string 
 // never forwarded); Claude sends X-Claude-Code-Session-Id itself.
 // opencode sends x-opencode-session-id.
 const SESSION_HEADER = "x-ithildin-session";
-const OWN_PATH = /^\/_ithildin\/(selftest|health)$/;
+const OWN_PATH = /^\/_ithildin\/(selftest|health|ui|activity|requests|request)$/;
+// Set by refuse() and removed by the handler, which logs the refusal for the
+// dashboard. It never reaches the client.
+const REFUSED_HEADER = "x-ithildin-refused";
+// The dashboard answers only to a local name: a page on another site that
+// points its own name at 127.0.0.1 (DNS rebinding) is turned away.
+const LOCAL_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
 
 const HOP_HEADERS = [
   "host",
@@ -155,7 +166,7 @@ function refuse(status: number, message: string): Response {
   log(`refused (${status}): ${message}`);
   return Response.json(
     { type: "error", error: { type: "ithildin_error", message: `ithildin: ${message}` } },
-    { status },
+    { status, headers: { [REFUSED_HEADER]: message } },
   );
 }
 
@@ -164,6 +175,7 @@ function rewriteSse(
   format: Format,
   tags: Set<string>,
   done: (swapped: number) => void,
+  tap: (event: ActivityEvent) => unknown,
 ): ReadableStream<Uint8Array> {
   const rewriter = createRewriter(format, tags);
   const decoder = new TextDecoder();
@@ -175,7 +187,8 @@ function rewriteSse(
       if (block.trim() !== "") controller.enqueue(encoder.encode(`${block}\n\n`));
       return;
     }
-    for (const out of rewriter.push(event)) controller.enqueue(encoder.encode(formatSse(out)));
+    const outs = observeActivity(tap, () => rewriter.push(event));
+    for (const out of outs) controller.enqueue(encoder.encode(formatSse(out)));
   };
   return body.pipeThrough(
     new TransformStream<Uint8Array, Uint8Array>({
@@ -188,7 +201,8 @@ function rewriteSse(
       flush(controller) {
         buffer += decoder.decode();
         if (buffer.trim() !== "") emit(buffer, controller);
-        for (const out of rewriter.flush()) controller.enqueue(encoder.encode(formatSse(out)));
+        for (const out of observeActivity(tap, () => rewriter.flush()))
+          controller.enqueue(encoder.encode(formatSse(out)));
         done(rewriter.swapped);
       },
     }),
@@ -213,6 +227,8 @@ const REDACTORS: Redactors = {
 // What scanning a request body gave: the body to forward and what it found.
 type Scanned = {
   body: string | undefined;
+  // The body as parsed JSON, for the watch list (watch.ts).
+  object: unknown;
   tags: Set<string>;
   hits: number;
   counts: Counts | undefined;
@@ -220,11 +236,14 @@ type Scanned = {
   scanMs: number;
   label: Label;
   unguarded: string[];
+  // What the engine masked, for the dashboard (events.ts).
+  activity: ActivityEvent[];
 };
 
 function unscanned(): Scanned {
   return {
     body: undefined,
+    object: undefined,
     tags: new Set(),
     hits: 0,
     counts: undefined,
@@ -232,6 +251,7 @@ function unscanned(): Scanned {
     scanMs: 0,
     label: { untrusted: false, private: false },
     unguarded: [],
+    activity: [],
   };
 }
 
@@ -305,7 +325,11 @@ function redactBody(
 ): Scanned | Response {
   try {
     const started = performance.now();
-    const redacted = redact.request(format, parsed, session);
+    const activity: ActivityEvent[] = [];
+    const redacted = observeActivity(
+      (event) => activity.push(event),
+      () => redact.request(format, parsed, session),
+    );
     const scanMs = Math.round(performance.now() - started);
     noteUnguarded(redacted.unguarded);
     // Single-message side requests (titles, quota probes) are not the
@@ -314,6 +338,7 @@ function redactBody(
     const conversation = Array.isArray(turns) && turns.length > 1;
     return {
       body: JSON.stringify(redacted.body),
+      object: redacted.body,
       tags: redacted.tags,
       hits: redacted.hits,
       counts: conversation ? redacted.counts : undefined,
@@ -321,6 +346,7 @@ function redactBody(
       scanMs,
       label: redacted.label,
       unguarded: redacted.unguarded,
+      activity,
     };
   } catch (error) {
     return refuse(
@@ -340,9 +366,14 @@ function redactUrl(
   redact: Redactors,
 ): { rest: string; search: string } | Response {
   try {
-    const path = redact.path(rest, scanned.tags);
-    const query = redact.query(search, scanned.tags);
-    const sent = redact.headers(headers, scanned.tags);
+    const { path, query, sent } = observeActivity(
+      (event) => scanned.activity.push(event),
+      () => ({
+        path: redact.path(rest, scanned.tags),
+        query: redact.query(search, scanned.tags),
+        sent: redact.headers(headers, scanned.tags),
+      }),
+    );
     scanned.hits += path.hits + query.hits + sent.hits;
     if (scanned.counts) scanned.counts.masked += path.values + query.values + sent.values;
     return { rest: path.path, search: query.search };
@@ -415,8 +446,10 @@ export function createHandler(
   // What redaction did per conversation, for the status badges (status.ts):
   // only this machine learns that swapping happens.
   const book = createStatusBook();
+  const events = new EventLog();
+  const kept = new SentRequests();
   let proof: SelfTest | undefined;
-  return async (request: Request): Promise<Response> => {
+  const respond = async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
     const own = OWN_PATH.exec(url.pathname)?.[1];
     if (own === "selftest") {
@@ -424,6 +457,8 @@ export function createHandler(
       return Response.json(proof, { status: proof.ok ? 200 : 503 });
     }
     if (own === "health") return health(url, routes, book, proof, gated);
+    if (own === "ui" || own === "activity" || own === "requests" || own === "request")
+      return dashboard(own, url, events, kept);
     if (gated && !proof?.ok) return refuseUnproven(proof);
     const match = /^\/([^/]+)(\/.*)?$/.exec(url.pathname);
     const route = match ? routes[match[1]!] : undefined;
@@ -433,24 +468,19 @@ export function createHandler(
     const rest = match[2] ?? "";
     const format = formatForPath(rest);
 
-    const session =
-      request.headers.get(SESSION_HEADER) ??
-      request.headers.get("x-Claude-Code-Session-Id") ??
-      request.headers.get("x-opencode-session-id") ??
-      undefined;
-    const headers = new Headers(request.headers);
-    for (const name of HOP_HEADERS) headers.delete(name);
-    headers.delete(SESSION_HEADER);
-    headers.set("accept-encoding", "identity");
+    const session = sessionOf(request);
+    const headers = forwardedHeaders(request);
 
     const scanned = await scanRequest(request, format, redact, session ?? null);
     if (scanned instanceof Response) return scanned;
-    const { body, tags, counts, prompts, scanMs, label, unguarded } = scanned;
+    const { body, tags, scanMs } = scanned;
     const sent = redactUrl(rest, url.search, headers, scanned, redact);
     if (sent instanceof Response) return sent;
     const target = upstreamUrl(route, sent.rest, sent.search);
-    const trust = { ...label, unguarded: unguarded.length };
-    if (counts) book.record(session, match[1]!, counts, prompts, tags, trust);
+    const context = { route: match[1]!, endpoint: sent.rest, session };
+    recordScan({ book, events, kept }, context, scanned);
+    const stopped = watchOutgoing(events, context, scanned, sent);
+    if (stopped) return stopped;
 
     let upstream: Response;
     try {
@@ -472,17 +502,122 @@ export function createHandler(
     const line =
       `${match[1]}${sent.rest} ${upstream.status} scan=${scanMs}ms${allowed}` +
       ` redacted=${scanned.hits}`;
-    return relayReply(upstream, format, tags, line);
+    return relayReply(upstream, format, tags, line, (event) => events.record(context, event));
   };
+  return async (request: Request): Promise<Response> => logRefusal(events, await respond(request));
+}
+
+function sessionOf(request: Request): string | undefined {
+  return (
+    request.headers.get(SESSION_HEADER) ??
+    request.headers.get("x-Claude-Code-Session-Id") ??
+    request.headers.get("x-opencode-session-id") ??
+    undefined
+  );
+}
+
+// The request's headers as the upstream gets them.
+function forwardedHeaders(request: Request): Headers {
+  const headers = new Headers(request.headers);
+  for (const name of HOP_HEADERS) headers.delete(name);
+  headers.delete(SESSION_HEADER);
+  headers.set("accept-encoding", "identity");
+  return headers;
+}
+
+// A refusal for the dashboard; its marker header stays inside the proxy.
+function logRefusal(events: EventLog, response: Response): Response {
+  const refusal = response.headers.get(REFUSED_HEADER);
+  if (refusal === null) return response;
+  response.headers.delete(REFUSED_HEADER);
+  events.refused(response.status, refusal);
+  return response;
+}
+
+// The dashboard page, or what it polls: the events after `?since=`, the list of
+// requests kept, or one request's text.
+function dashboard(
+  own: "ui" | "activity" | "requests" | "request",
+  url: URL,
+  events: EventLog,
+  kept: SentRequests,
+): Response {
+  if (!LOCAL_HOSTS.has(url.hostname)) return new Response("forbidden", { status: 403 });
+  const headers = { "cache-control": "no-store" };
+  if (own === "ui") {
+    const page = {
+      ...headers,
+      "content-type": "text/html",
+      "content-security-policy": DASHBOARD_CSP,
+    };
+    return new Response(DASHBOARD_HTML, { headers: page });
+  }
+  if (own === "requests") return Response.json(kept.list(), { headers });
+  if (own === "request") {
+    const text = kept.text(Number(url.searchParams.get("id")));
+    if (text === undefined) return new Response("no such request", { status: 404 });
+    return new Response(text, { headers: { ...headers, "content-type": "text/plain" } });
+  }
+  const since = Number(url.searchParams.get("since") ?? 0);
+  const snapshot = events.snapshot(Number.isSafeInteger(since) ? since : 0);
+  const policy = watchPolicy();
+  const known = policy.known ? knownValues().length : 0;
+  const watch = { terms: policy.terms.length, action: policy.action, known };
+  return Response.json({ ...snapshot, watch }, { headers });
+}
+
+// The watch list's check of what is about to go out (watch.ts). The refusal,
+// when the list says to block; undefined when the request may go. The log and
+// the dashboard name the place, never the string.
+function watchOutgoing(
+  events: EventLog,
+  context: Context,
+  scanned: Scanned,
+  sent: { rest: string; search: string },
+): Response | undefined {
+  if (scanned.tags.has("pii") || scanned.tags.has("all")) return undefined;
+  const policy = watchPolicy();
+  const known = policy.known ? knownValues() : [];
+  const target = { body: scanned.object, path: sent.rest, search: sent.search };
+  const hits = findWatched(policy, known, target);
+  if (hits.length === 0) return undefined;
+  const places = [...new Set(hits.map((hit) => hit.where))].join(", ");
+  for (const hit of hits) {
+    const action = hit.source === "watch" ? policy.action : "flag";
+    events.leaked(context, { term: hit.value, source: hit.source, where: hit.where }, action);
+  }
+  log(`watch list: ${hits.length} hit(s) in the request to ${context.route} (${places})`);
+  const blocking = policy.action === "block" && hits.some((hit) => hit.source === "watch");
+  if (!blocking) return undefined;
+  return refuse(403, `watch list: a watched string is in the request (${places}), not sending it`);
+}
+
+// A scanned request: the status badge, what it masked, the request itself, and the
+// text as sent.
+function recordScan(
+  stores: { book: ReturnType<typeof createStatusBook>; events: EventLog; kept: SentRequests },
+  context: Context,
+  scanned: Scanned,
+): void {
+  const { counts, prompts, tags, label, unguarded } = scanned;
+  const trust = { ...label, unguarded: unguarded.length };
+  if (counts) stores.book.record(context.session, context.route, counts, prompts, tags, trust);
+  let fresh = 0;
+  for (const event of scanned.activity) if (stores.events.record(context, event)) fresh++;
+  stores.events.request(context, scanned.scanMs, fresh);
+  if (scanned.body !== undefined)
+    stores.kept.record(context.route, context.endpoint, context.session, scanned.body);
 }
 
 // The upstream reply with stand-ins in tool calls swapped back, or a refusal
-// when a model reply cannot be checked. `line` is the start of its log line.
+// when a model reply cannot be checked. `line` is the start of its log line;
+// `tap` gets what the swaps did, for the dashboard.
 async function relayReply(
   upstream: Response,
   format: Format | undefined,
   tags: Set<string>,
   line: string,
+  tap: (event: ActivityEvent) => unknown,
 ): Promise<Response> {
   // A client following a redirect resends its original, unredacted body to
   // the new URL, around the proxy: refuse it, and never pass its Location.
@@ -496,13 +631,17 @@ async function relayReply(
   const init = { status: upstream.status, headers };
   const contentType = upstream.headers.get("content-type") ?? "";
   if (format && upstream.body && contentType.includes("text/event-stream")) {
-    const stream = rewriteSse(upstream.body, format, tags, (swapped) =>
-      log(`${line} swapped=${swapped} (stream)`),
+    const stream = rewriteSse(
+      upstream.body,
+      format,
+      tags,
+      (swapped) => log(`${line} swapped=${swapped} (stream)`),
+      tap,
     );
     return new Response(stream, init);
   }
   if (format && contentType.includes("json") && upstream.ok) {
-    const parsed = await swapJsonReply(upstream, format, tags);
+    const parsed = await swapJsonReply(upstream, format, tags, tap);
     if (parsed instanceof Response) return parsed;
     log(`${line} swapped=${parsed.swapped}`);
     // Always re-serialized: a blocked call changes arguments without a swap.
@@ -555,6 +694,7 @@ async function swapJsonReply(
   upstream: Response,
   format: Format,
   tags: Set<string>,
+  tap: (event: ActivityEvent) => unknown,
 ): Promise<{ body: Record<string, unknown>; swapped: number } | Response> {
   const text = await readCapped(upstream.body, REPLY_BYTES_MAX);
   if (text === undefined) return refuse(502, `upstream reply over ${REPLY_BYTES_MAX} bytes`);
@@ -568,7 +708,7 @@ async function swapJsonReply(
     return refuse(502, "upstream reply is not a JSON object, refusing to pass it unchecked");
   const body = parsed as Record<string, unknown>;
   try {
-    return { body, swapped: swapResponseBody(format, body, tags) };
+    return { body, swapped: observeActivity(tap, () => swapResponseBody(format, body, tags)) };
   } catch (error) {
     // Half-swapped, with blocked calls maybe still intact: never pass on.
     return refuse(
@@ -636,6 +776,7 @@ export function start(
     fetch: handler,
   });
   log(`listening on http://127.0.0.1:${server.port} (routes: ${Object.keys(routes).join(", ")})`);
+  log(`dashboard on http://127.0.0.1:${server.port}${DASHBOARD_PATH}`);
   // Requests are refused until this passes; agents retry refused requests.
   const proven = handler(selfTestRequest()).then(() => undefined);
   // A rules edit restarts the proxy. Stop taking requests but let streaming

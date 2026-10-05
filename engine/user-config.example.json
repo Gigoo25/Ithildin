@@ -53,5 +53,6 @@
     { "id": "fullname", "literal": "Jane Exampleperson", "match": "token", "label": "person" },
     { "id": "handle", "literal": "example_handle", "match": "token", "label": "handle" },
     { "id": "org", "literal": "ExampleCorp", "match": "token", "caseSensitive": false, "label": "employer" }
-  ]
+  ],
+  "watch": { "terms": ["EXAMPLEinternal.example", "EXAMPLE project name"], "action": "flag", "known": true }
 }

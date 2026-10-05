@@ -66,6 +66,16 @@ When the model calls a tool with a stand-in, the proxy replaces it with the real
 - Keep out words that are also ordinary dev vocabulary (`stroke`, `debt`, `fired`, `pip`, Dockerfile `ADD`). Put acronyms in their own `"caseSensitive": true` group.
 - The engine refuses file-tool and Bash reads of `generalize.json`: the list says which topics you consider sensitive.
 
+## Leak watch list
+
+The `watch` section is a test of everything above. The proxy checks each outgoing request after masking, and shows a `leaked` row on the dashboard when a watched string is still there. Masking missed it. It watches every value in this inventory and in the identity read from the machine, with no setup (`"known": false` turns that off). List more strings under `terms`: employer and project names, internal domains, people. The rules, `action: "block"` and the limits are in the README (`The watch list`). The engine ignores the section.
+
+```
+"watch": { "terms": ["EXAMPLE-internal.example", "EXAMPLE project"], "action": "flag" }
+```
+
+The values in the template are inert. Replace them with real ones, and keep the file mode at `600`.
+
 ## Session transcripts
 
 The engine refuses direct model reads of Pi session transcripts (`$PI_CODING_AGENT_DIR/sessions`, `~/.pi/agent/sessions`) and of the recall skill's index (`${XDG_DATA_HOME:-~/.local/share}/pi-session-search`). That covers file tools and Bash, including paths an interpreter builds from pieces (`Path.home()/'.pi'/'agent'/'sessions'`). Transcripts hold earlier work from other sessions and projects. An eval model was seen digging through them for past solutions, which sends that history to the provider. The recall skill still works: its script is invoked by name, and its bounded output is scanned like any tool result. `[allow-pii]` bypasses this check.

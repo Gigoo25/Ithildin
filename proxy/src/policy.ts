@@ -185,20 +185,28 @@ export function guardConfigFile(): string {
   return setting("CONFIG") ?? configFile("config.json");
 }
 
-// The policy in force: the file's, re-read when its path or mtime moves.
-// Problems go to the log once per read; `ithildin check` lists them too.
-export function guardPolicy(): GuardPolicy {
-  const file = guardConfigFile();
+// Names the config file's state: its path, mtime and size, or that it is absent.
+// A parsed section is read again when this moves. Size too: two edits within
+// one coarse mtime tick still differ.
+export function configKey(file: string): string {
   let stat: { mtimeMs: number; size: number } | undefined;
   try {
     stat = statSync(file);
   } catch {
     // Absent: no policy.
   }
-  // Size too: two edits within one coarse mtime tick still differ.
-  const key = stat ? `${file}\0${stat.mtimeMs}\0${stat.size}` : `${file}\0absent`;
+  return stat ? `${file}\0${stat.mtimeMs}\0${stat.size}` : `${file}\0absent`;
+}
+
+// The policy in force: the file's, re-read when its path or mtime moves.
+// Problems go to the log once per read; `ithildin check` lists them too.
+export function guardPolicy(): GuardPolicy {
+  const file = guardConfigFile();
+  const key = configKey(file);
   if (cached?.key !== key) {
-    const policy = stat ? parseGuardPolicy(readConfigFile(file, "user config")) : empty();
+    const policy = key.endsWith("\0absent")
+      ? empty()
+      : parseGuardPolicy(readConfigFile(file, "user config"));
     for (const problem of policy.problems)
       process.stderr.write(`ithildin: user config: ${problem}, ignoring\n`);
     cached = { key, policy };

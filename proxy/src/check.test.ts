@@ -90,6 +90,20 @@ describe("ithildin check", () => {
     expect(text).toContain(`problem: "guard.sendTool" is not a guard setting`);
   });
 
+  it("lists the watch section's problems too", () => {
+    const config = join(dir, "config.json");
+    writeFileSync(
+      config,
+      JSON.stringify({ watch: { terms: ["acme-lab", "ab"], action: "block" } }),
+    );
+    process.env.XDG_CONFIG_HOME = join(dir, "no-config-home");
+    const { status, text } = run(["--config", config]);
+    expect(status).toBe(1);
+    expect(text).toContain("watch: 1 string(s), block, known on\n");
+    expect(text).toContain(`problem: "watch.terms": an entry is under 3 characters`);
+    expect(text).not.toContain("acme-lab");
+  });
+
   it("refuses a --config with no file", () => {
     expect(run(["--config"])).toEqual({ status: 1, text: "--config needs a file\n" });
   });
@@ -107,6 +121,7 @@ describe("ithildin check", () => {
     expect(status).toBe(0);
     expect(text).toContain("absent: the built-in guards alone");
     expect(text).toContain("guard: protect 0, outsideTools 0, sendTools 0");
+    expect(text).toContain("watch: 0 string(s), flag, known on");
   });
 
   it("runs the tests in the default directory and the ones named", () => {

@@ -244,6 +244,98 @@ For `?Nt`, the proxy log names each such tool once (`tool mcp__db__drop_table
 acts, and no guard reads its calls`). Teach the guard about it under `guard`
 in `config.json`, or list it in `reviewedTools` once you've checked it.
 
+## The dashboard
+
+The footer says that the proxy is on the path. The dashboard shows what it did.
+Open `http://127.0.0.1:18733/_ithildin/ui` (your port) in a browser on the same
+machine. The page fits the window. The **Activity** tab lists each event as it
+happens:
+
+| Event     | Meaning                                                        |
+|-----------|----------------------------------------------------------------|
+| `leaked`  | a watched string was in an outgoing request (see below)        |
+| `masked`  | a value was replaced for the first time, with its stand-in     |
+| `swapped` | a stand-in in a reply or a tool call got its real value back   |
+| `blocked` | a guard stopped a tool call                                    |
+| `refused` | the proxy refused a request or a reply                         |
+| `request` | a request was scanned (hidden until you tick its box)          |
+
+Above the list are totals: requests, distinct values masked by kind, swaps in
+reply text and in tool calls, blocks, refusals, leaks, scan time and uptime. A
+`swapped` row is the proof the footer cannot give: the model wrote the
+stand-in, and your machine got the real value.
+
+Each row names the route and path of its request, such as `anthropic/v1/messages`.
+A value in the path shows masked, as the provider gets it. The search box
+filters the rows, and the session menu shows one agent's rows.
+
+The page shows the stand-in and a preview of the real value: its first two and
+last characters and its length (one character and the length for a short
+value). The Activity tab never holds the whole value. Events live in memory,
+the newest 5000, and a restart clears them. The list scrolls in its own box,
+newest first, and keeps your place when new events arrive. The page and its
+data answer only to `127.0.0.1`, `localhost` and `[::1]`, so a web page cannot
+read them through a rebound name.
+
+The **Sent requests** tab is different. It keeps the last 20 requests as they
+went upstream, after masking, and you can search the text. It is the proof of
+what left the machine, so a real value that masking missed is in it, and the
+page shows it as it is. The text is held in memory only, and each request is
+cut at 1 MiB. `ITHILDIN_KEEP_REQUESTS` sets how many it keeps (0 turns the tab
+off, 200 at most).
+
+A leak turns the tab title to `(2) Ithildin` and puts a red mark on the icon.
+The **Alert me about leaks** button asks the browser for permission to show a
+notice. The notice names the place in the request, and never the string.
+
+## The watch list
+
+The dashboard shows what the proxy caught. A miss leaves no row, so it cannot
+show what slipped through. The watch list tests that from outside. The proxy
+checks each request after masking, in its body, path and query. A watched
+string that is still there means masking missed it. The dashboard shows a red
+`leaked` row with the place in the request, such as
+`messages[3].content[0].text`, and a preview of the string. The conversation
+goes out again every turn, so each place shows once.
+
+Two lists are watched:
+
+- **Known values.** The engine promises to mask these everywhere: your
+  inventory, and what the proxy reads from this machine (its user name, host
+  name, home directory, git remotes and SSH hosts). They need no setup. A hit
+  is flagged and never blocks. Matching follows the inventory entry: whole
+  words, and case only when the entry says so. A hit means the value sat where
+  the engine does not scan, such as a thinking block, or that a rule has a gap.
+  A trial over 871 files found no false alarms, and a scan took 7 ms at most.
+- **Your own strings.** List real strings that must never leave the machine,
+  such as an internal domain, a project name or a person, under `"watch"` in
+  `config.json`:
+
+```
+"watch": {
+  "terms": ["acme-internal.example", "Project Falcon"],
+  "action": "flag",
+  "known": true
+}
+```
+
+- `terms` are plain text, matched case-insensitively anywhere in a text, even
+  inside a longer word. Each one has at least 3 characters. The list holds at
+  most 200.
+- `action` is `flag` (the default) or `block`. `flag` sends the request.
+  `block` refuses it with a 403, so nothing leaves. The agent then retries, so
+  fix the leak or remove the string. It applies to `terms` only.
+- `known` is `true` by default. `false` stops the known list.
+- A prompt with `[allow-pii]` or `[allow-all]` skips the check. You lifted
+  masking on purpose.
+- The `leaks found` tile says what it watches, and `nothing watched` when both
+  lists are empty. A zero then means nothing.
+- It finds only what is on the lists, and not a value sent encoded (base64 or
+  hex). Headers are not checked, because they carry your own credentials.
+
+`ithildin check` shows how many strings the list holds, whether `known` is on,
+and any problems with the section. The file is read again when it changes.
+
 ## Allow tags
 
 Sometimes the model needs a real value. Put a tag anywhere in your prompt:
@@ -304,6 +396,7 @@ Settings are environment variables:
 | `ITHILDIN_REPO_ROOTS`        | colon-separated roots for git remote discovery   |
 | `ITHILDIN_INFRA_INVENTORY`   | `off` skips SSH, repo, network and Tailscale     |
 | `ITHILDIN_SCAN_BUDGET_MS`    | per-request scan time limit (default 30000)      |
+| `ITHILDIN_KEEP_REQUESTS`     | requests the dashboard keeps (default 20, 0 is off) |
 
 ## What it does not do
 
