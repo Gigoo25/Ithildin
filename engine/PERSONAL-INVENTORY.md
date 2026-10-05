@@ -39,7 +39,7 @@ At session start the engine also reads `~/.ssh/config` (following `Include`) and
 
 ## Swap-back
 
-When the model calls a tool with a stand-in, the engine replaces it with the real value in the arguments the tool runs with. Pi documents in-place edits of `event.input` as supported. The transcript keeps the model's stand-in arguments, and the tool's output is aliased again on the way back. Every value swapped in is added to that scan, so it returns as its stand-in even when no rule would have caught it.
+When the model calls a tool with a stand-in, the proxy replaces it with the real value in the call's arguments, in the reply on its way to the agent. The agent runs the tool with the real value and keeps it in its transcript. The next request carries that value again, and the proxy masks it back to the same stand-in. The tool's output is aliased again on the way back. Every value swapped in is added to that scan, so it returns as its stand-in even when no rule would have caught it.
 
 - Exact stand-ins resolve from this session's findings and from every inventory entry (minted at session start, so stand-ins from earlier sessions resolve too). Composed stand-ins resolve from their parts: another host in a known stand-in domain, or another address in a known stand-in /24.
 - A stand-in that cannot be resolved (another machine, a re-rolled key) runs as it is. The tool sees the stand-in, not a guess.

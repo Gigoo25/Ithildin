@@ -1,9 +1,9 @@
 // Ithildin's engine: detection, redaction, stand-ins, and tool guards,
-// with no agent attached. Two front ends share it:
-//   - Pi's extension (config/pi/extensions/ithildin), which hooks
-//     each point of Pi's event bus.
-//   - the proxy (../proxy), which redacts provider request
-//     bodies for any agent whose base URL points at it.
+// with no agent attached. The proxy (../proxy) is its front end: it redacts
+// provider request bodies, and swaps stand-ins back in the replies, for any
+// agent whose base URL points at it. No agent runs engine code itself. The
+// engine's test suites were written for an earlier front end, a Pi extension
+// (see ../proxy/bench/hooks.ts).
 //
 // lib/{rules,inspector}.ts are vendored from upstream coo-quack/sensitive-canary
 // 9111ed20841d1ffefd86092dcb8b52ba082d973a (MIT, see lib/LICENSE). Local code

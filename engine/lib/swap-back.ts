@@ -1,11 +1,11 @@
 // Swap-back: tool calls name stand-ins, tools need real values.
 //
-// The model only ever sees stand-ins. When it calls a tool with one, the
-// stand-in is replaced by the real value in the call's arguments just before
-// the tool runs (Pi runs the tool with the mutated `event.input`; the
-// transcript keeps the model's original arguments). The tool's output is
-// scanned on the way back as usual, and every value swapped in here is added
-// to that scan, so it returns to the model as its stand-in again.
+// The model only ever sees stand-ins. When it calls a tool with one, the proxy
+// replaces the stand-in with the real value in the call's arguments, in the
+// reply on its way to the agent (proxy/src/streams.ts). The agent runs the
+// tool with the real value and keeps it in its transcript. The tool's output
+// is scanned on the way back as usual, and every value swapped in here is
+// added to that scan, so the next request carries the stand-in again.
 //
 // Egress: a real value must not leave the machine for somewhere that is not
 // your own infrastructure. The web tools never get swapped values. In Bash,
