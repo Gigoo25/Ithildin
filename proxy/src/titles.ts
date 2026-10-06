@@ -8,16 +8,19 @@
 
 import { parseSseBlock } from "./streams.ts";
 
-// What a naming request asks for, by the start of its system prompt:
+// What a naming request asks for, by what its system prompt says it wants:
 //   title  Claude Code's session title, as JSON {"title": ...}
 //   name   Claude Code's /rename without a name, as JSON {"name": ...}
 //   line   opencode's title agent, as plain text
 export type TitleAsk = "title" | "name" | "line";
 
+// These match on the parts of a naming prompt that say what it produces, not
+// on the opening sentence. An agent rewords its preamble freely; the words that
+// name the field, or say a title is the only output, are what it keeps.
 const ASKS: Array<[RegExp, TitleAsk]> = [
-  [/^You are naming a coding session so the user can pick it out/, "title"],
-  [/^Generate a short kebab-case name \(2-4 words\)/, "name"],
-  [/^You are a title generator\. You output ONLY a thread title\./, "line"],
+  [/kebab-case name/, "name"],
+  [/Return JSON with a single "title" field|sentence-case title \(\d+-\d+ words\)/, "title"],
+  [/ONLY a thread title/, "line"],
 ];
 
 // Claude Code tells the model when the user names a session (/rename).
@@ -25,27 +28,26 @@ const RENAMED = /The user named this session "([^"\n]{1,200})"\./g;
 const TITLE_MAX = 80;
 
 function textOf(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content
-    .map((block) => {
-      if (typeof block === "string") return block;
-      const text = (block as { text?: unknown } | null)?.text;
-      return typeof text === "string" ? text : "";
-    })
-    .join("\n");
+  return blocks(content).join("\n");
 }
 
+// How far into the message list a system or developer message may sit and
+// still be the prompt. opencode sends its title agent's as the first item, but
+// nothing holds an agent to that.
+const PROMPT_ITEMS = 4;
+
 // The system prompt, in each format: Anthropic's system, Responses'
-// instructions, or a leading system or developer message.
+// instructions, or a system or developer message among the first few.
 function systemText(body: Record<string, unknown>): string {
   if (body.system !== undefined) return textOf(body.system);
   if (typeof body.instructions === "string") return body.instructions;
   const list = Array.isArray(body.messages) ? body.messages : body.input;
-  const first = Array.isArray(list)
-    ? (list[0] as { role?: unknown; content?: unknown } | undefined)
-    : undefined;
-  return first?.role === "system" || first?.role === "developer" ? textOf(first.content) : "";
+  if (!Array.isArray(list)) return "";
+  for (const item of list.slice(0, PROMPT_ITEMS)) {
+    const message = item as { role?: unknown; content?: unknown } | null;
+    if (message?.role === "system" || message?.role === "developer") return textOf(message.content);
+  }
+  return "";
 }
 
 export function titleAsk(body: unknown): TitleAsk | undefined {
@@ -53,6 +55,23 @@ export function titleAsk(body: unknown): TitleAsk | undefined {
   const system = systemText(body as Record<string, unknown>).trimStart();
   return ASKS.find(([pattern]) => pattern.test(system))?.[1];
 }
+
+// Whether a request looks like it is naming a session, though no pattern above
+// says which kind. The proxy logs it, so an agent that rewords its prompt stops
+// costing every session its title in silence. The wording of the prompt is never
+// kept: only that this was one.
+export function looksLikeNaming(body: unknown): boolean {
+  if (!body || typeof body !== "object") return false;
+  if (titleAsk(body)) return false;
+  const system = systemText(body as Record<string, unknown>);
+  return NAMING_HINT.test(system);
+}
+
+const NAMING_HINT = new RegExp(
+  "thread title|session title|title generator|naming a|title this conversation" +
+    "|\\btitle\\b.{0,80}\\bJSON\\b|\\bJSON\\b.{0,80}\\btitle\\b",
+  "i",
+);
 
 // The latest name the user gave the session, from the conversation.
 export function renamedIn(body: unknown): string | undefined {
@@ -114,21 +133,71 @@ function deltaText(event: Record<string, unknown>): string {
 }
 
 // The title in a reply, as each agent reads it: a field of the JSON, or the
-// first line of text once any thinking is cut.
+// first line of text once any thinking is cut. A prompt that no longer says
+// which field it wants is read by the shape of the reply, so a reworded agent
+// still names its session.
 export function titleFrom(ask: TitleAsk, text: string): string | undefined {
   if (ask === "line") {
     const lines = text.replace(/<think>[\s\S]*?<\/think>/g, "").split("\n");
     return clean(lines.find((line) => line.trim() !== "") ?? "");
   }
+  const field = fieldOf(text) ?? (ask === "name" ? "name" : undefined);
+  return field === undefined ? undefined : clean(field);
+}
+
+// The title a reply holds as a JSON field, whichever of the two it used. A
+// reply that is not JSON at all holds no title: only a "line" ask reads plain
+// text, and it does so above.
+function fieldOf(text: string): string | undefined {
   const start = text.indexOf("{");
   const end = text.lastIndexOf("}");
-  if (start < 0 || end < start) return undefined;
+  if (start < 0 || end <= start) return undefined;
   try {
-    const value = (JSON.parse(text.slice(start, end + 1)) as Record<string, unknown>)[ask];
-    return typeof value === "string" ? clean(value) : undefined;
+    const value = JSON.parse(text.slice(start, end + 1)) as Record<string, unknown>;
+    for (const field of ["title", "name"]) {
+      const title = value[field];
+      if (typeof title === "string" && title !== "") return title;
+    }
+    return undefined;
   } catch {
     return undefined;
   }
+}
+
+// Harness text the user did not type, wrapped in a tag: a reminder, a command's
+// output. The same idea the dashboard folds away (dashboard.ts).
+const WRAPPED = /^\s*<([a-z][\w-]*)[\s>]/;
+
+// What a session is about, from the first thing its user typed, for an agent
+// that names no session of its own. A whole prompt is too long to be a name, so
+// it is cut at a line or a sentence.
+export function firstPrompt(body: unknown): string | undefined {
+  if (!body || typeof body !== "object") return undefined;
+  const record = body as { messages?: unknown; input?: unknown };
+  const list = Array.isArray(record.messages) ? record.messages : record.input;
+  if (!Array.isArray(list)) return undefined;
+  for (const item of list) {
+    const message = item as { role?: unknown; content?: unknown } | null;
+    if (message?.role !== "user") continue;
+    for (const block of blocks(message.content)) {
+      if (block === "" || WRAPPED.test(block)) continue;
+      return clean(block.split(/\r?\n/)[0]!.split(/(?<=[.!?])\s/)[0]!);
+    }
+  }
+  return undefined;
+}
+
+// The text of a message's blocks, one string each.
+function blocks(content: unknown): string[] {
+  if (typeof content === "string") return [content];
+  if (!Array.isArray(content)) return [];
+  return content
+    .map((block) => {
+      if (typeof block === "string") return block;
+      const text = (block as { text?: unknown } | null)?.text;
+      return typeof text === "string" ? text : "";
+    })
+    .filter((text) => text !== "");
 }
 
 function clean(title: string): string | undefined {

@@ -242,7 +242,29 @@ describe("the proxy", () => {
       entries: Array<Record<string, unknown>>;
       stats: Record<string, unknown>;
       watch: { terms: number; action: string; known: number };
+      sessions: Array<{ id: string; name: string; title?: string; guessed?: boolean }>;
     }>;
+
+  it("names a session from a prompt the watch list allows, not from one it rejects", async () => {
+    // A name from the conversation reaches the dashboard, so it may hold no
+    // real value: a watched string in the prompt means no name at all.
+    setWatch({ terms: ["zebra-internal"] });
+    const handler = createHandler(DEFAULT_ROUTES, upstream);
+    await send(handler, "see zebra-internal");
+    const guarded = await activity(handler);
+    expect(JSON.stringify(guarded)).not.toContain("zebra-internal");
+    expect(guarded.sessions.find((entry) => entry.id === "watch-se")?.title).toBeUndefined();
+
+    // With nothing watched, the same session is named from its first prompt.
+    setWatch({ terms: [] });
+    const open = createHandler(DEFAULT_ROUTES, upstream);
+    await send(open, "fix the login button");
+    const free = await activity(open);
+    expect(free.sessions.find((entry) => entry.id === "watch-se")).toMatchObject({
+      title: "fix the login button",
+      guessed: true,
+    });
+  });
 
   it("flags a watched string that masking missed, once per place, and still sends", async () => {
     setWatch({ terms: ["zebra-internal"] });
