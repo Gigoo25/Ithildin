@@ -370,6 +370,7 @@ export type Forwarded = {
   on: boolean | undefined;
   masked: number;
   compacted: number;
+  deduped: number;
   savedChars: number;
 };
 
@@ -685,6 +686,7 @@ export function shapeOutgoing(scanned: Scanned, format: Format, session: string 
     on: undefined,
     masked: 0,
     compacted: 0,
+    deduped: 0,
     savedChars: 0,
   };
   try {
@@ -701,6 +703,7 @@ export function shapeOutgoing(scanned: Scanned, format: Format, session: string 
       on: state.on,
       masked: result.masked,
       compacted: result.compacted,
+      deduped: result.deduped,
       savedChars: result.savedChars,
     };
   } catch {
@@ -769,9 +772,10 @@ export function journalLine(
   const allowed = tags.size > 0 ? ` allow=${[...tags].sort().join(",")}` : "";
   // Shaping is named only when it changed the body, so the journal reads the
   // same as before on a request nothing was shaped on.
+  const repeats = shaped?.deduped ? `${shaped.deduped}d` : "";
   const work =
-    shaped && (shaped.masked > 0 || shaped.compacted > 0)
-      ? ` shaped=${shaped.masked}m${shaped.compacted}c saved=${shaped.savedChars}`
+    shaped && (shaped.masked > 0 || shaped.compacted > 0 || shaped.deduped > 0)
+      ? ` shaped=${shaped.masked}m${shaped.compacted}c${repeats} saved=${shaped.savedChars}`
       : "";
   return `${route}${rest} ${status} scan=${scanMs}ms${allowed} redacted=${hits}${work}`;
 }
@@ -961,6 +965,7 @@ const NOT_SHAPED: Forwarded = {
   on: undefined,
   masked: 0,
   compacted: 0,
+  deduped: 0,
   savedChars: 0,
 };
 

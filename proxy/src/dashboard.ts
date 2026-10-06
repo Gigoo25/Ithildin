@@ -773,8 +773,9 @@ function renderStats(stats, watch) {
   figures('num_shaping', [
     ['Saved', saved === 0 ? 'none yet' : mib(saved)],
     ['Per request', stats.requests ? mib(Math.round(saved / stats.requests)) : 'none yet'],
-    ['Results stubbed', count(stats.shapedMasked || 0)],
+    ['Stubbed', count(stats.shapedMasked || 0)],
     ['Compacted', count(stats.shapedCompacted || 0)],
+    ['Repeats', count(stats.shapedDeduped || 0)],
   ]);
   renderCache(stats);
 }

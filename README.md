@@ -390,10 +390,14 @@ restarts. It needs a client that names its session, and the footer shows
 ## Shaping
 
 Old tool results are masked before the request leaves: past the cutoff, a
-result over 1k characters becomes a one-line stub naming the call that made it,
-and newer ones are compacted where they can be. rtk condenses command output
-at the source, so what reaches here is mostly what rtk does not recognise: MCP
-results, a direct grep, a fetch.
+result over 1k characters, or one holding images, becomes a one-line stub
+naming the call that made it. Long strings in an old call's input, the file a
+`Write` wrote or both sides of an `Edit`, become a note too. Newer results are
+compacted where they can be: escape codes, repeated lines, log timestamps,
+base64 and hex blobs and JSON whitespace go. A result that repeats one still
+whole above it, byte for byte, becomes a note pointing at the first. rtk
+condenses command output at the source, so what reaches here is mostly what
+rtk does not recognise: MCP results, a direct grep, a fetch.
 
 Two things to know about it. It is **pure**: the same request shapes to the
 same bytes every time, which is what keeps the provider's prompt cache intact,

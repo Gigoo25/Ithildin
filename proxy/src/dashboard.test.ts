@@ -474,6 +474,7 @@ describe("dashboard", () => {
           swappedCalls: 0,
           shapedMasked: 91,
           shapedCompacted: 0,
+          shapedDeduped: 2,
           shapedSavedChars: 355276,
           usageReplies: 1,
           usageInput: 1000,
@@ -551,10 +552,12 @@ describe("dashboard", () => {
       "0.3 MiB",
       "Per request",
       "0.3 MiB",
-      "Results stubbed",
+      "Stubbed",
       "91",
       "Compacted",
       "0",
+      "Repeats",
+      "2",
     ]);
     // 8000 of 10000 prompt tokens read from the cache, one break by the agent.
     expect(read("num_cache")).toEqual([

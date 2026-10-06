@@ -45,9 +45,11 @@ export function shapingOn(env: Record<string, string | undefined> = process.env)
 
 export interface Shaped {
   body: Record<string, unknown>;
-  // Results replaced by a stub, and results only compacted.
+  // Results and call inputs replaced by a stub, results only compacted, and
+  // results that repeat an output still whole above them.
   masked: number;
   compacted: number;
+  deduped: number;
   savedChars: number;
 }
 
@@ -81,13 +83,6 @@ function textOf(content: unknown): string {
       return entry && typeof entry.text === "string" ? entry.text : "";
     })
     .join("\n");
-}
-
-// Only text is ours to drop. An image, or anything else typed, is left alone.
-function textOnly(content: unknown): boolean {
-  if (typeof content === "string") return true;
-  if (!Array.isArray(content)) return false;
-  return content.every((block) => record(block)?.type === "text");
 }
 
 function estimateTokens(list: unknown[], format: Format): number {
@@ -165,10 +160,11 @@ function describe(name: string, args: unknown): string {
 
 // The stub. It names nothing relative to now, so the same old result masks to
 // the same bytes on every request, which is what keeps the cached prefix.
-function stubFor(name: string, args: unknown, size: number, lines: number): string {
+function stubFor(name: string, args: unknown, size: number, lines: number, images: number): string {
+  const pictures = images === 0 ? "" : ` and ${images} image${images === 1 ? "" : "s"}`;
   return (
-    `[masked to save context: ${describe(name, args)} returned ${lines} lines (${size} chars) ` +
-    "earlier in this session. Re-run the call if you need that output again.]"
+    `[masked to save context: ${describe(name, args)} returned ${lines} lines (${size} chars)` +
+    `${pictures} earlier in this session. Re-run the call if you need that output again.]`
   );
 }
 
@@ -185,81 +181,136 @@ interface Call {
   input: unknown;
 }
 
+// What one walk over the conversation knows so far: the calls it has seen, and
+// the outputs still whole, by text, with the call that made each one.
+interface Walk {
+  calls: Map<string, Call>;
+  outputs: Map<string, string>;
+}
+
+type Kind = "masked" | "compacted" | "deduped";
+type Counts = Record<Kind, number>;
+
+interface Change {
+  text: string;
+  saved: number;
+  kind: Kind;
+}
+
 interface Replacement {
   entry: unknown;
   saved: number;
-  stubbed: boolean;
+  counts: Counts;
 }
 
-// One tool result, shaped: a stub when it is old and big, the compacting
-// passes otherwise, or undefined to leave it exactly as it arrived. Nothing
-// but text is ever touched.
-function shaped(
-  content: unknown,
-  id: unknown,
-  calls: Map<string, Call>,
-  old: boolean,
-): { text: string; saved: number } | undefined {
-  if (!textOnly(content)) return;
-  const text = textOf(content);
-  if (!text) return;
-  if (old && text.length >= MASK_MIN_CHARS) {
-    const call = id === undefined ? undefined : calls.get(String(id));
-    const stub = stubFor(call?.name ?? "tool", call?.input, text.length, text.split("\n").length);
-    return { text: stub, saved: text.length - stub.length };
+// An image costs a provider about 1.5k tokens whatever its bytes, so a masked
+// one counts as that much text and the saved figure stays in one unit.
+const IMAGE_CHARS = 6_000;
+
+// A repeat shorter than this is not worth the note that replaces it.
+export const DEDUPE_MIN_CHARS = 500;
+
+// What a tool result holds when it is only text and images, the only kinds
+// that are ours to drop; undefined for anything else typed.
+function partsOf(content: unknown): { text: string; images: number } | undefined {
+  if (typeof content === "string") return { text: content, images: 0 };
+  if (!Array.isArray(content)) return;
+  const texts: string[] = [];
+  let images = 0;
+  for (const block of content) {
+    const entry = record(block);
+    const type = entry?.type;
+    const text = entry?.text;
+    if (TEXT_TYPES.has(String(type)) && typeof text === "string") texts.push(text);
+    else if (type === "image" || type === "input_image") images++;
+    else return;
+  }
+  return { text: texts.join("\n"), images };
+}
+
+const TEXT_TYPES = new Set(["text", "input_text", "output_text"]);
+
+// The note a repeated output becomes. The first copy is still whole above it
+// in this request: when that one is masked, the repeat stops being one and is
+// sent whole again, which a cutoff step pays for at an earlier point anyway.
+function sameAs(first: string, size: number, lines: number): string {
+  return (
+    `[same output as ${first} earlier in this session: ${lines} lines (${size} chars), ` +
+    "byte for byte. It is still in the conversation above.]"
+  );
+}
+
+// One tool result, shaped: a stub when it is old and big, a note when it
+// repeats an output still whole above it, the compacting passes otherwise, or
+// undefined to leave it exactly as it arrived.
+function shaped(content: unknown, id: unknown, walk: Walk, old: boolean): Change | undefined {
+  const parts = partsOf(content);
+  if (!parts) return;
+  const { text, images } = parts;
+  const call = id === undefined ? undefined : walk.calls.get(String(id));
+  const name = call?.name ?? "tool";
+  const lines = text.split("\n").length;
+  if (old && (text.length >= MASK_MIN_CHARS || images > 0)) {
+    const stub = stubFor(name, call?.input, text.length, lines, images);
+    return { text: stub, saved: text.length + images * IMAGE_CHARS - stub.length, kind: "masked" };
+  }
+  // A recent image is the model's to look at.
+  if (images > 0 || !text) return;
+  if (text.length >= DEDUPE_MIN_CHARS) {
+    const first = walk.outputs.get(text);
+    if (first !== undefined) {
+      const note = sameAs(first, text.length, lines);
+      return { text: note, saved: text.length - note.length, kind: "deduped" };
+    }
+    walk.outputs.set(text, describe(name, call?.input));
   }
   const compacted = compact(text);
   return compacted === undefined
     ? undefined
-    : { text: compacted, saved: text.length - compacted.length };
+    : { text: compacted, saved: text.length - compacted.length, kind: "compacted" };
 }
 
-function shapeAnthropic(
-  item: unknown,
-  calls: Map<string, Call>,
-  old: boolean,
-): Replacement | undefined {
+function counted(kind: Kind): Counts {
+  return { masked: 0, compacted: 0, deduped: 0, [kind]: 1 };
+}
+
+function shapeAnthropic(item: unknown, walk: Walk, old: boolean): Replacement | undefined {
   const entry = record(item);
   if (!entry || !Array.isArray(entry.content)) return;
   let saved = 0;
-  let hit = 0;
-  let anyStub = false;
+  const counts: Counts = { masked: 0, compacted: 0, deduped: 0 };
+  // Anthropic carries several results in one user turn, so each block counts.
   const content = (entry.content as unknown[]).map((block) => {
     const typed = record(block);
     if (typed?.type !== "tool_result") return block;
-    const next = shaped(typed.content, typed.tool_use_id, calls, old);
+    const next = shaped(typed.content, typed.tool_use_id, walk, old);
     if (!next) return block;
-    hit++;
-    if (old && next.text.startsWith("[masked")) anyStub = true;
+    counts[next.kind]++;
     saved += next.saved;
     return { ...typed, content: next.text };
   });
-  // Anthropic carries several results in one user turn, so a hit is counted per
-  // block; the turn counts as stubbed only if a block was replaced by a stub.
-  return hit === 0 ? undefined : { entry: { ...entry, content }, saved, stubbed: old && anyStub };
+  return counts.masked + counts.compacted + counts.deduped === 0
+    ? undefined
+    : { entry: { ...entry, content }, saved, counts };
 }
 
-function shapeChat(item: unknown, calls: Map<string, Call>, old: boolean): Replacement | undefined {
+function shapeChat(item: unknown, walk: Walk, old: boolean): Replacement | undefined {
   const entry = record(item);
   if (!entry || entry.role !== "tool") return;
-  const next = shaped(entry.content, entry.tool_call_id, calls, old);
+  const next = shaped(entry.content, entry.tool_call_id, walk, old);
   return next === undefined
     ? undefined
-    : { entry: { ...entry, content: next.text }, saved: next.saved, stubbed: old };
+    : { entry: { ...entry, content: next.text }, saved: next.saved, counts: counted(next.kind) };
 }
 
-function shapeResponses(
-  item: unknown,
-  calls: Map<string, Call>,
-  old: boolean,
-): Replacement | undefined {
+function shapeResponses(item: unknown, walk: Walk, old: boolean): Replacement | undefined {
   const entry = record(item);
   if (!entry || (entry.type !== "function_call_output" && entry.type !== "custom_tool_call_output"))
     return;
-  const next = shaped(entry.output, entry.call_id, calls, old);
+  const next = shaped(entry.output, entry.call_id, walk, old);
   return next === undefined
     ? undefined
-    : { entry: { ...entry, output: next.text }, saved: next.saved, stubbed: old };
+    : { entry: { ...entry, output: next.text }, saved: next.saved, counts: counted(next.kind) };
 }
 
 // The request with its old tool results masked, or undefined when there was
@@ -268,36 +319,32 @@ export function shapeRequest(format: Format, body: Record<string, unknown>): Sha
   const list = conversation(format, body);
   if (!list) return;
   const cutoff = cutoffFor(list, format);
-  const calls = new Map<string, Call>();
+  const walk: Walk = { calls: new Map(), outputs: new Map() };
+  const totals: Counts = { masked: 0, compacted: 0, deduped: 0 };
   let turn = 0;
-  let masked = 0;
   let savedChars = 0;
-  let compacted = 0;
   const out = list.map((item) => {
     // Every item can carry calls: an Anthropic or chat call sits in an
     // assistant turn, a Responses call is its own top-level item. Recording
     // them all is what lets a stub name the command that produced the result.
     for (const call of toolCalls(format, item))
-      if (call.id !== undefined) calls.set(String(call.id), { name: call.name, input: call.input });
-    if (isAssistant(format, item)) {
-      turn++;
-      return item;
-    }
-    // A tool result answers the call above it, so it belongs to the turn the
-    // counter reached when that call was seen. `cutoff` counts whole turns of
-    // history, and the result lands one turn after its call, so the boundary
-    // is cutoff + 1: getting this wrong stubs everything, because every
-    // result then looks one turn older than it is.
-    const replaced = shapeEntry(format, item, calls, turn <= cutoff + 1);
+      if (call.id !== undefined)
+        walk.calls.set(String(call.id), { name: call.name, input: call.input });
+    if (isAssistant(format, item)) turn++;
+    // A result answers the call above it, so it shares that call's turn: the
+    // first `cutoff` turns are old, calls and results alike. A cutoff of zero
+    // is a conversation too short to shape, so nothing in it is old, not even
+    // its first turn.
+    const old = cutoff > 0 && turn <= cutoff;
+    const replaced = shapeEntry(format, item, walk, old);
     if (!replaced) return item;
-    if (replaced.stubbed) masked++;
-    else compacted++;
+    for (const kind of Object.keys(totals) as Kind[]) totals[kind] += replaced.counts[kind];
     savedChars += replaced.saved;
     return replaced.entry;
   });
-  // Either count is a change: a request with only compaction is still shaped.
-  if (masked + compacted === 0) return;
-  return { body: { ...body, [keyOf(format)]: out }, masked, compacted, savedChars };
+  // Any count is a change: a request with only compaction is still shaped.
+  if (totals.masked + totals.compacted + totals.deduped === 0) return;
+  return { body: { ...body, [keyOf(format)]: out }, ...totals, savedChars };
 }
 
 function keyOf(format: Format): "messages" | "input" {
@@ -307,10 +354,121 @@ function keyOf(format: Format): "messages" | "input" {
 function shapeEntry(
   format: Format,
   item: unknown,
-  calls: Map<string, Call>,
+  walk: Walk,
   old: boolean,
 ): Replacement | undefined {
-  if (format === "anthropic") return shapeAnthropic(item, calls, old);
-  if (format === "chat") return shapeChat(item, calls, old);
-  return shapeResponses(item, calls, old);
+  if (old) {
+    const call = shapeCall(format, item);
+    if (call) return call;
+  }
+  if (format === "anthropic") return shapeAnthropic(item, walk, old);
+  if (format === "chat") return shapeChat(item, walk, old);
+  return shapeResponses(item, walk, old);
+}
+
+// ── old calls ───────────────────────────────────────────────────────────────
+//
+// A call's input is re-sent every turn too, and the big ones are the model's
+// own writes: a whole file in a Write, both sides of an Edit, a patch. Past the
+// cutoff a long string in an input becomes a note. The wording says the call
+// ran with the full text and that a new one needs it, because a model that
+// reads its own history as having written placeholders will write them.
+
+export const INPUT_MIN_CHARS = MASK_MIN_CHARS;
+// Deep enough for an edit list inside an input, no deeper.
+const INPUT_DEPTH_MAX = 4;
+
+function inputNote(size: number): string {
+  return (
+    `[${size} chars of this earlier call's input removed from the history to save context. ` +
+    "The call ran with the full text; a new call needs its full text written out.]"
+  );
+}
+
+// The value with every long string in it replaced, or undefined when none was.
+function maskedValue(value: unknown, depth = 0): { value: unknown; saved: number } | undefined {
+  if (typeof value === "string") {
+    if (value.length < INPUT_MIN_CHARS) return;
+    const note = inputNote(value.length);
+    return { value: note, saved: value.length - note.length };
+  }
+  if (!value || typeof value !== "object" || depth >= INPUT_DEPTH_MAX) return;
+  const out: Record<string, unknown> | unknown[] = Array.isArray(value)
+    ? [...value]
+    : { ...(value as Record_) };
+  let saved = 0;
+  for (const key of Object.keys(out)) {
+    const next = maskedValue((out as Record_)[key], depth + 1);
+    if (!next) continue;
+    (out as Record_)[key] = next.value;
+    saved += next.saved;
+  }
+  return saved > 0 ? { value: out, saved } : undefined;
+}
+
+// Arguments carried as one JSON string: masked inside, and written back the
+// way JSON.stringify writes them. A string that does not parse is left whole.
+function maskedArguments(text: unknown): { value: string; saved: number } | undefined {
+  if (typeof text !== "string" || text.length < INPUT_MIN_CHARS) return;
+  const parsed = parseArgs(text);
+  const next = parsed === undefined ? undefined : maskedValue(parsed);
+  if (!next) return;
+  const value = JSON.stringify(next.value);
+  return value.length < text.length ? { value, saved: text.length - value.length } : undefined;
+}
+
+function shapeCall(format: Format, item: unknown): Replacement | undefined {
+  const entry = record(item);
+  if (!entry) return;
+  if (format === "anthropic") return shapeBlocks(entry);
+  if (format === "chat") return shapeChatCalls(entry);
+  const field = entry.type === "function_call" ? "arguments" : "input";
+  if (entry.type !== "function_call" && entry.type !== "custom_tool_call") return;
+  const next = field === "arguments" ? maskedArguments(entry.arguments) : maskedValue(entry.input);
+  return (
+    next && {
+      entry: { ...entry, [field]: next.value },
+      saved: next.saved,
+      counts: counted("masked"),
+    }
+  );
+}
+
+function shapeBlocks(entry: Record_): Replacement | undefined {
+  if (entry.role !== "assistant" || !Array.isArray(entry.content)) return;
+  let saved = 0;
+  let masked = 0;
+  const content = (entry.content as unknown[]).map((block) => {
+    const typed = record(block);
+    const next = typed?.type === "tool_use" ? maskedValue(typed.input) : undefined;
+    if (!next) return block;
+    saved += next.saved;
+    masked++;
+    return { ...typed, input: next.value };
+  });
+  return masked === 0
+    ? undefined
+    : { entry: { ...entry, content }, saved, counts: { masked, compacted: 0, deduped: 0 } };
+}
+
+function shapeChatCalls(entry: Record_): Replacement | undefined {
+  if (entry.role !== "assistant" || !Array.isArray(entry.tool_calls)) return;
+  let saved = 0;
+  let masked = 0;
+  const calls = (entry.tool_calls as unknown[]).map((call) => {
+    const typed = record(call);
+    const fn = record(typed?.function);
+    const next = fn ? maskedArguments(fn.arguments) : undefined;
+    if (!next) return call;
+    saved += next.saved;
+    masked++;
+    return { ...typed, function: { ...fn, arguments: next.value } };
+  });
+  return masked === 0
+    ? undefined
+    : {
+        entry: { ...entry, tool_calls: calls },
+        saved,
+        counts: { masked, compacted: 0, deduped: 0 },
+      };
 }

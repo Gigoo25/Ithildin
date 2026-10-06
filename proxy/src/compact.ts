@@ -8,7 +8,7 @@
 // doing it again on the wire would be the same work twice. What arrives
 // uncondensed is what rtk does not recognise: MCP results, a direct grep, a
 // WebFetch, anything an agent ran that is not a dev command. That is the gap
-// these four close, so they and rtk divide the work rather than overlap.
+// these five close, so they and rtk divide the work rather than overlap.
 //
 // Every pass is near-lossless and returns undefined when it would change
 // nothing, so a request whose output is already tidy is forwarded untouched —
@@ -118,15 +118,42 @@ export function stripControlSequences(text: string): string | undefined {
   return stripped === text ? undefined : stripped;
 }
 
+// Encoded data with no model value: a run of base64 or hex long enough that no
+// model reads it, inline in a page, a log, or a JSON field. It becomes its
+// length and first characters, which are enough to tell two blobs apart and
+// too few to decode. Secrets were redacted before this ever runs, so a key
+// cannot survive as a prefix here.
+export const BLOB_MIN_CHARS = 1_000;
+const BLOB_HEAD = 12;
+const BLOB = new RegExp(`[A-Za-z0-9+/_-]{${BLOB_MIN_CHARS},}={0,2}`, "g");
+
+export function collapseBlobs(text: string): string | undefined {
+  let changed = false;
+  const output = text.replace(BLOB, (blob) => {
+    // A run of one character is a ruler or padding, already handled by the
+    // repeat pass when it spans lines, and not encoded data.
+    if (new Set(blob.slice(0, 64)).size < 8) return blob;
+    changed = true;
+    return `[encoded blob, ${blob.length} chars, starting ${blob.slice(0, BLOB_HEAD)}]`;
+  });
+  return changed ? output : undefined;
+}
+
 // What SHAPE_THRESHOLD_CHARS guards in Pi: small output is not worth the risk
 // or the bytes, and a stub's worth of text is left whole.
 export const PASS_THRESHOLD_CHARS = 2_000;
 
 // Every pass, in the order that lets the next one see less: control noise
 // first, so the repeats it exposes are visible, then the text-level passes.
-const PASSES = [stripControlSequences, collapseRepeatedLines, stripLogTimestamps, minifyJsonOutput];
+const PASSES = [
+  stripControlSequences,
+  collapseRepeatedLines,
+  stripLogTimestamps,
+  collapseBlobs,
+  minifyJsonOutput,
+];
 
-// The text as the four passes leave it, or undefined when none of them
+// The text as the passes leave it, or undefined when none of them
 // changed anything.
 export function compact(text: string): string | undefined {
   if (text.length < PASS_THRESHOLD_CHARS) return undefined;

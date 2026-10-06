@@ -4,6 +4,8 @@ import {
   MASK_MIN_CHARS,
   MASK_STEP_TURNS,
   MASK_THRESHOLD_TOKENS,
+  DEDUPE_MIN_CHARS,
+  INPUT_MIN_CHARS,
   shapingOn,
   shapeRequest,
 } from "./shape.ts";
@@ -146,7 +148,7 @@ describe("anthropic requests", () => {
     expect(shapeRequest("anthropic", { messages: turns(3) })).toBeUndefined();
   });
 
-  it("keeps a small result, and one that is not only text", () => {
+  it("keeps a small result, and one holding more than text and images", () => {
     const small = turns(20);
     small.splice(2, 0, {
       role: "assistant",
@@ -161,7 +163,7 @@ describe("anthropic requests", () => {
     const image = structuredClone(small);
     const blocks = (at(image, 3).content ?? []) as Array<Record<string, unknown>>;
     const first = blocks[0] ?? {};
-    first.content = [{ type: "image", source: { data: big() } }];
+    first.content = [{ type: "document", source: { data: big() } }];
     at(image, 3).content = blocks;
     expect(shapeRequest("anthropic", { messages: image })).toBeUndefined();
   });
@@ -321,5 +323,157 @@ describe("requests with nothing to shape", () => {
     expect(shapeRequest("anthropic", { messages: small })).toBeUndefined();
     expect(MASK_THRESHOLD_TOKENS).toBeGreaterThan(0);
     expect(MASK_MIN_CHARS).toBeGreaterThan(0);
+  });
+});
+
+// Twenty padded turns, so the cutoff sits at ten, with `early` spliced in at
+// turn two (old) and `late` appended after the last turn (recent).
+function around(early: unknown[], late: unknown[]): Array<Record<string, unknown>> {
+  const list = turns(20);
+  list.splice(2, 0, ...(early as Array<Record<string, unknown>>));
+  return list.concat(late as Array<Record<string, unknown>>);
+}
+
+const call = (id: string, name: string, input: unknown) => ({
+  role: "assistant",
+  content: [{ type: "tool_use", id, name, input }],
+});
+const result = (id: string, content: unknown) => ({
+  role: "user",
+  content: [{ type: "tool_result", tool_use_id: id, content }],
+});
+// The first tool_result's content in the message at `index`.
+const contentAt = (list: unknown, index: number): unknown =>
+  ((at(list, index).content as Array<Record<string, unknown>>)[0] ?? {}).content;
+
+describe("a conversation too short to shape", () => {
+  it("leaves its first turn's result whole, however big", () => {
+    // One turn, and a result big enough to pass the token threshold alone.
+    const huge = "word ".repeat(MASK_THRESHOLD_TOKENS);
+    const messages: unknown[] = [{ role: "user", content: "go" }, call("t1", "Bash", {})];
+    messages.push(result("t1", huge));
+    const shaped = shapeRequest("anthropic", { messages });
+    expect(JSON.stringify(shaped?.body ?? {})).not.toContain("[masked");
+  });
+});
+
+describe("images in tool results", () => {
+  const picture = { type: "image", source: { type: "base64", data: "AAAA" } };
+
+  it("masks an old one, and names how many the stub replaced", () => {
+    const list = around([call("t1", "Screenshot", {}), result("t1", [picture, picture])], []);
+    const shaped = shapeRequest("anthropic", { messages: list });
+    expect(shaped?.masked).toBe(1);
+    expect(String(contentAt(shaped!.body.messages, 3))).toContain("and 2 images earlier");
+    expect(shaped!.savedChars).toBeGreaterThan(10_000);
+  });
+
+  it("leaves a recent one for the model to look at", () => {
+    const list = around([], [call("t9", "Screenshot", {}), result("t9", [picture])]);
+    expect(shapeRequest("anthropic", { messages: list })).toBeUndefined();
+  });
+});
+
+describe("repeated outputs", () => {
+  const output = "same file contents\n".repeat(60);
+
+  it("notes a repeat of an output still whole above it, and keeps the first", () => {
+    const late = [
+      call("a", "Read", { file_path: "/w/a.ts" }),
+      result("a", output),
+      call("b", "Read", { file_path: "/w/a.ts" }),
+      result("b", output),
+    ];
+    const list = around([], late);
+    const shaped = shapeRequest("anthropic", { messages: list });
+    expect(shaped?.deduped).toBe(1);
+    const out = shaped!.body.messages as unknown[];
+    expect(contentAt(out, out.length - 3)).toBe(output);
+    expect(String(contentAt(out, out.length - 1))).toContain(
+      "[same output as Read `/w/a.ts` earlier in this session: 61 lines",
+    );
+  });
+
+  it("sends a repeat whole once its first copy is masked", () => {
+    const early = [call("a", "Read", { file_path: "/w/a.ts" }), result("a", output)];
+    const late = [call("b", "Read", { file_path: "/w/a.ts" }), result("b", output)];
+    const shaped = shapeRequest("anthropic", { messages: around(early, late) });
+    expect(shaped?.masked).toBe(1);
+    expect(shaped?.deduped).toBe(0);
+    const out = shaped!.body.messages as unknown[];
+    expect(contentAt(out, out.length - 1)).toBe(output);
+  });
+
+  it("leaves a short repeat alone", () => {
+    const short = "x".repeat(DEDUPE_MIN_CHARS - 1);
+    const late = [
+      call("a", "Bash", {}),
+      result("a", short),
+      call("b", "Bash", {}),
+      result("b", short),
+    ];
+    expect(shapeRequest("anthropic", { messages: around([], late) })).toBeUndefined();
+  });
+});
+
+describe("old call inputs", () => {
+  const file = "const x = 1;\n".repeat(200);
+
+  it("masks a long string in an old call, and leaves a recent call whole", () => {
+    const early = [
+      call("w1", "Write", { file_path: "/w/a.ts", content: file }),
+      result("w1", "ok"),
+    ];
+    const late = [call("w2", "Write", { file_path: "/w/b.ts", content: file }), result("w2", "ok")];
+    const shaped = shapeRequest("anthropic", { messages: around(early, late) });
+    expect(shaped?.masked).toBe(1);
+    const out = shaped!.body.messages as unknown[];
+    const old = ((at(out, 2).content as Array<Record<string, unknown>>)[0] ?? {}).input;
+    expect(old).toEqual({
+      file_path: "/w/a.ts",
+      content: expect.stringContaining("The call ran with the full text"),
+    });
+    expect(JSON.stringify(at(out, out.length - 2))).toContain("const x = 1;");
+    expect(INPUT_MIN_CHARS).toBeGreaterThan(0);
+  });
+
+  it("reaches a list of edits inside an input", () => {
+    const edits = [{ old_string: file, new_string: file }];
+    const early = [call("e1", "MultiEdit", { file_path: "/w/a.ts", edits }), result("e1", "ok")];
+    const shaped = shapeRequest("anthropic", { messages: around(early, []) });
+    expect(JSON.stringify(shaped?.body)).not.toContain("const x = 1;");
+  });
+
+  it("masks chat arguments, and leaves ones that do not parse", () => {
+    const args = (text: string) => ({
+      role: "assistant",
+      content: null,
+      tool_calls: [{ id: "c1", function: { name: "write", arguments: text } }],
+    });
+    const good = JSON.stringify({ path: "/w/a.ts", content: file });
+    const shaped = shapeRequest("chat", { messages: around([args(good)], []) });
+    expect(shaped?.masked).toBe(1);
+    expect(JSON.stringify(shaped?.body)).not.toContain("const x = 1;");
+    const broken = `{"content": "${"x".repeat(INPUT_MIN_CHARS)}`;
+    expect(shapeRequest("chat", { messages: around([args(broken)], []) })).toBeUndefined();
+  });
+
+  it("masks a Responses call's arguments and a custom call's input", () => {
+    const input: Array<Record<string, unknown>> = [];
+    for (let i = 0; i < 20; i++) {
+      input.push({ type: "message", role: "user", content: "go" });
+      input.push({ type: "message", role: "assistant", content: pad() });
+    }
+    const args = JSON.stringify({ content: file });
+    input.splice(2, 0, { type: "function_call", call_id: "r1", name: "write", arguments: args });
+    input.splice(3, 0, {
+      type: "custom_tool_call",
+      call_id: "r2",
+      name: "apply_patch",
+      input: file,
+    });
+    const shaped = shapeRequest("responses", { input });
+    expect(shaped?.masked).toBe(2);
+    expect(JSON.stringify(shaped?.body)).not.toContain("const x = 1;");
   });
 });

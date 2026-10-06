@@ -81,10 +81,11 @@ export interface Stats {
   kinds: Record<string, number>;
   swappedText: number;
   swappedCalls: number;
-  // What context shaping took off the wire: tool results stubbed, results
-  // compacted, and the characters both saved (shape.ts).
+  // What context shaping took off the wire: results and inputs stubbed,
+  // results compacted, repeats noted, and the characters all saved (shape.ts).
   shapedMasked: number;
   shapedCompacted: number;
+  shapedDeduped: number;
   shapedSavedChars: number;
   // What the replies said they cost (usage.ts): tokens sent fresh, read from
   // the provider's prompt cache, written to it, and generated.
@@ -258,6 +259,7 @@ function newStats(startedAt: number): Stats {
     swappedCalls: 0,
     shapedMasked: 0,
     shapedCompacted: 0,
+    shapedDeduped: 0,
     shapedSavedChars: 0,
     usageReplies: 0,
     usageInput: 0,
@@ -356,7 +358,7 @@ export class EventLog {
     context: Context,
     ms: number,
     masked: number,
-    shaped: { masked: number; compacted: number; savedChars: number } = {
+    shaped: { masked: number; compacted: number; deduped?: number; savedChars: number } = {
       masked: 0,
       compacted: 0,
       savedChars: 0,
@@ -368,6 +370,7 @@ export class EventLog {
     this.stats.scanMsMax = Math.max(this.stats.scanMsMax, ms);
     this.stats.shapedMasked += shaped.masked;
     this.stats.shapedCompacted += shaped.compacted;
+    this.stats.shapedDeduped += shaped.deduped ?? 0;
     this.stats.shapedSavedChars += shaped.savedChars;
     this.add(context, { type: "request", ms, count: masked });
   }

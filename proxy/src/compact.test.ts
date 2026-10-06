@@ -1,6 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import {
+  BLOB_MIN_CHARS,
   PASS_THRESHOLD_CHARS,
+  collapseBlobs,
   collapseRepeatedLines,
   compact,
   minifyJsonOutput,
@@ -128,5 +130,29 @@ describe("compact", () => {
   it("returns undefined for large output none of the passes can improve", () => {
     const text = Array.from({ length: 500 }, (_, i) => `a unique line number ${i}`).join("\n");
     expect(compact(text)).toBeUndefined();
+  });
+});
+
+describe("collapseBlobs", () => {
+  const blob = Buffer.from(Array.from({ length: 1500 }, (_, i) => (i * 37) % 256)).toString(
+    "base64",
+  );
+
+  it("turns a long base64 run into its length and first characters", () => {
+    const out = collapseBlobs(`<img src="data:image/png;base64,${blob}"> after`);
+    expect(out).toBe(
+      `<img src="data:image/png;base64,[encoded blob, ${blob.length} chars, starting ` +
+        `${blob.slice(0, 12)}]"> after`,
+    );
+  });
+
+  it("leaves a short run, prose, and a long run of one character", () => {
+    expect(collapseBlobs(blob.slice(0, BLOB_MIN_CHARS - 1))).toBeUndefined();
+    expect(collapseBlobs("plain words ".repeat(200))).toBeUndefined();
+    expect(collapseBlobs("-".repeat(2_000))).toBeUndefined();
+  });
+
+  it("runs as one of the passes", () => {
+    expect(compact(`payload: ${blob}`)).toContain("[encoded blob,");
   });
 });
