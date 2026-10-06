@@ -29,6 +29,9 @@ export interface Context {
   session: string | undefined;
   // "claude 2": which session of which agent (sessions.ts).
   sessionName?: string;
+  // The request this happened in, counted by the handler: what it masked, its
+  // leaks, the swaps in its reply and its kept text share it.
+  turn?: number;
 }
 
 export interface Entry {
@@ -40,6 +43,7 @@ export interface Entry {
   // First characters of the session id, enough to tell conversations apart.
   session?: string;
   sessionName?: string;
+  turn?: number;
   kind?: string;
   rule?: string;
   standIn?: string;
@@ -265,6 +269,7 @@ export class EventLog {
       ...(context?.endpoint ? { endpoint: context.endpoint } : {}),
       ...(session ? { session } : {}),
       ...(context?.sessionName ? { sessionName: context.sessionName } : {}),
+      ...(context?.turn ? { turn: context.turn } : {}),
     });
     if (this.entries.length > ENTRIES_MAX) this.entries.shift();
   }

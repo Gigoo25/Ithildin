@@ -250,44 +250,53 @@ in `config.json`, or list it in `reviewedTools` once you've checked it.
 
 The footer says that the proxy is on the path. The dashboard shows what it did.
 Open `http://127.0.0.1:18733/dashboard` (your port) in a browser on the same
-machine. The page fits the window. The **Activity** tab lists each event as it
-happens:
+machine. The page fits the window.
 
-| Event     | Meaning                                                        |
-|-----------|----------------------------------------------------------------|
-| `leaked`  | a watched string was in an outgoing request (see below)        |
-| `masked`  | a value was replaced for the first time, with its stand-in     |
-| `swapped` | a stand-in in a reply or a tool call got its real value back   |
-| `blocked` | a guard stopped a tool call                                    |
-| `refused` | the proxy refused a request or a reply                         |
-| `request` | a request was scanned (hidden until you tick its box)          |
+The bar on top answers first: `No leaks` with how many values are watched,
+`N leaks found` in red with the time of the latest, or `Nothing watched` when
+the watch list is off. Hover it for where the leak was and what is watched.
 
-Above the list are totals: requests, distinct values masked by kind, swaps in
-reply text and in tool calls, blocks, refusals, leaks, scan time and uptime. A
-`swapped` row is the proof the footer cannot give: the model wrote the
-stand-in, and your machine got the real value.
+The left column lists the sessions, in the order the proxy first saw them.
+A session goes by the title its agent gave it, read from the agent's own
+naming request (Claude Code and opencode make one; Pi does not), or by your
+`/rename` in Claude Code, and otherwise by its agent and number (`claude 1`,
+`opencode 2`, `pi 1`). The title comes from the model's reply as the
+provider sent it, so it holds stand-ins, never a real value. A red count
+beside a session is its leaks. Requests without a session, and refusals,
+gather under *Other traffic*. Below the sessions, *Numbers* (folded) has the
+values masked by kind, routes, replacements, swaps, blocks, refusals, scan
+time and uptime. The page remembers what you fold.
 
-Each row names the route and path of its request, such as `anthropic/v1/messages`.
-A value in the path shows masked, as the provider gets it. The search box
-filters the rows, and the session menu shows one session's rows. Sessions are
-named by agent and the order seen (`claude 1`, `opencode 2`, `pi 1`); the first
-eight characters of the session id are in the menu and on hover. Numbers start
-over when the proxy restarts.
+Pick a session to read its conversation as the provider saw it: its latest
+turn as it went upstream, after masking, updated as new turns arrive. It reads
+like an agent's terminal, newest turn first: `›` your prompts, `⏺` the model
+and its tool calls, `⎿` each call's result, with the system prompt, the
+tools and harness text folded. **Raw** shows the JSON.
 
-The page shows the stand-in and a preview of the real value: its first two and
-last characters and its length (one character and the length for a short
-value). The Activity tab never holds the whole value. Events live in memory,
-the newest 5000, and a restart clears them. The list scrolls in its own box,
-newest first, and keeps your place when new events arrive. The page and its
-data answer only to `127.0.0.1`, `localhost` and `[::1]`, so a web page cannot
+| Mark | Meaning |
+|------|---------|
+| blue | a stand-in: a value the proxy masked. Hover it for its kind, the rule that matched it, and a preview of the real value |
+| blue with `↩` | a stand-in the model used, in its reply or a tool call, that your machine got back as the real value: the proof the footer cannot give |
+| red | what the proxy held back: a guard's refusal, a withheld file or image |
+| gold | a match for the search |
+
+A leak is flagged on the message it was found in. Above the conversation, the
+session's counts (values masked, swapped back, held back, leaks) and its
+latest leaks, blocks and refusals. The key beside the search counts each kind
+of mark, and a click goes to the next.
+
+The preview of a real value is its first two and last characters and its
+length (one character and the length for a short value). Events live in
+memory, the newest 5000, and a restart clears them. The page and its data
+answer only to `127.0.0.1`, `localhost` and `[::1]`, so a web page cannot
 read them through a rebound name.
 
-The **Sent requests** tab is different. It keeps the last 20 requests as they
-went upstream, after masking, and you can search the text. It is the proof of
-what left the machine, so a real value that masking missed is in it, and the
-page shows it as it is. The text is held in memory only, and each request is
-cut at 1 MiB. `ITHILDIN_KEEP_REQUESTS` sets how many it keeps (0 turns the tab
-off, 200 at most).
+The conversation is the proof of what left the machine, so a real value that
+masking missed is in it, and the page shows it as it is. The proxy keeps the
+last 20 requests' text, and each session's latest turn however busy the
+others are, in memory only, each cut at 1 MiB. Side requests (a title, a
+summary) are kept but not shown as the conversation. `ITHILDIN_KEEP_REQUESTS`
+sets how many (0 turns it off, 200 at most).
 
 A leak turns the tab title to `(2) Ithildin` and puts a red mark on the icon.
 The **Alert me about leaks** button asks the browser for permission to show a
@@ -350,6 +359,7 @@ Sometimes the model needs a real value. Put a tag anywhere in your prompt:
 | `[allow-pii]`       | personal and infrastructure details          |
 | `[allow-secrets]`   | secrets                                      |
 | `[allow-images]`    | the image hold                               |
+| `[allow-images:session]` | the image hold, for the rest of the session |
 | `[allow-protected]` | the guard on config and git history          |
 | `[allow-send]`      | the send block in untrusted or private chats |
 | `[allow-once:<id>]` | the guards, for the one call a refusal named |
@@ -365,7 +375,6 @@ for the rest of the session, until you type `[mask-images]` or the proxy
 restarts. It needs a client that names its session, and the footer shows
 `+images` while it is on.
 
-| `[allow-images:session]` | the image hold, for the rest of the session |
 A tag opens every call of its kind. `[allow-once:<id>]` opens only the call
 whose refusal gave that id: the same command sent again runs, and anything
 else is still checked. It lifts the protected, send and secret-send guards,

@@ -297,6 +297,22 @@ describe("dashboard", () => {
     ]);
   });
 
+  it("ties a request's events and its kept text together by its turn", async () => {
+    const handler = createHandler(
+      DEFAULT_ROUTES,
+      upstream(() => Response.json({ content: [{ type: "text", text: `mail ${standIn}` }] })),
+    );
+    await send(handler, messages(`mail ${EMAIL}`));
+    await send(handler, messages("hi"));
+    const turns = (await activity(handler)).entries.map((entry) => [entry.type, entry.turn]);
+    expect(turns).toEqual(expect.arrayContaining([["masked", 1], ["request", 1], ["request", 2]]));
+    expect(turns).toContainEqual(["swapped", 2]);
+    const list = (await (await handler(dashboard("/dashboard/requests"))).json()) as {
+      requests: Array<{ turn?: number }>;
+    };
+    expect(list.requests.map((sent) => sent.turn)).toEqual([2, 1]);
+  });
+
   it("shows the endpoint as the upstream gets it, with a value in the path masked", async () => {
     const handler = createHandler(
       DEFAULT_ROUTES,
@@ -402,18 +418,189 @@ describe("dashboard", () => {
     expect(DASHBOARD_HTML).toMatch(/translate\(100 50\)[^>]*>\s*<circle r="13"/);
   });
 
+  it("runs: picks the latest session, names it, and lays out its conversation", async () => {
+    const script = DASHBOARD_HTML.split("<script>")[1]!.split("</script>")[0]!;
+    type Fake = Record<string, unknown> & { children: Fake[]; textContent: string };
+    const fake = (): Fake => {
+      const node: Fake = {
+        children: [],
+        textContent: "",
+        value: "",
+        dataset: {},
+        style: {},
+        classList: { add() {}, remove() {}, toggle() {} },
+        append: (...kids: Fake[]) => node.children.push(...kids),
+        appendChild: (kid: Fake) => node.children.push(kid),
+        replaceChildren: (...kids: Fake[]) => (node.children = kids),
+        addEventListener() {},
+        setAttribute() {},
+        querySelector: () => null,
+        querySelectorAll: () => [],
+        scrollIntoView() {},
+        scrollTop: 0,
+        scrollHeight: 0,
+      };
+      Object.defineProperty(node, "firstChild", { get: () => node.children[0] });
+      return node;
+    };
+    const nodes = new Map<string, Fake>();
+    const byId = (id: string) => nodes.get(id) ?? nodes.set(id, fake()).get(id)!;
+    const sent = JSON.stringify({
+      tools: [{ name: "Bash" }],
+      messages: [{ role: "user", content: "hi" }],
+    });
+    const answers: Record<string, unknown> = {
+      "/dashboard/activity?since=0": {
+        entries: [{ id: 1, time: 1, type: "request", route: "anthropic", session: "s1", turn: 1 }],
+        next: 1,
+        stats: { leaked: 0, kinds: {}, routes: {}, requests: 1, startedAt: 0 },
+        watch: { known: 0, terms: 0, action: "flag" },
+        sessions: [{ id: "s1", name: "claude 1", title: "Fix the login" }],
+      },
+      "/dashboard/requests": {
+        enabled: true,
+        keep: 20,
+        requests: [{ id: 7, session: "s1", main: true, time: 1, turn: 1 }],
+      },
+      "/dashboard/request?id=7": sent,
+    };
+    const fetch = async (url: string) => {
+      const answer = answers[url];
+      return {
+        ok: answer !== undefined,
+        json: async () => answer,
+        text: async () => answer,
+      };
+    };
+    const document = {
+      getElementById: byId,
+      createElement: () => fake(),
+      querySelectorAll: () => [],
+    };
+    const storage = { getItem: () => null, setItem() {} };
+    new Function("document", "fetch", "localStorage", "window", "setInterval", script)(
+      document,
+      fetch,
+      storage,
+      {},
+      () => 0,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(byId("state").textContent).toBe("proxy up");
+    expect(byId("session_title").textContent).toBe("Fix the login");
+    expect(byId("viewer").children.length).toBeGreaterThan(0);
+  });
+
   it("carries its own icon, so the browser never asks the proxy for /favicon.ico", () => {
     expect(DASHBOARD_HTML).toMatch(/<link id="icon" rel="icon" href="data:image\/svg\+xml,%3Csvg/);
   });
 
-  it("has tabs, a search, a session menu, and alerts for a leak", () => {
-    for (const id of ["tab_activity", "tab_sent", "search", "session", "sent_search", "viewer"])
+  it("has a verdict, sessions, a search, the request viewer, and alerts for a leak", () => {
+    const ids = ["verdict", "sessions", "session_title", "alerts", "detail_search", "viewer"];
+    for (const id of ids)
       expect(DASHBOARD_HTML).toContain(`id="${id}"`);
     expect(DASHBOARD_HTML).toContain("/dashboard/requests");
     expect(DASHBOARD_HTML).toContain("/dashboard/request?id=");
     expect(DASHBOARD_HTML).toContain("new Notification(");
     expect(DASHBOARD_HTML).toMatch(/const ICON_ALERT = "data:image\/svg\+xml,/);
     expect(DASHBOARD_HTML).toContain("ff6b5e");
+  });
+
+  it("sums up each session, and places its leaks on the message they are in", () => {
+    const pick = (name: string) =>
+      /function \w+[\s\S]*?\n\}/.exec(
+        DASHBOARD_HTML.slice(DASHBOARD_HTML.indexOf(`function ${name}(`)),
+      )![0];
+    const feed = [
+      { type: "leaked", session: "s1", where: "messages[4].content", time: 3 },
+      { type: "swapped", session: "s1", standIn: "x", time: 2 },
+      { type: "masked", session: "s1", standIn: "x", time: 1, sessionName: "claude 1" },
+      { type: "refused", time: 4 },
+      { type: "leaked", session: "s1", where: "path", time: 5 },
+    ];
+    const run = new Function(
+      "feed",
+      `const OTHER = ''; const sessions = new Map(); ${pick("noteEntries")} ${pick("leaksFor")}` +
+        " noteEntries(feed); return { sessions: [...sessions.values()], leaks: leaksFor('s1') };",
+    ) as (feed: unknown[]) => { sessions: unknown[]; leaks: Map<number, unknown[]> };
+    const { sessions, leaks } = run(feed);
+    expect(sessions).toEqual([
+      { id: "s1", name: "s1", last: 5, masked: 1, swapped: 1, held: 0, leaked: 2 },
+      { id: "", name: "Other traffic", last: 4, masked: 0, swapped: 0, held: 1, leaked: 0 },
+    ]);
+    expect([...leaks.keys()]).toEqual([4]);
+  });
+
+  it("lays out a request as a conversation in each format", () => {
+    const source = /function turns[\s\S]*?\n\}/.exec(DASHBOARD_HTML)![0];
+    const turns = new Function(`${source}; return turns;`)() as (
+      body: unknown,
+    ) => Array<{ who: string; kind: string; text: string; name?: unknown }>;
+    const brief = (body: unknown) =>
+      turns(body).map((item) => [item.kind, item.name ?? "", item.text].join("|"));
+    expect(
+      brief({
+        system: [{ type: "text", text: "be brief" }],
+        tools: [{ name: "Bash" }, { name: "Read" }],
+        messages: [
+          { role: "user", content: "hi" },
+          {
+            role: "assistant",
+            content: [
+              { type: "thinking", thinking: "hm" },
+              { type: "tool_use", id: "t", name: "Bash", input: { command: "ls" } },
+            ],
+          },
+          {
+            role: "user",
+            content: [
+              { type: "tool_result", tool_use_id: "t", content: [{ type: "text", text: "a" }] },
+              { type: "image", source: {} },
+            ],
+          },
+        ],
+      }),
+    ).toEqual([
+      "tools|2|Bash, Read",
+      "system||be brief",
+      "user||hi",
+      "thinking||hm",
+      'tool_call|Bash|{\n "command": "ls"\n}',
+      "tool_result||a",
+      "media||[image]",
+    ]);
+    expect(
+      brief({
+        messages: [
+          { role: "system", content: "sys" },
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [{ function: { name: "grep", arguments: '{"q":1}' } }],
+          },
+          { role: "tool", content: "found" },
+        ],
+      }),
+    ).toEqual(["system||sys", 'tool_call|grep|{"q":1}', "tool_result||found"]);
+    expect(
+      brief({
+        instructions: "codex",
+        input: [
+          { type: "message", role: "user", content: [{ type: "input_text", text: "go" }] },
+          { type: "function_call", name: "shell", arguments: "{}" },
+          { type: "function_call_output", output: "ok" },
+        ],
+      }),
+    ).toEqual(["system||codex", "user||go", "tool_call|shell|{}", "tool_result||ok"]);
+    expect(brief({ input: "plain" })).toEqual(["user||plain"]);
+    // A call and its result share an id, so the page can show them together.
+    const paired = turns({
+      messages: [
+        { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "Bash", input: {} }] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }] },
+      ],
+    });
+    expect(paired.map((item) => item.id)).toEqual(["t1", "t1"]);
   });
 
   it("cuts a guard notice to its first sentence for the page", () => {
@@ -429,9 +616,8 @@ describe("dashboard", () => {
 
   it("keeps as many events as the proxy does, in a box that scrolls", () => {
     expect(DASHBOARD_HTML).toContain(`const FEED_MAX = ${ENTRIES_MAX};`);
-    expect(DASHBOARD_HTML).toMatch(/id="feed_box" class="scroll tall"/);
-    // The page fills the window and only this box scrolls.
-    expect(DASHBOARD_HTML).toMatch(/\.tall \{ flex: 1; min-height: \d+px; overflow-y: auto; \}/);
+    // The page fills the window and the conversation scrolls in its own box.
+    expect(DASHBOARD_HTML).toMatch(/#viewer \{\s+flex: 1; min-height: 0; overflow: auto;/);
     expect(DASHBOARD_HTML).toMatch(/height: 100vh; display: flex; flex-direction: column;/);
   });
 

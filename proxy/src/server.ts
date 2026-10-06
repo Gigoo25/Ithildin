@@ -35,6 +35,7 @@ import { type ActivityEvent, observeActivity } from "../engine/lib/activity.ts";
 import { DASHBOARD_CSP, DASHBOARD_HTML, DASHBOARD_PATH } from "./dashboard.ts";
 import { type Context, EventLog } from "./events.ts";
 import { SentRequests } from "./requests.ts";
+import { renamedIn, replyText, type TitleAsk, titleAsk, titleFrom } from "./titles.ts";
 import { SessionNames } from "./sessions.ts";
 import { createStatusBook } from "./status.ts";
 import { findWatched, knownValues, watchPolicy } from "./watch.ts";
@@ -106,8 +107,8 @@ const SESSION_HEADERS: [string, string][] = [
   ["x-opencode-session", "opencode"],
   ["x-session-affinity", "opencode"],
 ];
-const OWN_PATH = /^\/(?:_ithildin\/(selftest|health)|(dashboard)(?:\/(activity|requests|request))?)$/;
 const CLIENT_HEADER = "x-opencode-client";
+const OWN_PATH = /^\/(?:_ithildin\/(selftest|health)|(dashboard)(?:\/(activity|requests|request))?)$/;
 // Set by refuse() and removed by the handler, which logs the refusal for the
 // dashboard. It never reaches the client.
 const REFUSED_HEADER = "x-ithildin-refused";
@@ -458,6 +459,7 @@ export function createHandler(
   const events = new EventLog();
   const kept = new SentRequests();
   const names = new SessionNames();
+  let turns = 0;
   let proof: SelfTest | undefined;
   const respond = async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
@@ -469,7 +471,7 @@ export function createHandler(
     }
     if (own === "health") return health(url, routes, book, proof, gated);
     if (own === "dashboard" || own === "activity" || own === "requests" || own === "request")
-      return dashboard(own, url, events, kept);
+      return dashboard(own, url, { events, kept, names });
     if (gated && !proof?.ok) return refuseUnproven(proof);
     const match = /^\/([^/]+)(\/.*)?$/.exec(url.pathname);
     const route = match ? routes[match[1]!] : undefined;
@@ -493,10 +495,14 @@ export function createHandler(
       endpoint: sent.rest,
       session: session?.id,
       ...(session ? { sessionName: names.name(session.client, session.id) } : {}),
+      turn: ++turns,
     };
     recordScan({ book, events, kept }, context, scanned);
     const stopped = watchOutgoing(events, context, scanned, sent);
     if (stopped) return stopped;
+    const renamed = session ? renamedIn(scanned.object) : undefined;
+    if (session && renamed) names.title(session.id, renamed, true);
+    const ask = session ? titleAsk(scanned.object) : undefined;
 
     let upstream: Response;
     try {
@@ -510,6 +516,7 @@ export function createHandler(
     } catch (error) {
       return refuse(502, `upstream unreachable (${(error as Error).message})`);
     }
+    if (session && ask && upstream.ok) noteTitle(upstream.clone(), ask, session.id, names);
 
     // scan= is the redaction time this proxy adds to each request; allow=
     // names the tags the user's latest prompt carried ([allow-pii] → pii), so
@@ -552,13 +559,24 @@ function logRefusal(events: EventLog, response: Response): Response {
   return response;
 }
 
-// The dashboard page, or what it polls: the events after `?since=`, the list of
-// requests kept, or one request's text.
+// A naming request's reply, read beside the client's copy: the session's
+// title, with stand-ins, as the provider sent it (titles.ts).
+function noteTitle(reply: Response, ask: TitleAsk, id: string, names: SessionNames): void {
+  reply
+    .text()
+    .then((raw) => {
+      const title = titleFrom(ask, replyText(raw));
+      if (title) names.title(id, title, ask === "name");
+    })
+    .catch(() => undefined);
+}
+
+// The dashboard page, or what it polls: the events after `?since=` with the
+// sessions' names, the list of requests kept, or one request's text.
 function dashboard(
   own: "dashboard" | "activity" | "requests" | "request",
   url: URL,
-  events: EventLog,
-  kept: SentRequests,
+  { events, kept, names }: { events: EventLog; kept: SentRequests; names: SessionNames },
 ): Response {
   if (!LOCAL_HOSTS.has(url.hostname)) return new Response("forbidden", { status: 403 });
   const headers = { "cache-control": "no-store" };
@@ -581,7 +599,7 @@ function dashboard(
   const policy = watchPolicy();
   const known = policy.known ? knownValues().length : 0;
   const watch = { terms: policy.terms.length, action: policy.action, known };
-  return Response.json({ ...snapshot, watch }, { headers });
+  return Response.json({ ...snapshot, watch, sessions: names.list() }, { headers });
 }
 
 // The watch list's check of what is about to go out (watch.ts). The refusal,
@@ -610,6 +628,13 @@ function watchOutgoing(
   return refuse(403, `watch list: a watched string is in the request (${places}), not sending it`);
 }
 
+// A turn of the conversation itself, not a side request beside it (a title,
+// a summary, a quota check): one that offers the agent's tools.
+function isMainRequest(body: unknown): boolean {
+  const tools = (body as { tools?: unknown } | undefined)?.tools;
+  return Array.isArray(tools) && tools.length > 0 && titleAsk(body) === undefined;
+}
+
 // A scanned request: the status badge, what it masked, the request itself, and the
 // text as sent.
 function recordScan(
@@ -628,7 +653,7 @@ function recordScan(
     if (stores.events.record(context, event, scanned.body, standIns)) fresh++;
   stores.events.request(context, scanned.scanMs, fresh);
   if (scanned.body !== undefined)
-    stores.kept.record(context, scanned.body);
+    stores.kept.record(context, scanned.body, isMainRequest(scanned.object));
 }
 
 // The upstream reply with stand-ins in tool calls swapped back, or a refusal

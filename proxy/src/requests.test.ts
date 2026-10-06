@@ -23,7 +23,7 @@ describe("sent requests", () => {
   it("keeps the newest, newest first, without their text in the list", () => {
     let time = 100;
     const kept = new SentRequests(2, () => time++);
-    kept.record({ route: "anthropic", endpoint: "/v1/messages", session: "0123456789abcdef" }, '{"a":1}');
+    kept.record({ route: "anthropic", endpoint: "/v1/messages", session: undefined }, '{"a":1}');
     kept.record({ route: "anthropic", endpoint: "/v1/messages", session: undefined }, '{"a":2}');
     kept.record({ route: "openai-codex", endpoint: "/responses", session: undefined }, '{"a":3}');
     const { requests, keep, enabled } = kept.list();
@@ -94,5 +94,21 @@ describe("the dashboard's request pages", () => {
     expect((await get(handler, "/dashboard/request")).status).toBe(404);
     for (const path of ["/dashboard/requests", "/dashboard/request?id=1"])
       expect((await get(handler, path, "evil.example")).status).toBe(403);
+  });
+});
+
+describe("each session's latest turn", () => {
+  it("is kept however busy the others are, and side requests are not", () => {
+    const kept = new SentRequests(2);
+    const at = (session: string) => ({ route: "anthropic", endpoint: "/", session });
+    kept.record(at("quiet-session"), '{"turn":1}');
+    kept.record(at("quiet-session"), '{"title":1}', false);
+    for (let index = 0; index < 5; index++) kept.record(at("busy-session"), `{"n":${index}}`);
+    const list = kept.list().requests;
+    expect(list.map((sent) => [sent.session, sent.main])).toEqual([
+      ["busy-ses", true],
+      ["quiet-se", true],
+    ]);
+    expect(kept.text(list[1]!.id)).toBe('{\n "turn": 1\n}');
   });
 });

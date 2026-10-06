@@ -1,5 +1,5 @@
 // The last few requests as they were sent upstream, kept in memory for the
-// dashboard's "Sent requests" view. This is the text after redaction, so it is
+// dashboard's view of each session's conversation. This is the text after redaction, so it is
 // the proxy's own proof of what left the machine: a real value that masking
 // missed is in it, and the page shows it as it is. Nothing is written to disk,
 // and a restart clears it. Off when ITHILDIN_KEEP_REQUESTS is 0.
@@ -11,6 +11,8 @@ export const KEEP_DEFAULT = 20;
 export const KEEP_MAX = 200;
 // Longest body kept whole. A longer one is cut, and the view says so.
 export const BODY_BYTES_MAX = 1024 * 1024;
+// Sessions whose latest turn is kept past the limit above.
+export const SESSIONS_MAX = 20;
 const SESSION_CHARS = 8;
 
 export interface SentSummary {
@@ -20,6 +22,10 @@ export interface SentSummary {
   endpoint: string;
   session?: string;
   sessionName?: string;
+  // The handler's count of the request, as on its events (events.ts).
+  turn?: number;
+  // A turn of the conversation, not a side request (server.ts isMainRequest).
+  main: boolean;
   // Characters in the body as sent, and whether the view holds all of them.
   size: number;
   cut: boolean;
@@ -52,7 +58,11 @@ export class SentRequests {
     return this.keep > 0;
   }
 
-  record({ route, endpoint, session, sessionName }: Context, body: string): void {
+  record(
+    { route, endpoint, session, sessionName, turn }: Context,
+    body: string,
+    main = true,
+  ): void {
     if (!this.enabled) return;
     const cut = body.length > BODY_BYTES_MAX;
     this.kept.push({
@@ -62,11 +72,28 @@ export class SentRequests {
       endpoint,
       ...(session ? { session: session.slice(0, SESSION_CHARS) } : {}),
       ...(sessionName ? { sessionName } : {}),
+      ...(turn ? { turn } : {}),
+      main,
       size: body.length,
       cut,
       text: cut ? body.slice(0, BODY_BYTES_MAX) : body,
     });
-    if (this.kept.length > this.keep) this.kept.shift();
+    if (this.kept.length > this.keep) this.drop();
+  }
+
+  // The oldest request, unless it is its session's latest turn: each session
+  // keeps one to show, however busy the others are, up to SESSIONS_MAX.
+  private drop(): void {
+    const latest = new Set<Sent>();
+    const seen = new Set<string>();
+    for (let i = this.kept.length - 1; i >= 0; i--) {
+      const sent = this.kept[i]!;
+      if (!sent.main || !sent.session || seen.has(sent.session)) continue;
+      seen.add(sent.session);
+      if (seen.size <= SESSIONS_MAX) latest.add(sent);
+    }
+    const at = this.kept.findIndex((sent) => !latest.has(sent));
+    this.kept.splice(at < 0 ? 0 : at, 1);
   }
 
   // Newest first, without the text.
