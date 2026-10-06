@@ -272,7 +272,8 @@ describe("dashboard", () => {
       );
     await as({ "x-claude-code-session-id": "aaaaaaaa1111" });
     await as({ "x-claude-code-session-id": "bbbbbbbb2222" });
-    await as({ "x-opencode-session-id": "cccccccc3333" });
+    await as({ "x-opencode-session": "cccccccc3333" });
+    await as({ "x-opencode-session": "dddddddd4444", "x-opencode-client": "pi" });
     await as({ "x-claude-code-session-id": "aaaaaaaa1111" });
     const seen = (await activity(handler)).entries
       .filter((entry) => entry.type === "request")
@@ -281,6 +282,7 @@ describe("dashboard", () => {
       ["aaaaaaaa", "claude 1"],
       ["bbbbbbbb", "claude 2"],
       ["cccccccc", "opencode 1"],
+      ["dddddddd", "pi 1"],
       ["aaaaaaaa", "claude 1"],
     ]);
     const list = (await (await handler(dashboard("/dashboard/requests"))).json()) as {
@@ -288,6 +290,7 @@ describe("dashboard", () => {
     };
     expect(list.requests.map((sent) => sent.sessionName)).toEqual([
       "claude 1",
+      "pi 1",
       "opencode 1",
       "claude 2",
       "claude 1",

@@ -675,18 +675,20 @@ describe("provider blindness", () => {
     for (let i = 0; i < 300; i++) tags({ messages: [{ role: "user", content: "hi" }] }, `f-${i}`);
   });
 
-  it("reads opencode's session header", async () => {
-    const up = fakeUpstream(() => Response.json({ content: [] }));
-    const handler = createHandler(DEFAULT_ROUTES, up.fetch);
-    const send = (text: string) => {
-      const messages = [{ role: "user", content: text }];
-      const request = post("anthropic/v1/messages", { messages });
-      request.headers.set("x-opencode-session-id", "oc-1");
-      return handler(request);
-    };
-    await send("[allow-pii] hi");
-    await send(`<conversation>\nmail ${EMAIL}\n</conversation>`);
-    expect(JSON.stringify(up.seen[1]!.body)).toContain(EMAIL);
+  it("reads opencode's session headers, for its own providers and the rest", async () => {
+    for (const header of ["x-opencode-session", "x-session-affinity"]) {
+      const up = fakeUpstream(() => Response.json({ content: [] }));
+      const handler = createHandler(DEFAULT_ROUTES, up.fetch);
+      const send = (text: string) => {
+        const messages = [{ role: "user", content: text }];
+        const request = post("anthropic/v1/messages", { messages });
+        request.headers.set(header, "oc-1");
+        return handler(request);
+      };
+      await send("[allow-pii] hi");
+      await send(`<conversation>\nmail ${EMAIL}\n</conversation>`);
+      expect(JSON.stringify(up.seen[1]!.body)).toContain(EMAIL);
+    }
   });
 });
 

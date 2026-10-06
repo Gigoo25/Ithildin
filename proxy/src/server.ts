@@ -96,14 +96,18 @@ export function upstreamUrl(route: Route, rest: string, search: string): string 
 }
 
 // Pi's footer tags its requests with its session id (the proxy's own header,
-// never forwarded); Claude sends X-Claude-Code-Session-Id itself.
-// opencode sends x-opencode-session-id.
+// never forwarded); Claude sends X-Claude-Code-Session-Id itself. opencode
+// sends x-opencode-session to its own providers, with x-opencode-client
+// naming the agent (Pi sends it too, as "pi"), and x-session-affinity to the
+// rest.
 const SESSION_HEADERS: [string, string][] = [
   ["x-ithildin-session", "pi"],
   ["x-claude-code-session-id", "claude"],
-  ["x-opencode-session-id", "opencode"],
+  ["x-opencode-session", "opencode"],
+  ["x-session-affinity", "opencode"],
 ];
 const OWN_PATH = /^\/(?:_ithildin\/(selftest|health)|(dashboard)(?:\/(activity|requests|request))?)$/;
+const CLIENT_HEADER = "x-opencode-client";
 // Set by refuse() and removed by the handler, which logs the refusal for the
 // dashboard. It never reaches the client.
 const REFUSED_HEADER = "x-ithildin-refused";
@@ -523,7 +527,9 @@ export function createHandler(
 function sessionOf(request: Request): { id: string; client: string } | undefined {
   for (const [header, client] of SESSION_HEADERS) {
     const id = request.headers.get(header);
-    if (id) return { id, client };
+    if (!id) continue;
+    const named = header === "x-opencode-session" ? request.headers.get(CLIENT_HEADER) : null;
+    return { id, client: named === "pi" ? "pi" : client };
   }
   return undefined;
 }
