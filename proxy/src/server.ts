@@ -98,15 +98,17 @@ export function formatForPath(pathname: string): Format | undefined {
   return undefined;
 }
 
-export function upstreamUrl(route: Route, rest: string, search: string): string {
-  let tail = rest;
+// The path a route's rewrites leave, which the upstream is appended to. First
+// match wins.
+function rewrittenTail(route: Route, rest: string): string {
   for (const [from, to] of Object.entries(route.rewrite ?? {})) {
-    if (tail.startsWith(from)) {
-      tail = to + tail.slice(from.length);
-      break;
-    }
+    if (rest.startsWith(from)) return to + rest.slice(from.length);
   }
-  return route.upstream.replace(/\/+$/, "") + tail + search;
+  return rest;
+}
+
+export function upstreamUrl(route: Route, rest: string, search: string): string {
+  return route.upstream.replace(/\/+$/, "") + rewrittenTail(route, rest) + search;
 }
 
 // The endpoints a via host recognises at the end of a path. It appends a path
@@ -124,16 +126,22 @@ function routeFor(
   rest: string,
   search: string,
   headers: Headers,
+  format?: Format,
 ): { target: string } | Response {
-  const split = splitVia(route, rest, search);
+  const split = splitVia(route, rest, search, format);
   if (route.via && !split)
     return refuse(502, `route ${name} goes via ${route.via}, which cannot serve ${rest}`);
-  if (split) headers.set(BASE_URL_HEADER, split.base);
+  if (split) {
+    headers.set(BASE_URL_HEADER, split.base);
+    if (split.original) headers.set(ORIGINAL_PATH_HEADER, split.original);
+  }
   return { target: split?.url ?? upstreamUrl(route, rest, search) };
 }
 
-// How a via host is told where to send a request.
+// How a via host is told where to send a request, and, when the path a rewrite
+// left is not one it serves, which path the provider really wants.
 const BASE_URL_HEADER = "x-headroom-base-url";
+const ORIGINAL_PATH_HEADER = "x-headroom-original-path";
 
 const VIA_SUFFIXES = [
   "/v1/messages/count_tokens",
@@ -143,26 +151,50 @@ const VIA_SUFFIXES = [
   "/v1/responses",
 ];
 
+// The endpoint a via host serves for each wire format, for a path a rewrite
+// has left unrecognisable.
+const VIA_ENDPOINTS: Record<Format, string> = {
+  anthropic: "/v1/messages",
+  chat: "/v1/chat/completions",
+  responses: "/v1/responses",
+};
+
 // Where a request goes when its route names a via host: the endpoint suffix on
 // the path, and the upstream to reach behind it. Undefined when the route has
-// no via, or when the path ends in something a via host would not recognise —
-// which is refused rather than guessed at, since sending it on would let the
-// host pick the upstream itself.
+// no via, or when the path ends in something a via host would not recognise and
+// the format says nothing better — which is refused rather than guessed at,
+// since sending it on would let the host pick the upstream itself.
+//
+// A rewrite can leave a path no via host serves: Copilot's /v1/responses is
+// rewritten to /responses. Then the endpoint for the format is used and the
+// real path rides along in x-headroom-original-path, which is what that header
+// is for.
 export function splitVia(
   route: Route,
   rest: string,
   search: string,
-): { url: string; base: string } | undefined {
+  format?: Format,
+): { url: string; base: string; original?: string } | undefined {
   if (!route.via) return undefined;
-  const full = upstreamUrl(route, rest, search);
-  const at = full.indexOf("?");
-  const path = at < 0 ? full : full.slice(0, at);
-  const query = at < 0 ? "" : full.slice(at);
+  // The base and the path are known apart, which matters when the upstream has
+  // a path of its own: everything a rewrite produced is the tail, and the whole
+  // upstream is the base.
+  const tail = rewrittenTail(route, rest);
+  if (tail === "") return undefined;
+  const base = route.upstream.replace(/\/+$/, "");
+  const path = base + tail;
   const suffix = VIA_SUFFIXES.find((end) => path.endsWith(end));
-  if (!suffix) return undefined;
+  if (suffix)
+    return {
+      url: route.via.replace(/\/+$/, "") + suffix + search,
+      base: path.slice(0, path.length - suffix.length),
+    };
+  const endpoint = format === undefined ? undefined : VIA_ENDPOINTS[format];
+  if (!endpoint) return undefined;
   return {
-    url: route.via.replace(/\/+$/, "") + suffix + query,
-    base: path.slice(0, path.length - suffix.length),
+    url: route.via.replace(/\/+$/, "") + endpoint + search,
+    base,
+    original: tail,
   };
 }
 
@@ -552,7 +584,7 @@ async function forward(
   const { body, tags, scanMs } = scanned;
   const sent = redactUrl(rest, url.search, headers, scanned, redact);
   if (sent instanceof Response) return sent;
-  const routed = routeFor(route, name, sent.rest, sent.search, headers);
+  const routed = routeFor(route, name, sent.rest, sent.search, headers, format);
   if (routed instanceof Response) return routed;
   const { target } = routed;
   const context = {

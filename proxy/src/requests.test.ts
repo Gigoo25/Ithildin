@@ -213,6 +213,49 @@ describe("a route that goes through a proxy in front of the provider", () => {
     ).toEqual({ url: VIA + "/chat/completions", base: "https://api.githubcopilot.com" });
   });
 
+  it("serves a path a rewrite left unrecognisable, and says which one", () => {
+    // Copilot's rewrite leaves /responses, which a via host does not serve. The
+    // endpoint for the format goes on the path and the real one rides along.
+    const copilot = via("https://api.githubcopilot.com", { "/v1/responses": "/responses" });
+    expect(splitVia(copilot, "/v1/responses", "", "responses")).toEqual({
+      url: VIA + "/v1/responses",
+      base: "https://api.githubcopilot.com",
+      original: "/responses",
+    });
+    // A base with a path of its own keeps it, and the split is at the slash
+    // after the host: a trailing one would double the path the host builds.
+    expect(
+      splitVia(
+        via("https://opencode.ai/inference/go/openai", { "/responses": "/responses" }),
+        "/responses",
+        "",
+        "responses",
+      ),
+    ).toEqual({
+      url: VIA + "/v1/responses",
+      base: "https://opencode.ai/inference/go/openai",
+      original: "/responses",
+    });
+    // Chat and anthropic fall back the same way.
+    expect(
+      splitVia(via("https://x.example", { "/c": "/copilot" }), "/c/completions", "", "chat"),
+    ).toMatchObject({
+      url: VIA + "/v1/chat/completions",
+      base: "https://x.example",
+      original: "/copilot/completions",
+    });
+    expect(
+      splitVia(via("https://x.example", { "/m": "/m2" }), "/m", "", "anthropic"),
+    ).toMatchObject({ url: VIA + "/v1/messages", original: "/m2" });
+    // A tail that is itself a known endpoint takes the direct way, with no
+    // override: /chat/completions needs none.
+    expect(
+      splitVia(via("https://x.example", { "/c": "/chat" }), "/c/completions", "", "chat"),
+    ).toEqual({ url: VIA + "/chat/completions", base: "https://x.example" });
+    // With no format to go on, there is nothing to serve it as: refused.
+    expect(splitVia(via("https://x.example", { "/r": "/responses" }), "/r", "")).toBeUndefined();
+  });
+
   it("refuses a path a via host would not recognise, rather than guessing", () => {
     // Gemini is left alone, and anything else the proxy cannot serve.
     expect(splitVia(via("https://generativelanguage.googleapis.com"), "/v1beta/models/x", "")).toBe(
