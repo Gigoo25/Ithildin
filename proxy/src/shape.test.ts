@@ -11,7 +11,9 @@ import {
 } from "./shape.ts";
 
 // A tool result big enough to be worth a stub.
-const big = (lines = 60): string =>
+// Big enough to pay for the cache write that masking it costs: the old result
+// is most of a fixture's conversation.
+const big = (lines = 7_000): string =>
   Array.from({ length: lines }, (_, i) => `line ${i} of output`).join("\n");
 
 // A result the passes can improve: a JSON document big enough to be worth
@@ -29,7 +31,7 @@ function pairs(count: number): Array<Record<string, unknown>> {
   const list: Array<Record<string, unknown>> = [];
   for (let i = 0; i < count; i++) {
     list.push({ role: "user", content: [{ type: "text", text: `do the thing ${i}` }] });
-    list.push({ role: "assistant", content: [{ type: "text", text: pad() }] });
+    list.push({ role: "assistant", content: [{ type: "text", text: pad(i) }] });
   }
   return list;
 }
@@ -58,17 +60,15 @@ function turnsWithFreshResult(): Array<Record<string, unknown>> {
 // Where turnsWithFreshResult put the result, so a test can read it back.
 let FRESH_RESULT_INDEX = 0;
 
-// Real turns carry real context. Padding each one is what puts a fixture past
-// MASK_THRESHOLD_TOKENS: twenty turns of 6k characters is 30k tokens, so the
-// cutoff is live and the tests are about masking rather than about the gate.
-const TURN_CHARS = 6_000;
-const pad = (): string => `working on it ${"x".repeat(TURN_CHARS)}`;
+// The turns themselves are small: the old result is what puts a fixture past
+// MASK_THRESHOLD_TOKENS, so masking it is a step that pays.
+const pad = (_turn = 1): string => "working on it";
 
 function turns(count: number): Array<Record<string, unknown>> {
   const out: Array<Record<string, unknown>> = [];
   for (let i = 0; i < count; i++) {
     out.push({ role: "user", content: `do the thing ${i}` });
-    out.push({ role: "assistant", content: [{ type: "text", text: pad() }] });
+    out.push({ role: "assistant", content: [{ type: "text", text: pad(i) }] });
   }
   return out;
 }
@@ -130,7 +130,7 @@ describe("anthropic requests", () => {
     expect(shaped?.savedChars).toBeGreaterThan(0);
     const list = shaped!.body.messages;
     expect(resultText(list, 3)).toContain("[masked to save context: Bash `cat /srv/data.log`");
-    expect(resultText(list, 3)).toContain("60 lines");
+    expect(resultText(list, 3)).toContain("7000 lines");
     // The tool_use that named it, and the typed turns, are untouched.
     expect(JSON.stringify(list)).not.toContain("line 0 of output");
   });
@@ -243,6 +243,63 @@ describe("anthropic requests", () => {
   });
 });
 
+// A long first prompt, one old result of `size` characters, then twenty turns
+// of `after` characters each: the rewrite a step would cost.
+function weighed(size: number, after: number): Array<Record<string, unknown>> {
+  const list: Array<Record<string, unknown>> = [
+    { role: "user", content: "start" },
+    {
+      role: "assistant",
+      content: [{ type: "tool_use", id: "w1", name: "Bash", input: { command: "cat log" } }],
+    },
+    {
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: "w1", content: big(size / 20) }],
+    },
+  ];
+  for (let i = 0; i < 20; i++) {
+    list.push({ role: "assistant", content: [{ type: "text", text: "y".repeat(after) }] });
+    list.push({ role: "user", content: `next ${i}` });
+  }
+  return list;
+}
+
+describe("the cost of a step", () => {
+  const hour = [{ type: "text", text: "sys", cache_control: { type: "ephemeral", ttl: "1h" } }];
+
+  it("masks nothing when the rewrite after it costs more than it saves", () => {
+    // About 40k tokens saved, read back over twenty turns, against twenty
+    // turns of 5k tokens each to write again.
+    expect(shapeRequest("anthropic", { messages: weighed(160_000, 20_000) })).toBeUndefined();
+    expect(shapeRequest("anthropic", { messages: weighed(160_000, 10) })?.masked).toBe(1);
+  });
+
+  it("asks more of a step when the cache write costs more", () => {
+    // About 80k of reads saved against 57k of turns to rewrite: worth it at
+    // 1.25x, not at the hour-long cache's 2x.
+    const list = weighed(160_000, 12_000);
+    expect(shapeRequest("anthropic", { messages: list })?.masked).toBe(1);
+    expect(shapeRequest("anthropic", { system: hour, messages: list })).toBeUndefined();
+  });
+
+  it("keeps a step it took, however much comes after", () => {
+    const first = weighed(160_000, 10);
+    const masked = shapeRequest("anthropic", { messages: first });
+    expect(masked?.masked).toBe(1);
+    // Turns big enough that the step would not pay if it were decided now.
+    const later = first.concat(
+      Array.from({ length: 10 }, (_, i) => [
+        { role: "assistant", content: [{ type: "text", text: "z".repeat(80_000) }] },
+        { role: "user", content: `more ${i}` },
+      ]).flat(),
+    );
+    const again = shapeRequest("anthropic", { messages: later });
+    expect(JSON.stringify((again?.body.messages as unknown[]).slice(0, first.length))).toBe(
+      JSON.stringify(masked?.body.messages),
+    );
+  });
+});
+
 describe("chat requests", () => {
   it("masks an old tool message by tool_call_id", () => {
     const list: Array<Record<string, unknown>> = turns(20);
@@ -278,7 +335,7 @@ describe("responses requests", () => {
       input.push({
         type: "message",
         role: "assistant",
-        content: [{ type: "output_text", text: pad() }],
+        content: [{ type: "output_text", text: pad(i) }],
       });
     }
     input.splice(2, 0, {
@@ -298,7 +355,7 @@ describe("responses requests", () => {
     const input: Array<Record<string, unknown>> = [];
     for (let i = 0; i < 20; i++) {
       input.push({ type: "message", role: "user", content: "go" });
-      input.push({ type: "message", role: "assistant", content: pad() });
+      input.push({ type: "message", role: "assistant", content: pad(i) });
     }
     input.splice(3, 0, { type: "custom_tool_call_output", call_id: "r1", output: big() });
     expect(shapeRequest("responses", { input })?.masked).toBe(1);
@@ -330,7 +387,9 @@ describe("requests with nothing to shape", () => {
 // turn two (old) and `late` appended after the last turn (recent).
 function around(early: unknown[], late: unknown[]): Array<Record<string, unknown>> {
   const list = turns(20);
-  list.splice(2, 0, ...(early as Array<Record<string, unknown>>));
+  // One big old result, so the step pays and carries the small ones with it.
+  const carried = [call("b0", "Bash", { command: "cat big.log" }), result("b0", big())];
+  list.splice(2, 0, ...carried, ...(early as Array<Record<string, unknown>>));
   return list.concat(late as Array<Record<string, unknown>>);
 }
 
@@ -363,19 +422,20 @@ describe("images in tool results", () => {
   it("masks an old one, and names how many the stub replaced", () => {
     const list = around([call("t1", "Screenshot", {}), result("t1", [picture, picture])], []);
     const shaped = shapeRequest("anthropic", { messages: list });
-    expect(shaped?.masked).toBe(1);
-    expect(String(contentAt(shaped!.body.messages, 3))).toContain("and 2 images earlier");
+    expect(shaped?.masked).toBe(2);
+    expect(String(contentAt(shaped!.body.messages, 5))).toContain("and 2 images earlier");
     expect(shaped!.savedChars).toBeGreaterThan(10_000);
   });
 
   it("leaves a recent one for the model to look at", () => {
     const list = around([], [call("t9", "Screenshot", {}), result("t9", [picture])]);
-    expect(shapeRequest("anthropic", { messages: list })).toBeUndefined();
+    const out = shapeRequest("anthropic", { messages: list })!.body.messages as unknown[];
+    expect(contentAt(out, out.length - 1)).toEqual([picture]);
   });
 });
 
 describe("repeated outputs", () => {
-  const output = "same file contents\n".repeat(60);
+  const output = Array.from({ length: 300 }, (_, i) => `file line ${i}`).join("\n");
 
   it("notes a repeat of an output still whole above it, and keeps the first", () => {
     const late = [
@@ -390,7 +450,7 @@ describe("repeated outputs", () => {
     const out = shaped!.body.messages as unknown[];
     expect(contentAt(out, out.length - 3)).toBe(output);
     expect(String(contentAt(out, out.length - 1))).toContain(
-      "[same output as Read `/w/a.ts` earlier in this session: 61 lines",
+      "[same output as Read `/w/a.ts` earlier in this session: 300 lines",
     );
   });
 
@@ -398,7 +458,7 @@ describe("repeated outputs", () => {
     const early = [call("a", "Read", { file_path: "/w/a.ts" }), result("a", output)];
     const late = [call("b", "Read", { file_path: "/w/a.ts" }), result("b", output)];
     const shaped = shapeRequest("anthropic", { messages: around(early, late) });
-    expect(shaped?.masked).toBe(1);
+    expect(shaped?.masked).toBe(2);
     expect(shaped?.deduped).toBe(0);
     const out = shaped!.body.messages as unknown[];
     expect(contentAt(out, out.length - 1)).toBe(output);
@@ -412,7 +472,7 @@ describe("repeated outputs", () => {
       call("b", "Bash", {}),
       result("b", short),
     ];
-    expect(shapeRequest("anthropic", { messages: around([], late) })).toBeUndefined();
+    expect(shapeRequest("anthropic", { messages: around([], late) })?.deduped).toBe(0);
   });
 });
 
@@ -426,9 +486,9 @@ describe("old call inputs", () => {
     ];
     const late = [call("w2", "Write", { file_path: "/w/b.ts", content: file }), result("w2", "ok")];
     const shaped = shapeRequest("anthropic", { messages: around(early, late) });
-    expect(shaped?.masked).toBe(1);
+    expect(shaped?.masked).toBe(2);
     const out = shaped!.body.messages as unknown[];
-    const old = ((at(out, 2).content as Array<Record<string, unknown>>)[0] ?? {}).input;
+    const old = ((at(out, 4).content as Array<Record<string, unknown>>)[0] ?? {}).input;
     expect(old).toEqual({
       file_path: "/w/a.ts",
       content: expect.stringContaining("The call ran with the full text"),
@@ -450,19 +510,26 @@ describe("old call inputs", () => {
       content: null,
       tool_calls: [{ id: "c1", function: { name: "write", arguments: text } }],
     });
+    // A big old chat result, so the step pays.
+    const carried = [
+      { role: "assistant", tool_calls: [{ id: "c0", function: { name: "cat", arguments: "{}" } }] },
+      { role: "tool", tool_call_id: "c0", content: big() },
+    ];
     const good = JSON.stringify({ path: "/w/a.ts", content: file });
-    const shaped = shapeRequest("chat", { messages: around([args(good)], []) });
-    expect(shaped?.masked).toBe(1);
+    const shaped = shapeRequest("chat", { messages: around([...carried, args(good)], []) });
+    expect(shaped?.masked).toBe(2);
     expect(JSON.stringify(shaped?.body)).not.toContain("const x = 1;");
     const broken = `{"content": "${"x".repeat(INPUT_MIN_CHARS)}`;
-    expect(shapeRequest("chat", { messages: around([args(broken)], []) })).toBeUndefined();
+    const kept = shapeRequest("chat", { messages: around([...carried, args(broken)], []) });
+    expect(kept?.masked).toBe(1);
+    expect(JSON.stringify(kept?.body)).toContain(JSON.stringify(broken).slice(1, -1));
   });
 
   it("masks a Responses call's arguments and a custom call's input", () => {
     const input: Array<Record<string, unknown>> = [];
     for (let i = 0; i < 20; i++) {
       input.push({ type: "message", role: "user", content: "go" });
-      input.push({ type: "message", role: "assistant", content: pad() });
+      input.push({ type: "message", role: "assistant", content: pad(i) });
     }
     const args = JSON.stringify({ content: file });
     input.splice(2, 0, { type: "function_call", call_id: "r1", name: "write", arguments: args });
@@ -472,8 +539,10 @@ describe("old call inputs", () => {
       name: "apply_patch",
       input: file,
     });
+    input.splice(4, 0, { type: "function_call", call_id: "r0", name: "cat", arguments: "{}" });
+    input.splice(5, 0, { type: "function_call_output", call_id: "r0", output: big() });
     const shaped = shapeRequest("responses", { input });
-    expect(shaped?.masked).toBe(2);
+    expect(shaped?.masked).toBe(3);
     expect(JSON.stringify(shaped?.body)).not.toContain("const x = 1;");
   });
 });

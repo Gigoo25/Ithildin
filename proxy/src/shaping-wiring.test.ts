@@ -3,15 +3,15 @@ import { createHandler, DEFAULT_ROUTES, shapeOutgoing, type Scanned } from "./se
 import { shapeRequest, shapingOn } from "./shape.ts";
 import type { Counts } from "./redact.ts";
 
-// A conversation long enough that the cutoff is live: twenty assistant turns of
-// real context, one old tool result among them.
-const pad = (): string => `working on it ${"x".repeat(6_000)}`;
+// A conversation long enough that the cutoff is live: twenty assistant turns,
+// one old tool result among them big enough that masking it pays.
+const pad = (): string => "working on it";
 const bigResult = (): string =>
-  Array.from({ length: 60 }, (_, i) => `line ${i} of output`).join("\n");
+  Array.from({ length: 7_000 }, (_, i) => `line ${i} of output`).join("\n");
 
 function conversation(): Record<string, unknown> {
   const messages: Array<Record<string, unknown>> = [
-    { role: "user", content: [{ type: "text", text: "look at this" }] },
+    { role: "user", content: [{ type: "text", text: `look at this ${pad()}` }] },
     {
       role: "assistant",
       content: [
@@ -22,7 +22,7 @@ function conversation(): Record<string, unknown> {
   ];
   for (let i = 0; i < 20; i++) {
     messages.push({ role: "user", content: [{ type: "text", text: `step ${i}` }] });
-    messages.push({ role: "assistant", content: [{ type: "text", text: pad() }] });
+    messages.push({ role: "assistant", content: [{ type: "text", text: "working on it" }] });
   }
   return { model: "claude-opus-5", messages };
 }

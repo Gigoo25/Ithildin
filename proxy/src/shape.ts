@@ -14,8 +14,18 @@
 //   using it here would make every forwarded prefix depend on traffic the
 //   conversation never saw.
 //   Stepped. The stub names nothing relative to now, and the cutoff only moves
-//   every MASK_STEP_TURNS turns, so the masked prefix stays byte-identical
-//   between requests.
+//   in steps of MASK_STEP_TURNS turns, so the masked prefix stays
+//   byte-identical between requests.
+//   Paid for. A step costs a cache write. On OpenAI that is everything after
+//   the first result it masks; Anthropic looks back only about 20 blocks from
+//   a cache marker, and agents move their marker to the newest message, so
+//   there it is the whole conversation. The cutoff only takes a step when
+//   what it masks, read back over the turns still to come, costs more than
+//   that rewrite. A conversation is guessed to run on as long again as it has
+//   so far, and at least MASK_HORIZON_TURNS more. Each step is decided on the
+//   conversation as it stood when the step came due, a prefix of this one, so
+//   the answer is the same on every later request and the cutoff never moves
+//   back.
 //
 // This runs on the request that has already been redacted and already been
 // recorded for the dashboard: the conversation the dashboard keeps is the one
@@ -37,6 +47,12 @@ export const MASK_KEEP_TURNS = 10;
 export const MASK_STEP_TURNS = 10;
 export const MASK_MIN_CHARS = 1_000;
 export const MASK_THRESHOLD_TOKENS = 30_000;
+// Prices relative to uncached input. Anthropic charges 1.25x for a cache
+// write, 2x when it is asked to keep it an hour; OpenAI's caching writes at the
+// plain price. Both read back at about a tenth.
+export const MASK_HORIZON_TURNS = 20;
+const CACHE_READ = 0.1;
+const CACHE_WRITE = { short: 1.25, hour: 2, openai: 1 };
 
 // ITHILDIN_SHAPE=off (or raw) shapes nothing, on any route.
 export function shapingOn(env: Record<string, string | undefined> = process.env): boolean {
@@ -72,29 +88,6 @@ function isAssistant(format: Format, item: unknown): boolean {
   return format === "responses"
     ? entry.type === "message" && entry.role === "assistant"
     : entry.role === "assistant";
-}
-
-// What a tool result holds: a string, or Anthropic's array of typed blocks.
-function textOf(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content
-    .map((block) => {
-      const entry = record(block);
-      return entry && typeof entry.text === "string" ? entry.text : "";
-    })
-    .join("\n");
-}
-
-function estimateTokens(list: unknown[], format: Format): number {
-  let chars = 0;
-  for (const item of list) {
-    const entry = record(item);
-    if (!entry) continue;
-    chars += textOf(entry.content).length;
-    chars += JSON.stringify(toolCalls(format, item)).length;
-  }
-  return Math.ceil(chars / 4);
 }
 
 // The calls a conversation made, keyed by the id their results answer. What
@@ -187,10 +180,104 @@ function wayBack(text: string, retrieval: Retrieval | undefined): string {
 // How many assistant turns back are still whole. Zero means shape nothing: a
 // short conversation has nothing to gain, and touching bytes would only spend
 // cache for nothing. The steps keep the masked prefix stable between turns.
-function cutoffFor(list: unknown[], format: Format): number {
-  const turns = list.filter((item) => isAssistant(format, item)).length;
-  if (turns <= MASK_KEEP_TURNS || estimateTokens(list, format) < MASK_THRESHOLD_TOKENS) return 0;
+// The furthest whole step a conversation of this many turns could mask to.
+function dueAt(turns: number, tokens: number): number {
+  if (turns <= MASK_KEEP_TURNS || tokens < MASK_THRESHOLD_TOKENS) return 0;
   return Math.floor((turns - MASK_KEEP_TURNS) / MASK_STEP_TURNS) * MASK_STEP_TURNS;
+}
+
+// What a cache write costs, and whether it rewrites the whole conversation.
+interface Price {
+  write: number;
+  whole: boolean;
+}
+
+function writePrice(format: Format, body: Record_): Price {
+  if (format !== "anthropic") return { write: CACHE_WRITE.openai, whole: false };
+  // Claude Code marks its system prompt; a marker on any block says the same.
+  const marked = JSON.stringify([body.system, body.tools]).includes('"ttl":"1h"');
+  return { write: marked ? CACHE_WRITE.hour : CACHE_WRITE.short, whole: true };
+}
+
+// What each item is: the turn it belongs to, its size, and how much masking it
+// would save over shaping it as recent. Run with walks of their own, so this
+// says nothing about the real pass.
+interface Sized {
+  turn: number;
+  tokens: number;
+  gain: number;
+}
+
+function sizes(format: Format, list: unknown[], retrieval: Retrieval | undefined): Sized[] {
+  const asOld: Walk = { calls: new Map(), outputs: new Map(), retrieval };
+  const asNew: Walk = { calls: new Map(), outputs: new Map(), retrieval };
+  let turn = 0;
+  return list.map((item) => {
+    for (const walk of [asOld, asNew]) remember(format, item, walk);
+    if (isAssistant(format, item)) turn++;
+    const old = shapeEntry(format, item, asOld, true)?.saved ?? 0;
+    const recent = shapeEntry(format, item, asNew, false)?.saved ?? 0;
+    // Every byte, results included: this is what a rewrite sends again.
+    const tokens = Math.ceil(JSON.stringify(item ?? null).length / 4);
+    return { turn, tokens, gain: Math.max(0, Math.ceil((old - recent) / 4)) };
+  });
+}
+
+// Whether masking turns (from, to] pays for rewriting what follows the first
+// item it changes, in the conversation that ended at item `end`, `turns` in.
+interface Step {
+  end: number;
+  turns: number;
+  from: number;
+  to: number;
+}
+
+function pays(items: Sized[], step: Step, price: Price): boolean {
+  const { end, from, to } = step;
+  let gain = 0;
+  let suffix = 0;
+  let changed = false;
+  for (let i = 0; i < end; i++) {
+    const item = items[i]!;
+    const inStep = item.turn > from && item.turn <= to;
+    if (inStep && item.gain > 0) changed = true;
+    if (changed || price.whole) suffix += Math.max(0, item.tokens - (inStep ? item.gain : 0));
+    if (inStep) gain += item.gain;
+  }
+  const write = price.write;
+  // A step that changes no bytes is free to take.
+  const horizon = Math.max(MASK_HORIZON_TURNS, step.turns);
+  return !changed || gain * CACHE_READ * horizon >= suffix * (write - CACHE_READ);
+}
+
+function cutoffFor(format: Format, body: Record_, list: unknown[], walk: Walk): number {
+  const items = sizes(format, list, walk.retrieval);
+  const write = writePrice(format, body);
+  let cutoff = 0;
+  let turns = 0;
+  let tokens = 0;
+  // Every point a request could have ended: just before each assistant turn,
+  // and the end of the list.
+  for (let end = 0; end <= items.length; end++) {
+    const item = items[end];
+    if (item === undefined || isAssistant(format, list[end])) {
+      const due = dueAt(turns, tokens);
+      if (due > cutoff && pays(items, { end, turns, from: cutoff, to: due }, write)) cutoff = due;
+    }
+    if (item === undefined) break;
+    tokens += item.tokens;
+    if (isAssistant(format, list[end])) turns++;
+  }
+  return cutoff;
+}
+
+function remember(format: Format, item: unknown, walk: Walk): void {
+  // Every item can carry calls: an Anthropic or chat call sits in an
+  // assistant turn, a Responses call is its own top-level item. Recording
+  // them all is what lets a stub name the command that produced the result.
+  for (const call of toolCalls(format, item))
+    if (call.id !== undefined)
+      walk.calls.set(String(call.id), { name: call.name, input: call.input });
 }
 interface Call {
   name: string;
@@ -362,18 +449,13 @@ export function shapeRequest(
 ): Shaped | undefined {
   const list = conversation(format, body);
   if (!list) return;
-  const cutoff = cutoffFor(list, format);
   const walk: Walk = { calls: new Map(), outputs: new Map(), retrieval };
+  const cutoff = cutoffFor(format, body, list, walk);
   const totals: Counts = { masked: 0, compacted: 0, deduped: 0 };
   let turn = 0;
   let savedChars = 0;
   const out = list.map((item) => {
-    // Every item can carry calls: an Anthropic or chat call sits in an
-    // assistant turn, a Responses call is its own top-level item. Recording
-    // them all is what lets a stub name the command that produced the result.
-    for (const call of toolCalls(format, item))
-      if (call.id !== undefined)
-        walk.calls.set(String(call.id), { name: call.name, input: call.input });
+    remember(format, item, walk);
     if (isAssistant(format, item)) turn++;
     // A result answers the call above it, so it shares that call's turn: the
     // first `cutoff` turns are old, calls and results alike. A cutoff of zero

@@ -420,6 +420,12 @@ so nothing in it may read the clock or a counter. And it **fails open** — a
 request it cannot shape is forwarded exactly as redaction left it, never
 refused, because it is an optimization and a turn matters more than tokens.
 
+The cutoff moves in steps, and each step costs a cache write: on Anthropic,
+the whole conversation after the system prompt is written again. So a step is
+only taken when what it masks, read back over the turns still to come, is
+worth more than that write, at twice the price on the hour-long cache Claude
+Code asks for. Otherwise old results stay as they were and the cache holds.
+
 The conversation the dashboard keeps is the one that **arrived**; only the
 forwarded copy is shaped.
 
