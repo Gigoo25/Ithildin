@@ -9,6 +9,7 @@
 // none of it is ever parsed as HTML.
 
 import { IMAGE_NOTICE, INVENTORY_NOTICE, WITHHELD_NOTICE } from "./redact.ts";
+import { BODY_BYTES_MAX } from "./requests.ts";
 
 export const DASHBOARD_PATH = "/dashboard";
 export const ACTIVITY_PATH = "/dashboard/activity";
@@ -44,7 +45,6 @@ const FAVICON_ALERT =
       "<circle cx='50' cy='50' r='12' fill='#ff6b5e' stroke='#1d2432' stroke-width='3'/></svg>",
     ),
   );
-
 
 export const DASHBOARD_HTML = `<!doctype html>
 <html lang="en">
@@ -178,6 +178,17 @@ export const DASHBOARD_HTML = `<!doctype html>
     background: var(--masked); opacity: .7;
   }
   #fold_numbers dl { margin-top: 10px; }
+  /* The totals, in three groups: busy, what it changed, what got through. */
+  #numbers { display: flex; flex-direction: column; gap: 14px; margin-top: 12px; }
+  #numbers .group h3 {
+    margin: 0 0 6px; font: 600 10px var(--serif); letter-spacing: .18em;
+    text-transform: uppercase; color: var(--dim);
+  }
+  #numbers .group h3::after {
+    content: ''; display: block; margin-top: 4px; border-top: 1px solid var(--soft);
+  }
+  #numbers .group dl { margin-top: 0; }
+  #num_masking #kinds { margin-bottom: 8px; }
   dl { display: grid; grid-template-columns: 1fr auto; gap: 3px 8px; margin: 0; font-size: 12px; }
   dt { color: var(--dim); }
   dd { margin: 0; text-align: right; }
@@ -284,6 +295,11 @@ export const DASHBOARD_HTML = `<!doctype html>
   .turn.latest .turn_head, .turn.latest .turn_head::before {
     color: var(--silver); text-shadow: var(--glow);
   }
+  /* A turn folds away on a click of its head; the chevron says it will. */
+  .turn_head { cursor: pointer; }
+  .turn_head:hover { color: var(--ink); }
+  .turn_chev { font-size: 10px; }
+  .turn:not([open]) .turn_chev::before { content: '\\25b8'; }
   .step.prompt .glyph { color: var(--silver); }
   .step.reply .glyph { color: var(--ink); }
   .step.call .glyph { color: var(--swapped); }
@@ -299,6 +315,15 @@ export const DASHBOARD_HTML = `<!doctype html>
   .body {
     max-height: 320px; overflow: auto; margin: 4px 0 0; padding: 4px 10px;
     border-left: 1px solid var(--edge);
+  }
+  /* Chrome is not text anyone copies, and a drag across the page should not
+     paint it. What is left selectable is what is worth copying: the
+     conversation and the raw request, the figures, the kinds masked, and the
+     alerts naming what was found. */
+  header, #verdict, #notify, #session_title, #session_note, #side h2, #side h3,
+  #side dt, .pick, .turn_head, summary, .glyph, .badge, .key, .count, .flag {
+    user-select: none;
+    -webkit-user-select: none;
   }
 
   @media (max-width: 700px) {
@@ -365,10 +390,23 @@ export const DASHBOARD_HTML = `<!doctype html>
     <summary><h2>Sessions<span class="chev"></span></h2></summary>
     <div id="sessions"></div>
   </details>
-  <details class="section" id="fold_numbers">
+  <details class="section" id="fold_numbers" open>
     <summary><h2>Numbers<span class="chev"></span></h2></summary>
-    <div id="kinds"></div>
-    <dl id="totals"></dl>
+    <div id="numbers">
+      <div class="group">
+        <h3>Traffic</h3>
+        <dl id="num_traffic"></dl>
+      </div>
+      <div class="group">
+        <h3>Masking</h3>
+        <div id="kinds"></div>
+        <dl id="num_masking"></dl>
+      </div>
+      <div class="group">
+        <h3>Safety</h3>
+        <dl id="num_safety"></dl>
+      </div>
+    </div>
   </details>
 </aside>
 <section id="center">
@@ -403,6 +441,9 @@ const HELD_NOTICES = ${JSON.stringify(
 )};
 // Stand-ins seen, marked in a conversation: enough for a long session.
 const KNOWN_MAX = 300;
+// Request bodies held in the page. Each can be megabytes, so the page keeps
+// the few it may show again rather than every one it has read.
+const TEXTS_MAX = 4;
 // Requests without a session, and refusals, gather under this one.
 const OTHER = '';
 const feed = [];
@@ -415,6 +456,8 @@ let firstPoll = true;
 let lastStats;
 let lastWatch;
 const texts = new Map();
+// Turns the reader has put away, by number, so a rebuild leaves them so.
+const collapsed = new Set();
 let shownId = 0;
 let view = 'chat';
 
@@ -435,6 +478,11 @@ function clock(ms) {
 
 function plural(count, word) {
   return count + ' ' + word + (count === 1 ? '' : 's');
+}
+
+// A size the reader can place, in MiB.
+function mib(chars) {
+  return (chars / 1048576).toFixed(1) + ' MiB';
 }
 
 // A guard's notice runs long; the full text is in the card's tooltip.
@@ -502,6 +550,9 @@ function renderSessions() {
     button.addEventListener('click', () => {
       chosen = known.id;
       shownId = 0;
+      // Turn numbers count a session's own turns, so another session's folds
+      // are not this one's.
+      collapsed.clear();
       renderSessions();
       showSession();
     });
@@ -607,11 +658,14 @@ async function showSession() {
     const response = await fetch('${REQUEST_PATH}?id=' + sent.id, { cache: 'no-store' });
     if (!response.ok) return;
     texts.set(sent.id, await response.text());
+    // The page may show an older turn again, so the last few are kept.
+    while (texts.size > TEXTS_MAX) texts.delete(texts.keys().next().value);
   }
   if (chosen !== known.id) return;
   const first = shownId === 0;
   shownId = sent.id;
-  byId('view_note').textContent = 'As sent ' + clock(sent.time) + (sent.cut ? ', cut' : '');
+  byId('view_note').textContent = 'As sent ' + clock(sent.time) +
+    (sent.cut ? ', cut at ${BODY_BYTES_MAX / 1048576} MiB of ' + mib(sent.size) : '');
   showText(first ? 'top' : 'keep');
 }
 
@@ -651,33 +705,59 @@ function renderVerdict(stats, watch) {
   verdict.replaceChildren(byClass('b', '', title), byClass('span', '', note));
 }
 
+// A row per figure, its label and value: read down a group, not across it.
+function figures(id, rows) {
+  byId(id).replaceChildren(...rows.flatMap(([label, value]) =>
+    [byClass('dt', '', label), byClass('dd', '', String(value))]));
+}
+
+// A count with its thousands grouped, so "1,240" is not read as four figures.
+// A figure the proxy did not send reads as 0 rather than blanking the page.
+function count(value) {
+  return (Number(value) || 0).toLocaleString();
+}
+
+// The traffic since the proxy started, per minute.
+function perMinute(stats) {
+  const minutes = (Date.now() - stats.startedAt) / 60000;
+  return minutes < 0.1 ? '-' : (stats.requests / minutes).toFixed(1) + ' /min';
+}
+
+// Three groups, each answering one question: how busy is it, what did it change,
+// and did anything get through. A figure with nothing in it says so rather than
+// showing a zero that looks like a measurement.
 function renderStats(stats, watch) {
   renderVerdict(stats, watch);
   const kinds = Object.entries(stats.kinds).sort((a, b) => b[1] - a[1]);
   const most = kinds.length ? kinds[0][1] : 1;
-  byId('kinds').replaceChildren(...kinds.map(([kind, count]) => {
+  byId('kinds').replaceChildren(...kinds.map(([kind, hits]) => {
     const row = byClass('div', 'kind');
     const bar = byClass('i', '');
-    bar.style.width = Math.max(4, Math.round((count / most) * 100)) + '%';
-    row.append(byClass('span', '', kind), byClass('span', '', String(count)), bar);
+    bar.style.width = Math.max(4, Math.round((hits / most) * 100)) + '%';
+    row.append(byClass('span', '', kind), byClass('span', '', count(hits)), bar);
     return row;
   }));
   if (kinds.length === 0) byId('kinds').appendChild(byClass('p', 'count', 'None yet'));
-  const average = stats.requests ? Math.round(stats.scanMsTotal / stats.requests) : 0;
-  const routes = Object.entries(stats.routes).map((pair) => pair.join(' ')).join(', ');
-  const rows = [
-    ['Requests scanned', stats.requests],
-    ['Routes', routes || 'none'],
-    ['Replacements', stats.replacements],
-    ['Swapped in replies', stats.swappedText],
-    ['Swapped in tool calls', stats.swappedCalls],
-    ['Tool calls blocked', stats.blocked],
-    ['Requests refused', stats.refused],
-    ['Scan time', average + ' ms, max ' + stats.scanMsMax],
-    ['Uptime', duration(Date.now() - stats.startedAt)],
-  ];
-  byId('totals').replaceChildren(...rows.flatMap(([label, value]) =>
-    [byClass('dt', '', label), byClass('dd', '', String(value))]));
+  const average = stats.requests ? Math.round((stats.scanMsTotal || 0) / stats.requests) : 0;
+  const swapped = stats.swappedText + stats.swappedCalls;
+  const route = Object.entries(stats.routes).sort((a, b) => b[1] - a[1])[0];
+  figures('num_traffic', [
+    ['Scanned', count(stats.requests)],
+    ['Rate', perMinute(stats)],
+    ['Busiest', route ? route[0] + ' (' + count(route[1]) + ')' : 'none'],
+    ['Scan time', average + ' ms avg, ' + stats.scanMsMax + ' max'],
+  ]);
+  figures('num_masking', [
+    ['Values masked', count(stats.replacements)],
+    ['Distinct', count(stats.distinct)],
+    ['Swapped back', swapped === 0 ? '0' : count(swapped) +
+      ' (' + stats.swappedText + ' text, ' + stats.swappedCalls + ' calls)'],
+  ]);
+  figures('num_safety', [
+    ['Leaks found', stats.leaked ? String(stats.leaked) : 'none'],
+    ['Held back', String(stats.blocked)],
+    ['Refused', String(stats.refused)],
+  ]);
 }
 
 function setState(text, className) {
@@ -721,6 +801,7 @@ async function poll() {
       feed.length = 0;
       sessions.clear();
       texts.clear();
+      collapsed.clear();
       shownId = 0;
     }
     since = data.next;
@@ -944,9 +1025,18 @@ function conversation(items, marks, needle, leaks) {
   let turn;
   let count = 0;
   let started = -2;
+  // A turn is a fold of its own: click its head to put it away. The page is
+  // rebuilt when a turn arrives, so which are put away is remembered by number.
   const start = (title) => {
-    turn = byClass('div', 'turn');
-    turn.appendChild(byClass('div', 'turn_head', title));
+    turn = document.createElement('details');
+    turn.className = 'turn';
+    turn.open = !collapsed.has(count + 1);
+    turn.addEventListener('toggle', () => {
+      if (turn.open) collapsed.delete(count + 1);
+      else collapsed.add(count + 1);
+    });
+    turn.appendChild(byClass('summary', 'turn_head', title));
+    turn.firstChild.appendChild(byClass('span', 'chev turn_chev'));
     nodes.push(turn);
   };
   let matches = 0;

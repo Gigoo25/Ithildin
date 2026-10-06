@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, it } from "bun:test";
 import { observeActivity, REPLY_TEXT, reportActivity } from "../engine/lib/activity.ts";
 import { DASHBOARD_HTML } from "./dashboard.ts";
 import { ENTRIES_MAX, around, EventLog, preview, SEEN_MAX } from "./events.ts";
+import { BODY_BYTES_MAX } from "./requests.ts";
 import { initEngine, redactRequest } from "./redact.ts";
 import { createHandler, DEFAULT_ROUTES } from "./server.ts";
 
@@ -305,7 +306,13 @@ describe("dashboard", () => {
     await send(handler, messages(`mail ${EMAIL}`));
     await send(handler, messages("hi"));
     const turns = (await activity(handler)).entries.map((entry) => [entry.type, entry.turn]);
-    expect(turns).toEqual(expect.arrayContaining([["masked", 1], ["request", 1], ["request", 2]]));
+    expect(turns).toEqual(
+      expect.arrayContaining([
+        ["masked", 1],
+        ["request", 1],
+        ["request", 2],
+      ]),
+    );
     expect(turns).toContainEqual(["swapped", 2]);
     const list = (await (await handler(dashboard("/dashboard/requests"))).json()) as {
       requests: Array<{ turn?: number }>;
@@ -453,7 +460,21 @@ describe("dashboard", () => {
       "/dashboard/activity?since=0": {
         entries: [{ id: 1, time: 1, type: "request", route: "anthropic", session: "s1", turn: 1 }],
         next: 1,
-        stats: { leaked: 0, kinds: {}, routes: {}, requests: 1, startedAt: 0 },
+        stats: {
+          leaked: 0,
+          kinds: {},
+          routes: { anthropic: 1 },
+          requests: 1,
+          startedAt: Date.now() - 60000,
+          scanMsTotal: 5,
+          scanMsMax: 9,
+          replacements: 2,
+          distinct: 1,
+          swappedText: 0,
+          swappedCalls: 0,
+          blocked: 0,
+          refused: 0,
+        },
         watch: { known: 0, terms: 0, action: "flag" },
         sessions: [{ id: "s1", name: "claude 1", title: "Fix the login" }],
       },
@@ -489,6 +510,30 @@ describe("dashboard", () => {
     expect(byId("state").textContent).toBe("proxy up");
     expect(byId("session_title").textContent).toBe("Fix the login");
     expect(byId("viewer").children.length).toBeGreaterThan(0);
+    // The totals are three groups, each with its figures laid out in order.
+    const read = (id: string) =>
+      byId(id).children.flatMap((child: { textContent: string }) =>
+        child.textContent ? [child.textContent] : [],
+      );
+    expect(read("num_traffic")).toEqual([
+      "Scanned",
+      "1",
+      "Rate",
+      "1.0 /min",
+      "Busiest",
+      "anthropic (1)",
+      "Scan time",
+      "5 ms avg, 9 max",
+    ]);
+    expect(read("num_masking")).toEqual([
+      "Values masked",
+      "2",
+      "Distinct",
+      "1",
+      "Swapped back",
+      "0",
+    ]);
+    expect(read("num_safety")).toEqual(["Leaks found", "none", "Held back", "0", "Refused", "0"]);
   });
 
   it("carries its own icon, so the browser never asks the proxy for /favicon.ico", () => {
@@ -497,8 +542,7 @@ describe("dashboard", () => {
 
   it("has a verdict, sessions, a search, the request viewer, and alerts for a leak", () => {
     const ids = ["verdict", "sessions", "session_title", "alerts", "detail_search", "viewer"];
-    for (const id of ids)
-      expect(DASHBOARD_HTML).toContain(`id="${id}"`);
+    for (const id of ids) expect(DASHBOARD_HTML).toContain(`id="${id}"`);
     expect(DASHBOARD_HTML).toContain("/dashboard/requests");
     expect(DASHBOARD_HTML).toContain("/dashboard/request?id=");
     expect(DASHBOARD_HTML).toContain("new Notification(");
@@ -535,7 +579,7 @@ describe("dashboard", () => {
     const source = /function turns[\s\S]*?\n\}/.exec(DASHBOARD_HTML)![0];
     const turns = new Function(`${source}; return turns;`)() as (
       body: unknown,
-    ) => Array<{ who: string; kind: string; text: string; name?: unknown }>;
+    ) => Array<{ who: string; kind: string; text: string; name?: unknown; id?: string }>;
     const brief = (body: unknown) =>
       turns(body).map((item) => [item.kind, item.name ?? "", item.text].join("|"));
     expect(
@@ -612,6 +656,62 @@ describe("dashboard", () => {
       "Not run: it would lose work.",
     );
     expect(firstSentence("No full stop here")).toBe("No full stop here");
+  });
+
+  it("leaves the chrome unselectable and the data selectable", () => {
+    // A drag across the page paints nothing worth keeping.
+    const rule = /user-select: none;/.exec(DASHBOARD_HTML);
+    expect(rule).not.toBeNull();
+    const chrome = DASHBOARD_HTML.slice(
+      DASHBOARD_HTML.lastIndexOf("header, #verdict"),
+      DASHBOARD_HTML.indexOf("-webkit-user-select"),
+    );
+    for (const selector of [
+      "header",
+      "#verdict",
+      "#session_title",
+      "#side h2",
+      "#side h3",
+      "#side dt",
+      ".pick",
+      ".turn_head",
+      "summary",
+      ".badge",
+      ".key",
+    ])
+      expect(chrome).toContain(selector);
+    // And what is worth copying is still selectable: the conversation and the
+    // raw request, the figures, the kinds masked, the alerts.
+    for (const selector of ["#viewer", "dd", ".kind", ".alert"]) {
+      expect(chrome).not.toContain(selector + ",");
+      expect(chrome).not.toContain(selector + " ");
+    }
+  });
+
+  it("folds each turn away on a click of its head, and remembers it", () => {
+    // A turn is a details element, so it folds on a click and opens on another,
+    // with the keyboard, without any script of its own.
+    expect(DASHBOARD_HTML).toContain("turn = document.createElement('details');");
+    expect(DASHBOARD_HTML).toContain("turn.open = !collapsed.has(count + 1);");
+    expect(DASHBOARD_HTML).toContain("turn.appendChild(byClass('summary', 'turn_head', title));");
+    // The chevron points the way it will go.
+    expect(DASHBOARD_HTML).toContain(".turn:not([open]) .turn_chev::before");
+    // Nothing else folds a turn: the turn rail still hangs on the summary.
+    expect(DASHBOARD_HTML).toMatch(/\.turn \{[^}]*border-left: 1px solid var\(--edge\)/);
+  });
+
+  it("leaves Sessions and Numbers open, so both sides read without a click", () => {
+    expect(DASHBOARD_HTML).toMatch(/<details class="section" id="fold_sessions" open>/);
+    expect(DASHBOARD_HTML).toMatch(/<details class="section" id="fold_numbers" open>/);
+  });
+
+  it("says how much of a cut request the page holds", () => {
+    // The cap is the proxy's, so the two cannot drift apart.
+    expect(DASHBOARD_HTML).toContain(`', cut at ${BODY_BYTES_MAX / 1048576} MiB of '`);
+    expect(DASHBOARD_HTML).toContain("function mib(chars)");
+    // A body is megabytes, so the page holds a few, not every one it read.
+    expect(DASHBOARD_HTML).toContain(`const TEXTS_MAX = ${4};`);
+    expect(DASHBOARD_HTML).toContain("while (texts.size > TEXTS_MAX)");
   });
 
   it("keeps as many events as the proxy does, in a box that scrolls", () => {

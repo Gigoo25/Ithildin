@@ -260,10 +260,15 @@ The left column lists the sessions, in the order the proxy first saw them.
 A session goes by the title its agent gave it, read from the agent's own
 naming request (Claude Code and opencode make one; Pi does not), or by your
 `/rename` in Claude Code, and otherwise by its agent and number (`claude 1`,
-`opencode 2`, `pi 1`). The title comes from the model's reply as the
-provider sent it, so it holds stand-ins, never a real value. A red count
+`opencode 2`, `pi 1`). An agent that names none still gets a name, taken from
+the first thing you asked it; a title from an agent replaces that, and your own
+name replaces both. A naming request the proxy does not recognise is logged, so
+an agent that rewords its prompt says so instead of going unnamed in silence. A
+title from a model comes from its reply as the provider sent it, so it holds
+stand-ins, never a real value; a name taken from your prompt is not taken at all
+when the watch list finds something in it. A red count
 beside a session is its leaks. Requests without a session, and refusals,
-gather under *Other traffic*. Below the sessions, *Numbers* (folded) has the
+gather under *Other traffic*. Below the sessions, *Numbers* has the
 values masked by kind, routes, replacements, swaps, blocks, refusals, scan
 time and uptime. The page remembers what you fold.
 
@@ -294,9 +299,11 @@ read them through a rebound name.
 The conversation is the proof of what left the machine, so a real value that
 masking missed is in it, and the page shows it as it is. The proxy keeps the
 last 20 requests' text, and each session's latest turn however busy the
-others are, in memory only, each cut at 1 MiB. Side requests (a title, a
-summary) are kept but not shown as the conversation. `ITHILDIN_KEEP_REQUESTS`
-sets how many (0 turns it off, 200 at most).
+others are, in memory only, each cut at 8 MiB. A body over the cut is cut
+where the JSON still parses, so it reads as a conversation less its last turn,
+and the note above it says how much of it the page holds. Side requests (a
+title, a summary) are kept but not shown as the conversation.
+`ITHILDIN_KEEP_REQUESTS` sets how many (0 turns it off, 200 at most).
 
 A leak turns the tab title to `(2) Ithildin` and puts a red mark on the icon.
 The **Alert me about leaks** button asks the browser for permission to show a
@@ -404,8 +411,30 @@ ithildin selftest        # runs the self-test inside the live proxy
 ithildin check           # checks the guard config and runs guard tests
 ```
 
+Needs Bun 1.4.2 or newer, and says so rather than starting on an older one: the
+engine bounds each masking rule with a deadline, and before that release those
+deadlines do not fire in time, so one long conversation hangs the proxy for
+minutes with nothing in the log. Two megabytes of messages scan in well under a
+second on 1.4.2 and were still running after four minutes on 1.3.14.
+
 The built-in routes are `anthropic`, `openai-codex` and `opencode-go`. Add
-local or LAN model servers in `~/.config/ithildin/routes.json`.
+local or LAN model servers in `~/.config/ithildin/routes.json`. A route is an
+upstream, optional path rewrites, and an optional `via`:
+
+```json
+{
+  "anthropic": { "upstream": "https://api.anthropic.com", "via": "http://127.0.0.1:8787" },
+  "modelbox": { "upstream": "http://gw.example.com:4000" }
+}
+```
+
+`via` sends the request to a proxy in front of the provider (Headroom, say)
+with the endpoint on the path and the upstream in `x-headroom-base-url`, which
+is how such a host learns where to forward it. Rewrites run first, so the base
+named is the upstream the request would really have gone to. A path such a host
+would not recognise — Gemini's `/v1beta`, say — is refused rather than passed on
+with no base, since passing it would leave the host to choose the upstream. Any
+`x-headroom-*` header from the agent is dropped, so the proxy alone names it.
 
 Settings are environment variables:
 
