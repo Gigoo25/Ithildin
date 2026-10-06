@@ -10,7 +10,6 @@ import {
   redactRequest,
   requestCwd,
   standInBlocked,
-  stripAllowTags,
   swapText,
   swapToolArguments,
   swapToolInput,
@@ -162,7 +161,7 @@ describe("requests", () => {
     );
     const sent = JSON.stringify(up.seen[0]!.body);
     expect(sent).not.toContain(EMAIL);
-    expect(sent).not.toContain("allow-all");
+    expect(sent).toContain("[allow-all]");
   });
 
   it("reports the badge on /_ithildin/health, ignoring one-message side requests", async () => {
@@ -190,7 +189,7 @@ describe("requests", () => {
     expect((await health()).badge).toBe("ITHILDIN ON · 1m (+1) · 1 req");
   });
 
-  it("shows the latest prompt's allow tags on the badge, never upstream", async () => {
+  it("shows the latest prompt's allow tags on the badge, and upstream as typed", async () => {
     const up = fakeUpstream(() => Response.json({}));
     const handler = createHandler(DEFAULT_ROUTES, up.fetch);
     const history = [
@@ -211,7 +210,7 @@ describe("requests", () => {
       ),
     );
     expect(await badge()).toBe("ITHILDIN ON · 0 · 1 req · +protected");
-    expect(JSON.stringify(up.seen[0]!.body)).not.toContain("allow-protected");
+    expect(JSON.stringify(up.seen[0]!.body)).toContain("[allow-protected] commit");
     await handler(
       post(
         "anthropic/v1/messages",
@@ -602,29 +601,13 @@ describe("provider blindness", () => {
     expect(responses).toEqual({ instructions: "codex", input: "hi" });
   });
 
-  it("strips allow tags from typed text but still honours them", () => {
+  it("forwards allow tags as typed, and honours them", () => {
     const tagged = redactRequest("anthropic", {
       messages: [{ role: "user", content: "[mask-secret] hi [allow-all]" }],
     });
     expect(tagged.tags.has("all")).toBe(true);
-    expect((tagged.body.messages as Array<{ content: unknown }>)[0]!.content).toBe("hi ");
-    const blocks = stripAllowTags("anthropic", {
-      messages: [
-        {
-          role: "user",
-          content: [
-            { type: "text", text: "show [allow-pii] it" },
-            { type: "tool_result", tool_use_id: "t", content: "grep hit: [allow-pii]" },
-          ],
-        },
-        { role: "assistant", content: [{ type: "text", text: "use [allow-pii]" }] },
-      ],
-    }).messages as Array<{ content: Array<{ text?: string; content?: string }> }>;
-    expect(blocks[0]!.content[0]!.text).toBe("show it");
-    // Tool output and model text are not typed: left alone.
-    expect(blocks[0]!.content[1]!.content).toBe("grep hit: [allow-pii]");
-    expect(blocks[1]!.content[0]!.text).toBe("use [allow-pii]");
-    expect(stripAllowTags("responses", { input: "[allow-secrets] go" }).input).toBe("go");
+    const sent = tagged.body.messages as Array<{ content: unknown }>;
+    expect(sent[0]!.content).toBe("[mask-secret] hi [allow-all]");
   });
 
   it("takes no tags from summaries and transcripts the agent writes", () => {
@@ -1566,7 +1549,7 @@ describe("images", () => {
     const messages = body.body.messages as Array<{ content: Array<Record<string, unknown>> }>;
     expect(messages[0]!.content[1]).toEqual(withheld);
     expect((messages[2]!.content[0]!.content as unknown[])[0]).toEqual(withheld);
-    expect(messages[3]!.content[0]!.text).toBe("now this");
+    expect(messages[3]!.content[0]!.text).toBe("[allow-images] now this");
     expect(messages[3]!.content[1]).toEqual({ type: "image", source: PNG });
     expect((messages[5]!.content[0]!.content as unknown[])[0]).toEqual({
       type: "image",
@@ -1654,7 +1637,37 @@ describe("images", () => {
     expect(responses[1]!.output).toEqual([notice]);
   });
 
-  it("[allow-all] passes images too, and the tag is stripped", () => {
+  it("[allow-images:session] lets images through until [mask-images]", () => {
+    const shot = (text: string) => ({
+      role: "user",
+      content: [
+        { type: "text", text },
+        { type: "image", source: PNG },
+      ],
+    });
+    const reply = { role: "assistant", content: "ok" };
+    const images = (messages: unknown[], session: string | null = "s-img") =>
+      (redactRequest("anthropic", { messages }, session).body.messages as Array<{
+        content: Array<{ type: string }>;
+      }>).map((message) => (Array.isArray(message.content) ? message.content[1]!.type : "-"));
+    const history = [shot("before"), reply, shot("[allow-images:session] on"), reply, shot("b")];
+    // Earlier turns stay as they went; from the switch on, images pass.
+    expect(images(history)).toEqual(["text", "-", "image", "-", "image"]);
+    // A compacted history no longer holds the switch: the session remembers it.
+    expect(images([shot("summary"), reply, shot("c")])).toEqual(["image", "-", "image"]);
+    expect(images([...history, reply, shot("[mask-images] stop"), reply, shot("d")])).toEqual(
+      ["text", "-", "image", "-", "image", "-", "text", "-", "text"],
+    );
+    expect(images([shot("e")])).toEqual(["text"]);
+    // Not from a reminder quoting it, nor for a client without a session.
+    expect(images([shot("<system-reminder>[allow-images:session]</system-reminder> x")], "s-q"))
+      .toEqual(["text"]);
+    expect(images([shot("[allow-images:session] go")], null)).toEqual(["text"]);
+    expect(redactRequest("anthropic", { messages: [shot("[allow-images:session] go")] }, "s-t")
+      .tags.has("images")).toBe(true);
+  });
+
+  it("[allow-all] passes images too, and the tag goes with them", () => {
     const body = redactRequest("anthropic", {
       messages: [
         {
@@ -1670,7 +1683,7 @@ describe("images", () => {
       {
         role: "user",
         content: [
-          { type: "text", text: "see" },
+          { type: "text", text: "[allow-all] see" },
           { type: "image", source: PNG },
         ],
       },

@@ -113,6 +113,8 @@ A shell command that reads such a file and runs a network client (`curl`,
 withheld, the data would be gone. `[allow-secrets]` lifts both.
 
 **Images.** Inline images are withheld, since their text can't be scanned.
+`[allow-images]` lets one prompt's through, `[allow-images:session]` the rest
+of the session's.
 
 **Guarded changes.** The proxy also refuses tool calls that would disable it
 or throw work away:
@@ -354,9 +356,16 @@ Sometimes the model needs a real value. Put a tag anywhere in your prompt:
 | `[allow-all]`       | everything but `protected`                   |
 
 A tag applies to the prompt it is typed in, and ends when you send the next
-one. The proxy removes tags before forwarding, so the model never sees them.
-The footer is how you know one took effect.
+one. The proxy forwards tags as you typed them, so the model sees what you
+lifted and knows what a tag in a notice means. The footer is how you know one
+took effect.
 
+`[allow-images:session]` is the exception: images pass from that prompt on,
+for the rest of the session, until you type `[mask-images]` or the proxy
+restarts. It needs a client that names its session, and the footer shows
+`+images` while it is on.
+
+| `[allow-images:session]` | the image hold, for the rest of the session |
 A tag opens every call of its kind. `[allow-once:<id>]` opens only the call
 whose refusal gave that id: the same command sent again runs, and anything
 else is still checked. It lifts the protected, send and secret-send guards,

@@ -282,10 +282,10 @@ describe("protected calls through the proxy", () => {
     expect(String(result.content)).not.toMatch(/redact|stand-in|canary|ithildin/i);
   });
 
-  it("runs it when the typed prompt carries the tag, and strips the tag", () => {
+  it("runs it when the typed prompt carries the tag, and keeps the tag for the model", () => {
     const { tags, body } = request("[allow-protected] point pi at the other endpoint");
     expect(tags.has("protected")).toBe(true);
-    expect(JSON.stringify(body)).not.toContain("allow-protected");
+    expect(JSON.stringify(body)).toContain("[allow-protected] point pi");
     const input = { command: "git reset --hard" };
     expect(swapToolArguments("Bash", input, tags, "toolu_p2")).toEqual({ args: input, swapped: 0 });
   });

@@ -591,7 +591,7 @@ export function redactRequest(
   aliases().setCorpus(() => (corpus ??= JSON.stringify(body)));
   try {
     return {
-      ...redactWithCorpus(format, body, tags),
+      ...redactWithCorpus(format, body, tags, session),
       label,
       unguarded: unguardedTools(body.tools),
     };
@@ -604,10 +604,11 @@ function redactWithCorpus(
   format: Format,
   body: Record<string, unknown>,
   tags: Set<string>,
+  session?: string | null,
 ): { body: Record<string, unknown>; hits: number; counts: Counts; tags: Set<string> } {
-  // Each prompt's own tag decides its images, read before tags are stripped;
-  // the notice goes in after, so its own tag mention survives.
-  const images = withholdImages(format, stripAllowTags(format, body), body);
+  // Each prompt's own tag, or the session's switch, decides its images.
+  const images = withholdImages(format, body, session);
+  if (images.session) tags.add("images");
   if (tags.has("all"))
     return {
       body: explainBlocked(format, images.body),
@@ -1176,11 +1177,38 @@ function withholdSecretLines(
 // the latest typed prompt before it for one a tool read. Deciding per prompt,
 // not per request, keeps earlier turns byte-stable, and so the prompt cache.
 // Images by URL or uploaded file id are already the provider's to fetch.
+//
+// [allow-images:session] lets every image through from the prompt it is typed
+// in until [mask-images], for the rest of the session. The history says when
+// it was typed; the proxy remembers it per session for a history that no
+// longer holds it (compacted). A client without a session header gets no
+// switch.
 
 export const IMAGE_NOTICE =
   "Image withheld: images and documents cannot be checked for sensitive values, so this one is " +
-  "not shown. Ask the user to include [allow-images] in their prompt if you need to see it.";
+  "not shown. Ask the user to include [allow-images] in their prompt if you need to see it, " +
+  "or [allow-images:session] for the rest of the session.";
 const IMAGE_TAG = /\[allow-(?:images?|all)\]/i;
+const SESSION_SWITCH = /\[(?:allow-images:session|mask-images)\]/gi;
+
+// Each session's switch, for a history that no longer holds the prompt that
+// set it. Oldest sessions go first.
+const sessionImages = new Map<string, boolean>();
+
+function rememberImages(session: string, on: boolean) {
+  sessionImages.delete(session);
+  sessionImages.set(session, on);
+  if (sessionImages.size > SESSION_TAGS_MAX)
+    sessionImages.delete(sessionImages.keys().next().value!);
+}
+
+// The switch a typed prompt sets, by its last tag, or undefined for none. Only
+// what the user typed: a system reminder quoting the tag is not the user.
+function imageSwitch(typed: Array<{ type: "text"; text: string }>): boolean | undefined {
+  const text = userTypedText({ role: "user", content: typed });
+  const last = [...text.matchAll(SESSION_SWITCH)].at(-1);
+  return last ? last[0].toLowerCase() !== "[mask-images]" : undefined;
+}
 
 function isInlineData(value: unknown): boolean {
   return typeof value === "string" && value.startsWith("data:");
@@ -1239,80 +1267,51 @@ function replaceImages(value: unknown, format: Format, count: { hits: number }):
   return changed ? out : value;
 }
 
-// Tags are read from `tagged` (the body as the client sent it), images
-// replaced in `body` (the same body with its tags stripped).
+// `session`: whether the session's switch is on after this request.
 export function withholdImages(
   format: Format,
   body: Record<string, unknown>,
-  tagged = body,
-): { body: Record<string, unknown>; hits: number } {
+  session?: string | null,
+): { body: Record<string, unknown>; hits: number; session: boolean } {
   const key = format === "responses" ? "input" : "messages";
   const list = body[key];
-  const original = tagged[key];
-  if (!Array.isArray(list) || !Array.isArray(original)) return { body, hits: 0 };
-  const count = { hits: 0 };
-  let allowed = false;
-  const out = list.map((item, i) => {
-    if (!item || typeof item !== "object") return item;
-    const record = (original[i] ?? item) as { role?: unknown; content?: unknown };
+  if (!Array.isArray(list)) return { body, hits: 0, session: false };
+  // The typed prompt of each item, or none.
+  const prompts = list.map((item) => {
+    if (!item || typeof item !== "object") return [];
+    const record = item as { role?: unknown; content?: unknown };
     // A tool-result turn is not a prompt, even with harness text beside it.
     const results =
       Array.isArray(record.content) &&
       record.content.some((block) => (block as { type?: unknown } | null)?.type === "tool_result");
-    if (record.role === "user" && !results) {
-      const typed = promptBlocks(record.content);
-      if (typed.length > 0) allowed = typed.some((block) => IMAGE_TAG.test(block.text));
+    return record.role === "user" && !results ? promptBlocks(record.content) : [];
+  });
+  const switches = session ? prompts.map((typed) => imageSwitch(typed)) : [];
+  // A history that holds the switch decides alone, so earlier turns stay as
+  // they went; one that does not starts where the session left off.
+  let sticky = switches.some((on) => on !== undefined)
+    ? false
+    : Boolean(session && sessionImages.get(session));
+  const count = { hits: 0 };
+  let allowed = false;
+  const out = list.map((item, i) => {
+    if (!item || typeof item !== "object") return item;
+    const typed = prompts[i]!;
+    if (typed.length > 0) {
+      sticky = switches[i] ?? sticky;
+      allowed = typed.some((block) => IMAGE_TAG.test(block.text));
     }
-    return allowed ? item : replaceImages(item, format, count);
+    return allowed || sticky ? item : replaceImages(item, format, count);
   });
-  return count.hits === 0 ? { body, hits: 0 } : { body: { ...body, [key]: out }, hits: count.hits };
+  if (session) rememberImages(session, sticky);
+  const next = count.hits === 0 ? body : { ...body, [key]: out };
+  return { body: next, hits: count.hits, session: sticky };
 }
 
-// ── provider blindness ──────────────────────────────────────────────────────
-// The provider must not learn that values are swapped. The proxy adds nothing
-// that mentions redaction, and the allow tags the user types are removed from
-// the typed text it forwards; they still set this request's policy here. Tool
-// output keeps them: rewriting it would corrupt what a command printed.
-
-// Same tag set the engine parses (resolveTagPriority), plus [allow-images]
-// [allow-protected], [allow-send] and [allow-once:<id>].
-const ALLOW_TAG = new RegExp(
-  "\\[(?:(?:allow|mask)-(?:all|secrets?|pii)" +
-    "|allow-(?:images?|protected|send|once:[0-9a-f]{8}))\\][ \\t]?",
-  "gi",
-);
-
-function stripTagText(content: unknown): unknown {
-  if (typeof content === "string") return content.replace(ALLOW_TAG, "");
-  if (!Array.isArray(content)) return content;
-  return content.map((block) => {
-    if (!block || typeof block !== "object") return block;
-    const { type, text } = block as { type?: unknown; text?: unknown };
-    return (type === "text" || type === "input_text") && typeof text === "string"
-      ? { ...block, text: text.replace(ALLOW_TAG, "") }
-      : block;
-  });
-}
-
-export function stripAllowTags(
-  format: Format,
-  body: Record<string, unknown>,
-): Record<string, unknown> {
-  if (format === "responses" && typeof body.input === "string")
-    return { ...body, input: stripTagText(body.input) };
-  const key = format === "responses" ? "input" : "messages";
-  const list = body[key];
-  if (!Array.isArray(list)) return body;
-  return {
-    ...body,
-    [key]: list.map((item) => {
-      if (!item || typeof item !== "object" || (item as { role?: unknown }).role !== "user")
-        return item;
-      const record = item as { content?: unknown };
-      return { ...record, content: stripTagText(record.content) };
-    }),
-  };
-}
+// ── allow tags stay in ──────────────────────────────────────────────────────
+// The tags the user types are forwarded as typed. A model that sees
+// "[allow-pii] mail Bob" knows the user lifted masking, and is not left
+// guessing why a value came through whole or what the tag in a notice means.
 
 // ── swap-back ───────────────────────────────────────────────────────────────
 // Only tools that run on this machine get real values. Anything else (web

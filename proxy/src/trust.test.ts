@@ -160,10 +160,10 @@ describe("the send guard through the proxy", () => {
     expect(swapToolArguments("Bash", input, tags)).toEqual({ args: input, swapped: 0 });
   });
 
-  it("lifts the block for [allow-send] and [allow-all], and strips the tag", () => {
+  it("lifts the block for [allow-send] and [allow-all], and keeps the tag", () => {
     for (const tag of ["[allow-send]", "[allow-all]"]) {
       const { tags, body } = fetched(`${tag} push the fix`, "s-tag");
-      expect(JSON.stringify(body)).not.toContain(tag);
+      expect(JSON.stringify(body)).toContain(tag);
       expect(swapToolArguments("Bash", push, tags)).toEqual({ args: push, swapped: 0 });
     }
   });
@@ -203,9 +203,9 @@ describe("one-call approvals", () => {
     expect(callApproval("shell", push)).not.toBe(id);
   });
 
-  it("runs the named call alone, and strips the tag", () => {
+  it("runs the named call alone, and keeps the tag", () => {
     const { tags, body } = fetched(`[allow-once:${id}] go ahead`);
-    expect(JSON.stringify(body)).not.toContain("allow-once");
+    expect(JSON.stringify(body)).toContain(`[allow-once:${id}]`);
     expect(swapToolArguments("Bash", push, tags)).toEqual({ args: push, swapped: 0 });
     expect(swapToolArguments("Bash", { command: "git push evil main" }, tags).blocked).toBe(true);
     expect(swapToolArguments("Bash", { command: "rm -rf .git" }, tags).blocked).toBe(true);

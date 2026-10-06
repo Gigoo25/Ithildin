@@ -17,9 +17,8 @@
 //          sends are blocked the same way
 //   ?Nt    tools the agent offers that act but that no guard reads
 //   +pii   allow tags the user's latest prompt carries (+pii, +secrets,
-//          +all, +protected, +send, +once). The proxy strips tags before
-//          forwarding, so the model never sees them; this is how the user
-//          sees one landed.
+//          +all, +protected, +send, +once), and +images while the session's
+//          image switch is on. This is how the user sees one landed.
 //
 // Counts cover the whole conversation, since every request carries all of
 // it. Zero kinds are left out; nothing hidden reads "ITHILDIN ON · 0".
@@ -72,7 +71,7 @@ const MAX_SESSIONS = 256;
 export function allowLabels(tags: ReadonlySet<string>): string[] {
   if (tags.has("all")) return ["all", ...(tags.has("protected") ? ["protected"] : [])];
   const once = [...tags].some((tag) => tag.startsWith("once:")) ? ["once"] : [];
-  return (["pii", "secret", "protected", "send"] as const)
+  return (["pii", "secret", "protected", "send", "images"] as const)
     .filter((tag) => tags.has(tag))
     .map((tag): string => (tag === "secret" ? "secrets" : tag))
     .concat(once);
