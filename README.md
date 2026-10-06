@@ -399,6 +399,21 @@ whole above it, byte for byte, becomes a note pointing at the first. rtk
 condenses command output at the source, so what reaches here is mostly what
 rtk does not recognise: MCP results, a direct grep, a fetch.
 
+A stub says to re-run the call, which fails for anything that changed or
+cannot run twice. Add the proxy's own MCP server and it keeps what it
+shortened, and the stub names an id to read it back with instead:
+
+```sh
+claude mcp add --transport http ithildin http://127.0.0.1:18733/mcp
+```
+
+With it, shaping also cuts long JSON arrays of similar objects (an MCP tool
+listing pods, issues, rows) to the first and last items and the ones that
+differ from the rest, by rare values and numeric outliers. That is lossy, so it
+only happens when the agent can get the whole output back. The tool answers
+only this machine, keeps outputs in memory as they were forwarded, and lets
+the oldest go past 64 MiB.
+
 Two things to know about it. It is **pure**: the same request shapes to the
 same bytes every time, which is what keeps the provider's prompt cache intact,
 so nothing in it may read the clock or a counter. And it **fails open** — a

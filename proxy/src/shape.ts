@@ -27,6 +27,7 @@
 // forwarded exactly as redaction left it.
 
 import { compact } from "./compact.ts";
+import { crushJson } from "./crush.ts";
 import type { Format } from "./redact.ts";
 
 // Ported from Pi's output-shaping extension (mask.ts), which could only shape
@@ -160,12 +161,27 @@ function describe(name: string, args: unknown): string {
 
 // The stub. It names nothing relative to now, so the same old result masks to
 // the same bytes on every request, which is what keeps the cached prefix.
-function stubFor(name: string, args: unknown, size: number, lines: number, images: number): string {
+function stubFor(
+  name: string,
+  args: unknown,
+  size: number,
+  lines: number,
+  images: number,
+  back: string,
+): string {
   const pictures = images === 0 ? "" : ` and ${images} image${images === 1 ? "" : "s"}`;
   return (
     `[masked to save context: ${describe(name, args)} returned ${lines} lines (${size} chars)` +
-    `${pictures} earlier in this session. Re-run the call if you need that output again.]`
+    `${pictures} earlier in this session. ${back}]`
   );
+}
+
+// How a note says to get the output back: the retrieve tool when the agent has
+// it, which also keeps the output for it, and the call itself otherwise.
+function wayBack(text: string, retrieval: Retrieval | undefined): string {
+  if (!retrieval || !text) return "Re-run the call if you need that output again.";
+  const id = retrieval.keep(text);
+  return `Call ${retrieval.tool} with id "${id}" if you need that output again.`;
 }
 
 // How many assistant turns back are still whole. Zero means shape nothing: a
@@ -186,6 +202,16 @@ interface Call {
 interface Walk {
   calls: Map<string, Call>;
   outputs: Map<string, string>;
+  retrieval: Retrieval | undefined;
+}
+
+// The agent's retrieve tool (retrieve.ts), when the request offers it: its
+// name as the agent calls it, and where a shortened output is kept, returning
+// the id that reads it back. The id is a digest of the text, so a note naming
+// it is as pure as one that does not.
+export interface Retrieval {
+  tool: string;
+  keep(text: string): string;
 }
 
 type Kind = "masked" | "compacted" | "deduped";
@@ -251,7 +277,8 @@ function shaped(content: unknown, id: unknown, walk: Walk, old: boolean): Change
   const name = call?.name ?? "tool";
   const lines = text.split("\n").length;
   if (old && (text.length >= MASK_MIN_CHARS || images > 0)) {
-    const stub = stubFor(name, call?.input, text.length, lines, images);
+    const back = wayBack(text, walk.retrieval);
+    const stub = stubFor(name, call?.input, text.length, lines, images, back);
     return { text: stub, saved: text.length + images * IMAGE_CHARS - stub.length, kind: "masked" };
   }
   // A recent image is the model's to look at.
@@ -264,10 +291,23 @@ function shaped(content: unknown, id: unknown, walk: Walk, old: boolean): Change
     }
     walk.outputs.set(text, describe(name, call?.input));
   }
-  const compacted = compact(text);
+  const compacted = crushed(text, walk.retrieval) ?? compact(text);
   return compacted === undefined
     ? undefined
     : { text: compacted, saved: text.length - compacted.length, kind: "compacted" };
+}
+
+// A JSON output with its long arrays cut to the items that differ (crush.ts).
+// Lossy, so only with a way to read the whole output back.
+function crushed(text: string, retrieval: Retrieval | undefined): string | undefined {
+  if (!retrieval || text.length < MASK_MIN_CHARS) return;
+  const result = crushJson(text);
+  if (!result) return;
+  const id = retrieval.keep(text);
+  return (
+    `${result.text}\n[${result.omitted} similar array items omitted to save context. ` +
+    `Call ${retrieval.tool} with id "${id}" for the whole output.]`
+  );
 }
 
 function counted(kind: Kind): Counts {
@@ -315,11 +355,15 @@ function shapeResponses(item: unknown, walk: Walk, old: boolean): Replacement | 
 
 // The request with its old tool results masked, or undefined when there was
 // nothing to mask. Pure: the same body gives the same result, byte for byte.
-export function shapeRequest(format: Format, body: Record<string, unknown>): Shaped | undefined {
+export function shapeRequest(
+  format: Format,
+  body: Record<string, unknown>,
+  retrieval?: Retrieval,
+): Shaped | undefined {
   const list = conversation(format, body);
   if (!list) return;
   const cutoff = cutoffFor(list, format);
-  const walk: Walk = { calls: new Map(), outputs: new Map() };
+  const walk: Walk = { calls: new Map(), outputs: new Map(), retrieval };
   const totals: Counts = { masked: 0, compacted: 0, deduped: 0 };
   let turn = 0;
   let savedChars = 0;

@@ -30,7 +30,7 @@ import {
   shapingSwitch,
   typedPromptCount,
 } from "./redact.ts";
-import { shapeRequest, shapingOn } from "./shape.ts";
+import { type Retrieval, shapeRequest, shapingOn } from "./shape.ts";
 import { configHome, NAME } from "../engine/lib/names.ts";
 import { aliasStyle } from "../engine/lib/rules.ts";
 import { type ActivityEvent, observeActivity } from "../engine/lib/activity.ts";
@@ -49,6 +49,7 @@ import {
 import { AGENT, GUESS, SessionNames, USER } from "./sessions.ts";
 import { createStatusBook } from "./status.ts";
 import { PrefixWatch } from "./prefix.ts";
+import { answerMcp, offeredTool, Originals, outputId } from "./retrieve.ts";
 import { merge, type Usage, usageOf, usageOfEvent, usageText } from "./usage.ts";
 import { findWatched, knownValues, watchPolicy } from "./watch.ts";
 import { type SelfTest, selfTest } from "./selftest.ts";
@@ -215,7 +216,7 @@ const SESSION_HEADERS: [string, string][] = [
 ];
 const CLIENT_HEADER = "x-opencode-client";
 const OWN_PATH =
-  /^\/(?:_ithildin\/(selftest|health)|(dashboard)(?:\/(activity|requests|request))?)$/;
+  /^\/(?:_ithildin\/(selftest|health)|(mcp)|(dashboard)(?:\/(activity|requests|request))?)$/;
 // Set by refuse() and removed by the handler, which logs the refusal for the
 // dashboard. It never reaches the client.
 const REFUSED_HEADER = "x-ithildin-refused";
@@ -579,6 +580,7 @@ interface Stores {
   kept: SentRequests;
   names: SessionNames;
   prefixes: PrefixWatch;
+  originals: Originals;
   turns: number;
 }
 
@@ -608,7 +610,7 @@ async function forward(
   // the conversation the dashboard keeps is the one that arrived and only the
   // forwarded copy is shaped. It is pure and fails open: a request it cannot
   // shape goes upstream exactly as redaction left it.
-  const shaped = shapeOutgoing(scanned, format ?? "chat", session?.id ?? null);
+  const shaped = shapeOutgoing(scanned, format ?? "chat", session?.id ?? null, stores.originals);
   const sent = redactUrl(rest, url.search, headers, scanned, redact);
   if (sent instanceof Response) return sent;
   const routed = routeFor(route, name, sent.rest, sent.search, headers, format);
@@ -679,7 +681,12 @@ function noteBreak(
 // The body to forward and whether shaping was on for it. `on` is undefined
 // when the client named no session and the switch could not be read, which is
 // what leaves the badge unmentioned rather than claiming a layer is off.
-export function shapeOutgoing(scanned: Scanned, format: Format, session: string | null): Forwarded {
+export function shapeOutgoing(
+  scanned: Scanned,
+  format: Format,
+  session: string | null,
+  originals?: Originals,
+): Forwarded {
   const object = scanned.object as Record<string, unknown>;
   const off: Forwarded = {
     body: scanned.body,
@@ -695,7 +702,7 @@ export function shapeOutgoing(scanned: Scanned, format: Format, session: string 
     // unanswered, which the badge reads as "no answer", not as "off".
     const state = shapingSwitch(format, object, session);
     if (!shapingOn() || state.on === false) return { ...off, on: state.on };
-    const result = shapeRequest(format, object);
+    const result = shapeRequest(format, object, retrievalFor(object, originals));
     if (!result) return { ...off, on: state.on };
     return {
       body: JSON.stringify(result.body),
@@ -728,6 +735,7 @@ export function createHandler(
     kept: new SentRequests(),
     names: new SessionNames(),
     prefixes: new PrefixWatch(),
+    originals: new Originals(),
     turns: 0,
   };
   const { book, events, kept, names } = stores;
@@ -735,12 +743,18 @@ export function createHandler(
   const respond = async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
     const found = OWN_PATH.exec(url.pathname);
-    const own = found?.[1] ?? (found?.[2] ? (found[3] ?? "dashboard") : undefined);
+    const own = found?.[1] ?? found?.[2] ?? (found?.[3] ? (found[4] ?? "dashboard") : undefined);
     if (own === "selftest") {
       proof = await runSelfTest(routes, redact);
       return Response.json(proof, { status: proof.ok ? 200 : 503 });
     }
     if (own === "health") return health(url, routes, book, proof, gated);
+    // The retrieve tool hands back outputs, so like the dashboard it answers
+    // only this machine.
+    if (own === "mcp")
+      return LOCAL_HOSTS.has(url.hostname)
+        ? answerMcp(request, stores.originals)
+        : new Response("forbidden", { status: 403 });
     if (own === "dashboard" || own === "activity" || own === "requests" || own === "request")
       return dashboard(own, url, { events, kept, names });
     if (gated && !proof?.ok) return refuseUnproven(proof);
@@ -958,6 +972,25 @@ function watchOutgoing(
 function isMainRequest(body: unknown): boolean {
   const tools = (body as { tools?: unknown } | undefined)?.tools;
   return Array.isArray(tools) && tools.length > 0 && titleAsk(body) === undefined;
+}
+
+// The agent's retrieve tool, when this request offers it and the proxy has a
+// store to keep outputs in. What is kept is the output as forwarded, so
+// redacted: nothing leaves this process that was not already sent.
+function retrievalFor(
+  body: Record<string, unknown>,
+  originals: Originals | undefined,
+): Retrieval | undefined {
+  const tool = originals && offeredTool(body);
+  if (!tool) return;
+  return {
+    tool,
+    keep: (text) => {
+      const id = outputId(text);
+      originals!.keep(id, text);
+      return id;
+    },
+  };
 }
 
 const NOT_SHAPED: Forwarded = {
