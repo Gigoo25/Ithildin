@@ -35,6 +35,7 @@ import { type ActivityEvent, observeActivity } from "../engine/lib/activity.ts";
 import { DASHBOARD_CSP, DASHBOARD_HTML, DASHBOARD_PATH } from "./dashboard.ts";
 import { type Context, EventLog } from "./events.ts";
 import { SentRequests } from "./requests.ts";
+import { SessionNames } from "./sessions.ts";
 import { createStatusBook } from "./status.ts";
 import { findWatched, knownValues, watchPolicy } from "./watch.ts";
 import { type SelfTest, selfTest } from "./selftest.ts";
@@ -97,8 +98,12 @@ export function upstreamUrl(route: Route, rest: string, search: string): string 
 // Pi's footer tags its requests with its session id (the proxy's own header,
 // never forwarded); Claude sends X-Claude-Code-Session-Id itself.
 // opencode sends x-opencode-session-id.
-const SESSION_HEADER = "x-ithildin-session";
-const OWN_PATH = /^\/_ithildin\/(selftest|health|ui|activity|requests|request)$/;
+const SESSION_HEADERS: [string, string][] = [
+  ["x-ithildin-session", "pi"],
+  ["x-claude-code-session-id", "claude"],
+  ["x-opencode-session-id", "opencode"],
+];
+const OWN_PATH = /^\/(?:_ithildin\/(selftest|health)|(dashboard)(?:\/(activity|requests|request))?)$/;
 // Set by refuse() and removed by the handler, which logs the refusal for the
 // dashboard. It never reaches the client.
 const REFUSED_HEADER = "x-ithildin-refused";
@@ -448,16 +453,18 @@ export function createHandler(
   const book = createStatusBook();
   const events = new EventLog();
   const kept = new SentRequests();
+  const names = new SessionNames();
   let proof: SelfTest | undefined;
   const respond = async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
-    const own = OWN_PATH.exec(url.pathname)?.[1];
+    const found = OWN_PATH.exec(url.pathname);
+    const own = found?.[1] ?? (found?.[2] ? (found[3] ?? "dashboard") : undefined);
     if (own === "selftest") {
       proof = await runSelfTest(routes, redact);
       return Response.json(proof, { status: proof.ok ? 200 : 503 });
     }
     if (own === "health") return health(url, routes, book, proof, gated);
-    if (own === "ui" || own === "activity" || own === "requests" || own === "request")
+    if (own === "dashboard" || own === "activity" || own === "requests" || own === "request")
       return dashboard(own, url, events, kept);
     if (gated && !proof?.ok) return refuseUnproven(proof);
     const match = /^\/([^/]+)(\/.*)?$/.exec(url.pathname);
@@ -471,13 +478,18 @@ export function createHandler(
     const session = sessionOf(request);
     const headers = forwardedHeaders(request);
 
-    const scanned = await scanRequest(request, format, redact, session ?? null);
+    const scanned = await scanRequest(request, format, redact, session?.id ?? null);
     if (scanned instanceof Response) return scanned;
     const { body, tags, scanMs } = scanned;
     const sent = redactUrl(rest, url.search, headers, scanned, redact);
     if (sent instanceof Response) return sent;
     const target = upstreamUrl(route, sent.rest, sent.search);
-    const context = { route: match[1]!, endpoint: sent.rest, session };
+    const context = {
+      route: match[1]!,
+      endpoint: sent.rest,
+      session: session?.id,
+      ...(session ? { sessionName: names.name(session.client, session.id) } : {}),
+    };
     recordScan({ book, events, kept }, context, scanned);
     const stopped = watchOutgoing(events, context, scanned, sent);
     if (stopped) return stopped;
@@ -507,20 +519,20 @@ export function createHandler(
   return async (request: Request): Promise<Response> => logRefusal(events, await respond(request));
 }
 
-function sessionOf(request: Request): string | undefined {
-  return (
-    request.headers.get(SESSION_HEADER) ??
-    request.headers.get("x-Claude-Code-Session-Id") ??
-    request.headers.get("x-opencode-session-id") ??
-    undefined
-  );
+// The session id, and the agent that sent it, by the header it used.
+function sessionOf(request: Request): { id: string; client: string } | undefined {
+  for (const [header, client] of SESSION_HEADERS) {
+    const id = request.headers.get(header);
+    if (id) return { id, client };
+  }
+  return undefined;
 }
 
 // The request's headers as the upstream gets them.
 function forwardedHeaders(request: Request): Headers {
   const headers = new Headers(request.headers);
   for (const name of HOP_HEADERS) headers.delete(name);
-  headers.delete(SESSION_HEADER);
+  headers.delete(SESSION_HEADERS[0]![0]);
   headers.set("accept-encoding", "identity");
   return headers;
 }
@@ -537,14 +549,14 @@ function logRefusal(events: EventLog, response: Response): Response {
 // The dashboard page, or what it polls: the events after `?since=`, the list of
 // requests kept, or one request's text.
 function dashboard(
-  own: "ui" | "activity" | "requests" | "request",
+  own: "dashboard" | "activity" | "requests" | "request",
   url: URL,
   events: EventLog,
   kept: SentRequests,
 ): Response {
   if (!LOCAL_HOSTS.has(url.hostname)) return new Response("forbidden", { status: 403 });
   const headers = { "cache-control": "no-store" };
-  if (own === "ui") {
+  if (own === "dashboard") {
     const page = {
       ...headers,
       "content-type": "text/html",
@@ -603,10 +615,14 @@ function recordScan(
   const trust = { ...label, unguarded: unguarded.length };
   if (counts) stores.book.record(context.session, context.route, counts, prompts, tags, trust);
   let fresh = 0;
-  for (const event of scanned.activity) if (stores.events.record(context, event)) fresh++;
+  const standIns = scanned.activity.flatMap((event) =>
+    event.type === "masked" ? [event.standIn] : [],
+  );
+  for (const event of scanned.activity)
+    if (stores.events.record(context, event, scanned.body, standIns)) fresh++;
   stores.events.request(context, scanned.scanMs, fresh);
   if (scanned.body !== undefined)
-    stores.kept.record(context.route, context.endpoint, context.session, scanned.body);
+    stores.kept.record(context, scanned.body);
 }
 
 // The upstream reply with stand-ins in tool calls swapped back, or a refusal

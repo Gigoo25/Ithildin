@@ -1,14 +1,14 @@
-// The local dashboard: one page, polling /_ithildin/activity (events.ts).
+// The local dashboard: one page, polling /dashboard/activity (events.ts).
 // It is a string in a module because the package copies only src/*.ts.
 //
 // Every value on the page reaches the DOM through textContent. Stand-ins, tool
 // names and guard notices come from content the proxy does not control, so
 // none of it is ever parsed as HTML.
 
-export const DASHBOARD_PATH = "/_ithildin/ui";
-export const ACTIVITY_PATH = "/_ithildin/activity";
-export const REQUESTS_PATH = "/_ithildin/requests";
-export const REQUEST_PATH = "/_ithildin/request";
+export const DASHBOARD_PATH = "/dashboard";
+export const ACTIVITY_PATH = "/dashboard/activity";
+export const REQUESTS_PATH = "/dashboard/requests";
+export const REQUEST_PATH = "/dashboard/request";
 
 // No network but this origin, and no markup from anywhere else.
 export const DASHBOARD_CSP =
@@ -113,21 +113,25 @@ export const DASHBOARD_HTML = `<!doctype html>
   .tall { flex: 1; min-height: 180px; overflow-y: auto; }
   .activity { flex: 1; min-height: 0; display: flex; flex-direction: column; }
   .bar { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; }
-  thead th { position: sticky; top: 0; background: var(--head); z-index: 1; }
-  table { border-collapse: collapse; width: 100%; }
-  th, td { text-align: left; padding: 5px 10px; border-bottom: 1px solid var(--soft); }
-  th {
-    font: 600 11px var(--serif); letter-spacing: .12em; text-transform: uppercase;
-    color: var(--dim); white-space: nowrap;
+  /* One entry: the message first, then what the proxy knows about it, dimmed. */
+  .entry { padding: 9px 14px 8px; border-bottom: 1px solid var(--soft); }
+  .entry.leak_row { background: var(--alert_bg); }
+  .msg {
+    font: 13px/1.5 ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere;
   }
-  td { font-family: ui-monospace, monospace; font-size: 12px; vertical-align: top; }
-  td.short { white-space: nowrap; }
-  td.long { min-width: 16ch; overflow-wrap: anywhere; }
-  tr.detail td {
-    border-bottom-color: var(--edge); padding-top: 0; color: var(--dim);
-    overflow-wrap: anywhere; font-family: system-ui, sans-serif; font-size: 13px;
+  .msg.plain { font-family: system-ui, sans-serif; }
+  .msg mark, #viewer mark {
+    background: var(--masked_bg); color: var(--ink); outline: 1px solid var(--masked);
+    border-radius: 2px; padding: 0 1px;
   }
-  tr.has_detail td { border-bottom: 0; }
+  .msg mark[data-part=other] { background: none; outline-style: dotted; opacity: .75; }
+  .msg mark[data-type=swapped] { background: var(--swapped_bg); outline-color: var(--swapped); }
+  .meta {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin-top: 5px;
+    font-size: 12px; color: var(--dim);
+  }
+  .meta > span:not(.tag) { opacity: .7; }
+  .meta .when { margin-left: auto; }
   .tag { border-radius: 3px; padding: 1px 7px; font-size: 11px; font-weight: 600; }
   .masked { background: var(--masked_bg); color: var(--masked); }
   .swapped { background: var(--swapped_bg); color: var(--swapped); }
@@ -177,9 +181,6 @@ export const DASHBOARD_HTML = `<!doctype html>
     flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 8px 10px;
     border: 1px solid var(--edge); border-radius: 4px; background: var(--panel);
     font: 12px/1.45 ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere;
-  }
-  #viewer mark {
-    background: var(--masked_bg); color: var(--ink); outline: 1px solid var(--masked);
   }
   @media (max-width: 700px) {
     .sent { grid-template-columns: 1fr; grid-template-rows: 140px 1fr; }
@@ -255,10 +256,7 @@ export const DASHBOARD_HTML = `<!doctype html>
       <p id="feed_count" class="count"></p>
     </div>
   </div>
-  <div id="feed_box" class="scroll tall"><table id="feed"><thead><tr>
-    <th>Time</th><th>Event</th><th>Endpoint</th><th>Kind</th><th>Stand-in</th>
-    <th>Value (preview)</th><th>Session</th>
-  </tr></thead><tbody></tbody></table></div>
+  <div id="feed_box" class="scroll tall"><div id="feed"></div></div>
 </div>
 <div id="panel_sent" class="panel" hidden>
   <div class="bar">
@@ -296,21 +294,11 @@ function byId(id) {
   return document.getElementById(id);
 }
 
-// A short cell stays on one line; a long one wraps anywhere.
-function cell(row, text, className) {
-  const td = document.createElement('td');
-  td.textContent = text === undefined || text === null ? '' : String(text);
-  if (className) td.className = className;
-  row.appendChild(td);
-  return td;
-}
-
-function tag(row, type) {
-  const td = cell(row, '', 'short');
-  const span = document.createElement('span');
-  span.className = 'tag ' + type;
-  span.textContent = type;
-  td.appendChild(span);
+function byClass(tagName, className, text) {
+  const node = document.createElement(tagName);
+  node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
 }
 
 function clock(ms) {
@@ -334,36 +322,64 @@ function leakDetail(entry) {
   return what + ' in the outgoing request at ' + entry.where + ' (' + outcome + ')';
 }
 
-function detail(entry) {
+// What happened, in a sentence, for an entry that has no message of its own.
+function sentence(entry) {
   if (entry.type === 'request') {
     const fresh = entry.count ? ', ' + plural(entry.count, 'new value') + ' masked' : '';
     return 'Scanned in ' + entry.ms + ' ms' + fresh;
   }
   if (entry.type === 'refused') return entry.status + ' ' + entry.text;
   if (entry.type === 'blocked') return firstSentence(entry.text);
-  if (entry.type === 'masked') return 'First time this value was masked in a request';
-  if (entry.type === 'leaked') return leakDetail(entry);
-  return 'Swapped back in ' + entry.where;
+  return leakDetail(entry);
 }
 
-// A row, and under it the sentence that says what happened, across the table.
-function feedRows(entry) {
-  const leak = entry.type === 'leaked' ? ' leak_row' : '';
-  const row = document.createElement('tr');
-  row.className = 'has_detail' + leak;
-  cell(row, clock(entry.time), 'short');
-  tag(row, entry.type);
-  cell(row, entry.route ? entry.route + (entry.endpoint || '') : '', 'short');
-  cell(row, entry.kind, 'short');
-  cell(row, entry.standIn, 'long');
-  cell(row, entry.preview, 'short');
-  cell(row, entry.session, 'short');
-  const note = document.createElement('tr');
-  note.className = 'detail' + leak;
-  const td = cell(note, detail(entry));
-  if (entry.text) td.title = entry.text;
-  td.colSpan = 7;
-  return [row, note];
+// The message: the request's text around a masked value as it was sent (or the
+// stand-in alone), with the stand-in marked. Every piece is a plain text node.
+function message(entry) {
+  const box = byClass('div', 'msg');
+  if (entry.type !== 'masked' && entry.type !== 'swapped') {
+    box.classList.add('plain');
+    box.textContent = sentence(entry);
+    return box;
+  }
+  const parts = entry.parts || [{ text: entry.standIn, mark: 'this' }];
+  for (const part of parts) {
+    if (!part.mark) {
+      box.append(part.text);
+      continue;
+    }
+    const mark = byClass('mark', '', part.text);
+    mark.dataset.type = entry.type;
+    mark.dataset.part = part.mark;
+    box.appendChild(mark);
+  }
+  return box;
+}
+
+// Under the message, dimmer: what kind of event, of what, and where it came from.
+function details(entry) {
+  const line = byClass('div', 'meta');
+  line.appendChild(byClass('span', 'tag ' + entry.type, entry.type));
+  if (entry.kind && entry.type !== 'leaked') line.appendChild(byClass('span', '', entry.kind));
+  if (entry.preview) line.appendChild(byClass('span', '', 'value ' + entry.preview));
+  if (entry.type === 'swapped') line.appendChild(byClass('span', '', 'back in ' + entry.where));
+  if (entry.route)
+    line.appendChild(byClass('span', '', entry.route + (entry.endpoint || '')));
+  const who = entry.sessionName || entry.session;
+  if (who) {
+    const span = byClass('span', '', who);
+    if (entry.session) span.title = entry.session;
+    line.appendChild(span);
+  }
+  line.appendChild(byClass('span', 'when', clock(entry.time)));
+  return line;
+}
+
+function feedEntry(entry) {
+  const item = byClass('article', entry.type === 'leaked' ? 'entry leak_row' : 'entry');
+  if (entry.text) item.title = entry.text;
+  item.append(message(entry), details(entry));
+  return item;
 }
 
 function matches(entry) {
@@ -373,15 +389,12 @@ function matches(entry) {
   const needle = byId('search').value.trim().toLowerCase();
   if (!needle) return true;
   const fields = [entry.type, entry.kind, entry.route, entry.endpoint, entry.standIn,
-    entry.preview, entry.where, entry.text, entry.session];
+    entry.preview, entry.where, entry.text, entry.session, entry.sessionName];
   return fields.join(' ').toLowerCase().includes(needle);
 }
 
-function emptyRow() {
-  const row = document.createElement('tr');
-  const td = cell(row, 'Nothing to show. Send a prompt with a host, an email or a key.', 'empty');
-  td.colSpan = 7;
-  return row;
+function emptyNote() {
+  return byClass('p', 'empty', 'Nothing to show. Send a prompt with a host, an email or a key.');
 }
 
 function renderCount() {
@@ -391,27 +404,27 @@ function renderCount() {
 
 // Everything again, for a change of filter or a restarted proxy.
 function renderFeed() {
-  const body = document.querySelector('#feed tbody');
-  body.replaceChildren();
-  const rows = feed.filter(matches);
-  if (rows.length === 0) body.appendChild(emptyRow());
-  for (const entry of rows) body.append(...feedRows(entry));
+  const list = byId('feed');
+  list.replaceChildren();
+  const entries = feed.filter(matches);
+  if (entries.length === 0) list.appendChild(emptyNote());
+  for (const entry of entries) list.appendChild(feedEntry(entry));
   renderCount();
 }
 
 // Only what is new, on top. Someone reading further down keeps their place.
 function addToFeed(entries) {
-  const body = document.querySelector('#feed tbody');
+  const list = byId('feed');
   const box = byId('feed_box');
-  const rows = entries.filter(matches).reverse();
-  if (rows.length > 0) {
+  const fresh = entries.filter(matches).reverse();
+  if (fresh.length > 0) {
     const before = box.scrollHeight;
     const top = box.scrollTop;
-    if (body.querySelector('td.empty')) body.replaceChildren();
+    if (list.querySelector('.empty')) list.replaceChildren();
     const fragment = document.createDocumentFragment();
-    for (const entry of rows) fragment.append(...feedRows(entry));
-    body.prepend(fragment);
-    while (body.children.length > FEED_MAX * 2) body.lastChild.remove();
+    for (const entry of fresh) fragment.appendChild(feedEntry(entry));
+    list.prepend(fragment);
+    while (list.children.length > FEED_MAX) list.lastChild.remove();
     if (top > 0) box.scrollTop = top + (box.scrollHeight - before);
   }
   renderCount();
@@ -436,7 +449,8 @@ function renderFilters() {
   byId('session').addEventListener('change', renderFeed);
 }
 
-// Each session seen becomes a choice, so one agent's traffic can be picked out.
+// Each session seen becomes a choice, by name with its id beside it, so one
+// agent's traffic can be picked out.
 function noteSessions(entries) {
   const menu = byId('session');
   for (const entry of entries) {
@@ -444,7 +458,7 @@ function noteSessions(entries) {
     sessions.add(entry.session);
     const option = document.createElement('option');
     option.value = entry.session;
-    option.textContent = entry.session;
+    option.textContent = entry.sessionName ? entry.sessionName + ' (' + entry.session + ')' : entry.session;
     menu.appendChild(option);
   }
 }
@@ -615,7 +629,8 @@ function sentItem(request) {
   item.textContent = request.route + request.endpoint;
   const small = document.createElement('span');
   const cut = request.cut ? ' (cut)' : '';
-  small.textContent = clock(request.time) + ' · ' + request.size + ' characters' + cut;
+  const who = request.sessionName ? request.sessionName + ' · ' : '';
+  small.textContent = who + clock(request.time) + ' · ' + request.size + ' characters' + cut;
   item.appendChild(small);
   item.addEventListener('click', () => chooseSent(request.id));
   return item;

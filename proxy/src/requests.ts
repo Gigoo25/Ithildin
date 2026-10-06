@@ -5,6 +5,7 @@
 // and a restart clears it. Off when ITHILDIN_KEEP_REQUESTS is 0.
 
 import { setting } from "../engine/lib/names.ts";
+import type { Context } from "./events.ts";
 
 export const KEEP_DEFAULT = 20;
 export const KEEP_MAX = 200;
@@ -18,6 +19,7 @@ export interface SentSummary {
   route: string;
   endpoint: string;
   session?: string;
+  sessionName?: string;
   // Characters in the body as sent, and whether the view holds all of them.
   size: number;
   cut: boolean;
@@ -50,7 +52,7 @@ export class SentRequests {
     return this.keep > 0;
   }
 
-  record(route: string, endpoint: string, session: string | undefined, body: string): void {
+  record({ route, endpoint, session, sessionName }: Context, body: string): void {
     if (!this.enabled) return;
     const cut = body.length > BODY_BYTES_MAX;
     this.kept.push({
@@ -59,6 +61,7 @@ export class SentRequests {
       route,
       endpoint,
       ...(session ? { session: session.slice(0, SESSION_CHARS) } : {}),
+      ...(sessionName ? { sessionName } : {}),
       size: body.length,
       cut,
       text: cut ? body.slice(0, BODY_BYTES_MAX) : body,

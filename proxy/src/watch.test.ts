@@ -238,7 +238,7 @@ describe("the proxy", () => {
       }),
     );
   const activity = async (handler: ReturnType<typeof createHandler>) =>
-    (await handler(new Request("http://127.0.0.1/_ithildin/activity"))).json() as Promise<{
+    (await handler(new Request("http://127.0.0.1/dashboard/activity"))).json() as Promise<{
       entries: Array<Record<string, unknown>>;
       stats: Record<string, unknown>;
       watch: { terms: number; action: string; known: number };

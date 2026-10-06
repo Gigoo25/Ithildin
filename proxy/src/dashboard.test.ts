@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { observeActivity, REPLY_TEXT, reportActivity } from "../engine/lib/activity.ts";
 import { DASHBOARD_HTML } from "./dashboard.ts";
-import { ENTRIES_MAX, EventLog, preview, SEEN_MAX } from "./events.ts";
+import { ENTRIES_MAX, around, EventLog, preview, SEEN_MAX } from "./events.ts";
 import { initEngine, redactRequest } from "./redact.ts";
 import { createHandler, DEFAULT_ROUTES } from "./server.ts";
 
@@ -19,7 +19,12 @@ beforeAll(() => {
 const EMAIL_PREVIEW = `${EMAIL.slice(0, 2)}…${EMAIL.slice(-1)} (${EMAIL.length})`;
 // A stand-in for fetch: the handler only calls it.
 const upstream = (reply: () => Response) => (async () => reply()) as unknown as typeof fetch;
-const context = { route: "anthropic", endpoint: "/v1/messages", session: "0123456789abcdef" };
+const context = {
+  route: "anthropic",
+  endpoint: "/v1/messages",
+  session: "0123456789abcdef",
+  sessionName: "claude 1",
+};
 
 function masked(value: string, standIn: string, ruleId = "pii-email") {
   return { type: "masked", ruleId, category: "pii", value, standIn } as const;
@@ -48,6 +53,7 @@ describe("event log", () => {
       kind: "email",
       standIn: "ana@corp.com",
       session: "01234567",
+      sessionName: "claude 1",
       route: "anthropic",
       endpoint: "/v1/messages",
     });
@@ -173,7 +179,7 @@ describe("dashboard", () => {
       }),
     );
   const activity = async (handler: ReturnType<typeof createHandler>, query = "") =>
-    (await handler(dashboard(`/_ithildin/activity${query}`))).json() as Promise<{
+    (await handler(dashboard(`/dashboard/activity${query}`))).json() as Promise<{
       entries: Array<Record<string, unknown>>;
       next: number;
       stats: Record<string, unknown>;
@@ -199,6 +205,93 @@ describe("dashboard", () => {
     expect(data.stats).toMatchObject({ requests: 1 });
     const again = await activity(handler, `?since=${data.next}`);
     expect(again.entries).toEqual([]);
+  });
+
+  it("shows the text around a masked value as it was sent, never the real value", async () => {
+    const handler = createHandler(
+      DEFAULT_ROUTES,
+      upstream(() => Response.json({ content: [] })),
+    );
+    await send(handler, messages(`write to ${EMAIL} about the invoice`));
+    const masked = (await activity(handler)).entries.find((entry) => entry.type === "masked")!;
+    expect(masked.parts).toEqual([
+      { text: "write to " },
+      { text: masked.standIn, mark: "this" },
+      { text: " about the invoice" },
+    ]);
+    expect(JSON.stringify(masked)).not.toContain(EMAIL);
+  });
+
+  it("cuts the context at the message, and marks text that goes on", () => {
+    const sent = JSON.stringify({
+      messages: [
+        { role: "user", content: "first" },
+        { role: "user", content: `${"a".repeat(150)} STANDIN ${"b".repeat(150)}\nsaid "hi"` },
+        { role: "user", content: "last" },
+      ],
+    });
+    const found = around(sent, "STANDIN").parts!;
+    expect(found.map((part) => part.text)).toEqual([
+      "…",
+      `${"a".repeat(99)} `,
+      "STANDIN",
+      ` ${"b".repeat(99)}`,
+      "…",
+    ]);
+    expect(found[2]!.mark).toBe("this");
+    const short = around(sent.replace(/b{150}/, "b"), "STANDIN").parts!;
+    expect(short.at(-1)!.text).toBe(' b\nsaid "hi"');
+    expect(around(sent, "absent")).toEqual({});
+    expect(around(undefined, "STANDIN")).toEqual({});
+  });
+
+  it("marks the request's other stand-ins in the message, the longer one first", () => {
+    const sent = JSON.stringify({ content: "write Ann Lee at ann@x.io, or Ann Lee Jr" });
+    expect(around(sent, "ann@x.io", ["Ann Lee", "Ann Lee Jr", ""]).parts).toEqual([
+      { text: "write " },
+      { text: "Ann Lee", mark: "other" },
+      { text: " at " },
+      { text: "ann@x.io", mark: "this" },
+      { text: ", or " },
+      { text: "Ann Lee Jr", mark: "other" },
+    ]);
+  });
+
+  it("names each session by its agent, in the feed and the sent requests", async () => {
+    const handler = createHandler(
+      DEFAULT_ROUTES,
+      upstream(() => Response.json({ content: [] })),
+    );
+    const as = (headers: Record<string, string>) =>
+      handler(
+        new Request("http://127.0.0.1/anthropic/v1/messages", {
+          method: "POST",
+          headers: { "content-type": "application/json", ...headers },
+          body: JSON.stringify(messages(`mail ${EMAIL}`)),
+        }),
+      );
+    await as({ "x-claude-code-session-id": "aaaaaaaa1111" });
+    await as({ "x-claude-code-session-id": "bbbbbbbb2222" });
+    await as({ "x-opencode-session-id": "cccccccc3333" });
+    await as({ "x-claude-code-session-id": "aaaaaaaa1111" });
+    const seen = (await activity(handler)).entries
+      .filter((entry) => entry.type === "request")
+      .map((entry) => [entry.session, entry.sessionName]);
+    expect(seen).toEqual([
+      ["aaaaaaaa", "claude 1"],
+      ["bbbbbbbb", "claude 2"],
+      ["cccccccc", "opencode 1"],
+      ["aaaaaaaa", "claude 1"],
+    ]);
+    const list = (await (await handler(dashboard("/dashboard/requests"))).json()) as {
+      requests: Array<{ sessionName?: string }>;
+    };
+    expect(list.requests.map((sent) => sent.sessionName)).toEqual([
+      "claude 1",
+      "opencode 1",
+      "claude 2",
+      "claude 1",
+    ]);
   });
 
   it("shows the endpoint as the upstream gets it, with a value in the path masked", async () => {
@@ -291,7 +384,7 @@ describe("dashboard", () => {
       DEFAULT_ROUTES,
       upstream(() => Response.json({})),
     );
-    const response = await handler(dashboard("/_ithildin/ui"));
+    const response = await handler(dashboard("/dashboard"));
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toContain("text/html");
     expect(response.headers.get("content-security-policy")).toContain("default-src 'none'");
@@ -313,8 +406,8 @@ describe("dashboard", () => {
   it("has tabs, a search, a session menu, and alerts for a leak", () => {
     for (const id of ["tab_activity", "tab_sent", "search", "session", "sent_search", "viewer"])
       expect(DASHBOARD_HTML).toContain(`id="${id}"`);
-    expect(DASHBOARD_HTML).toContain("/_ithildin/requests");
-    expect(DASHBOARD_HTML).toContain("/_ithildin/request?id=");
+    expect(DASHBOARD_HTML).toContain("/dashboard/requests");
+    expect(DASHBOARD_HTML).toContain("/dashboard/request?id=");
     expect(DASHBOARD_HTML).toContain("new Notification(");
     expect(DASHBOARD_HTML).toMatch(/const ICON_ALERT = "data:image\/svg\+xml,/);
     expect(DASHBOARD_HTML).toContain("ff6b5e");
@@ -344,7 +437,7 @@ describe("dashboard", () => {
       DEFAULT_ROUTES,
       upstream(() => Response.json({})),
     );
-    for (const path of ["/_ithildin/ui", "/_ithildin/activity"])
+    for (const path of ["/dashboard", "/dashboard/activity"])
       expect((await handler(dashboard(path, "evil.example"))).status).toBe(403);
     expect((await activity(handler, "?since=abc")).entries).toEqual([]);
     expect((await activity(handler, "?since=1.5")).entries).toEqual([]);
@@ -357,7 +450,7 @@ describe("dashboard", () => {
       undefined,
       true,
     );
-    expect((await handler(dashboard("/_ithildin/ui"))).status).toBe(200);
-    expect((await handler(dashboard("/_ithildin/activity"))).status).toBe(200);
+    expect((await handler(dashboard("/dashboard"))).status).toBe(200);
+    expect((await handler(dashboard("/dashboard/activity"))).status).toBe(200);
   });
 });

@@ -247,7 +247,7 @@ in `config.json`, or list it in `reviewedTools` once you've checked it.
 ## The dashboard
 
 The footer says that the proxy is on the path. The dashboard shows what it did.
-Open `http://127.0.0.1:18733/_ithildin/ui` (your port) in a browser on the same
+Open `http://127.0.0.1:18733/dashboard` (your port) in a browser on the same
 machine. The page fits the window. The **Activity** tab lists each event as it
 happens:
 
@@ -267,7 +267,10 @@ stand-in, and your machine got the real value.
 
 Each row names the route and path of its request, such as `anthropic/v1/messages`.
 A value in the path shows masked, as the provider gets it. The search box
-filters the rows, and the session menu shows one agent's rows.
+filters the rows, and the session menu shows one session's rows. Sessions are
+named by agent and the order seen (`claude 1`, `opencode 2`, `pi 1`); the first
+eight characters of the session id are in the menu and on hover. Numbers start
+over when the proxy restarts.
 
 The page shows the stand-in and a preview of the real value: its first two and
 last characters and its length (one character and the length for a short

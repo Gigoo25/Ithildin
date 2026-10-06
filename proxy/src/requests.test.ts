@@ -23,9 +23,9 @@ describe("sent requests", () => {
   it("keeps the newest, newest first, without their text in the list", () => {
     let time = 100;
     const kept = new SentRequests(2, () => time++);
-    kept.record("anthropic", "/v1/messages", "0123456789abcdef", '{"a":1}');
-    kept.record("anthropic", "/v1/messages", undefined, '{"a":2}');
-    kept.record("openai-codex", "/responses", undefined, '{"a":3}');
+    kept.record({ route: "anthropic", endpoint: "/v1/messages", session: "0123456789abcdef" }, '{"a":1}');
+    kept.record({ route: "anthropic", endpoint: "/v1/messages", session: undefined }, '{"a":2}');
+    kept.record({ route: "openai-codex", endpoint: "/responses", session: undefined }, '{"a":3}');
     const { requests, keep, enabled } = kept.list();
     expect([keep, enabled]).toEqual([2, true]);
     expect(requests.map((request) => request.id)).toEqual([3, 2]);
@@ -37,8 +37,8 @@ describe("sent requests", () => {
 
   it("shortens a session id, lays out JSON for reading, and passes other text as it is", () => {
     const kept = new SentRequests(5);
-    kept.record("anthropic", "/", "0123456789abcdef", '{"a":[1,2]}');
-    kept.record("anthropic", "/", undefined, "not json {");
+    kept.record({ route: "anthropic", endpoint: "/", session: "0123456789abcdef" }, '{"a":[1,2]}');
+    kept.record({ route: "anthropic", endpoint: "/", session: undefined }, "not json {");
     expect(kept.list().requests[1]!.session).toBe("01234567");
     expect(kept.text(1)).toBe('{\n "a": [\n  1,\n  2\n ]\n}');
     expect(kept.text(2)).toBe("not json {");
@@ -46,14 +46,14 @@ describe("sent requests", () => {
 
   it("cuts a body over the limit, and says so", () => {
     const kept = new SentRequests(1);
-    kept.record("anthropic", "/", undefined, "x".repeat(BODY_BYTES_MAX + 10));
+    kept.record({ route: "anthropic", endpoint: "/", session: undefined }, "x".repeat(BODY_BYTES_MAX + 10));
     expect(kept.list().requests[0]).toMatchObject({ size: BODY_BYTES_MAX + 10, cut: true });
     expect(kept.text(1)!.length).toBe(BODY_BYTES_MAX);
   });
 
   it("keeps nothing when it is off", () => {
     const kept = new SentRequests(0);
-    kept.record("anthropic", "/", undefined, "{}");
+    kept.record({ route: "anthropic", endpoint: "/", session: undefined }, "{}");
     expect(kept.list()).toEqual({ enabled: false, keep: 0, requests: [] });
   });
 });
@@ -75,13 +75,13 @@ describe("the dashboard's request pages", () => {
         }),
       }),
     );
-    const list = (await (await get(handler, "/_ithildin/requests")).json()) as {
+    const list = (await (await get(handler, "/dashboard/requests")).json()) as {
       requests: Array<{ id: number; route: string; endpoint: string; session: string }>;
     };
     expect(list.requests).toHaveLength(1);
     expect(list.requests[0]).toMatchObject({ route: "anthropic", endpoint: "/v1/messages" });
     expect(list.requests[0]!.session).toBe("request-");
-    const shown = await get(handler, `/_ithildin/request?id=${list.requests[0]!.id}`);
+    const shown = await get(handler, `/dashboard/request?id=${list.requests[0]!.id}`);
     expect(shown.headers.get("content-type")).toContain("text/plain");
     const text = await shown.text();
     expect(text).toContain('"role": "user"');
@@ -90,9 +90,9 @@ describe("the dashboard's request pages", () => {
 
   it("answers 404 for a missing request, and 403 for a name that is not local", async () => {
     const handler = createHandler(DEFAULT_ROUTES, upstream);
-    expect((await get(handler, "/_ithildin/request?id=9")).status).toBe(404);
-    expect((await get(handler, "/_ithildin/request")).status).toBe(404);
-    for (const path of ["/_ithildin/requests", "/_ithildin/request?id=1"])
+    expect((await get(handler, "/dashboard/request?id=9")).status).toBe(404);
+    expect((await get(handler, "/dashboard/request")).status).toBe(404);
+    for (const path of ["/dashboard/requests", "/dashboard/request?id=1"])
       expect((await get(handler, path, "evil.example")).status).toBe(403);
   });
 });
