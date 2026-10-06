@@ -33,15 +33,18 @@ type Fields = Record<string, unknown>;
 
 // A part's digest. cache_control is left out: agents move the breakpoint to
 // the newest message every turn, and the provider does not count the marker
-// as content.
+// as content. Moving it also turns string content into one text block, to
+// carry the marker, and back on the next turn; the provider reads the two
+// the same, so a string digests as that block.
 function digest(value: unknown, seen: WeakMap<object, string>): string {
   if (value && typeof value === "object") {
     const known = seen.get(value);
     if (known !== undefined) return known;
   }
-  const text = JSON.stringify(value ?? null, (key, inner) =>
-    key === "cache_control" ? undefined : inner,
-  );
+  const text = JSON.stringify(value ?? null, (key, inner) => {
+    if (key === "cache_control") return undefined;
+    return key === "content" && typeof inner === "string" ? [{ type: "text", text: inner }] : inner;
+  });
   const hash = createHash("sha1").update(text).digest("base64").slice(0, 16);
   if (value && typeof value === "object") seen.set(value, hash);
   return hash;

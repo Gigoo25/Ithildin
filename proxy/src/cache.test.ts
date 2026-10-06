@@ -99,6 +99,17 @@ describe("prefix breaks", () => {
     expect(watch.check("anthropic", "s", moved, moved)).toBeUndefined();
   });
 
+  it("reads a string and the one text block that carried the breakpoint as the same", () => {
+    // Claude Code wraps the newest message's string in a block to mark it,
+    // and sends the string again once the marker has moved on.
+    const watch = new PrefixWatch();
+    const block = [{ type: "text", text: "a", cache_control: { type: "ephemeral" } }];
+    const marked = { ...body("sys"), messages: [{ role: "user", content: block }] };
+    watch.check("anthropic", "s", marked, marked);
+    const moved = { ...body("sys"), messages: [turn("a"), turn("b")] };
+    expect(watch.check("anthropic", "s", moved, moved)).toBeUndefined();
+  });
+
   it("names the agent when what arrived changed, at the first part that did", () => {
     const watch = new PrefixWatch();
     watch.check("anthropic", "s", body("sys at 10:00", "a"), body("sys at 10:00", "a"));
