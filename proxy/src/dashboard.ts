@@ -406,6 +406,10 @@ export const DASHBOARD_HTML = `<!doctype html>
         <h3>Safety</h3>
         <dl id="num_safety"></dl>
       </div>
+      <div class="group">
+        <h3>Shaping</h3>
+        <dl id="num_shaping"></dl>
+      </div>
     </div>
   </details>
 </aside>
@@ -757,6 +761,16 @@ function renderStats(stats, watch) {
     ['Leaks found', stats.leaked ? String(stats.leaked) : 'none'],
     ['Held back', String(stats.blocked)],
     ['Refused', String(stats.refused)],
+  ]);
+  // Shaping off the wire, and what it cost per request. "none yet" rather than
+  // a zero: a proxy that has not shaped anything is not the same as one whose
+  // sessions have all opted out, and only the badge tells those apart.
+  const saved = stats.shapedSavedChars || 0;
+  figures('num_shaping', [
+    ['Saved', saved === 0 ? 'none yet' : mib(saved)],
+    ['Per request', stats.requests ? mib(Math.round(saved / stats.requests)) : 'none yet'],
+    ['Results stubbed', count(stats.shapedMasked || 0)],
+    ['Compacted', count(stats.shapedCompacted || 0)],
   ]);
 }
 

@@ -612,7 +612,7 @@ async function forward(
     ...(session ? { sessionName: names.name(session.client, session.id) } : {}),
     turn: ++stores.turns,
   };
-  recordScan({ book, events, kept }, context, scanned, shaped.on);
+  recordScan({ book, events, kept }, context, scanned, shaped.on, shaped);
   const stopped = watchOutgoing(events, context, scanned, sent);
   if (stopped) return stopped;
   const renamed = nameSession(names, session, scanned);
@@ -922,6 +922,7 @@ function recordScan(
   context: Context,
   scanned: Scanned,
   shaping?: boolean,
+  shaped: Forwarded = { body: undefined, on: undefined, masked: 0, compacted: 0, savedChars: 0 },
 ): void {
   const { counts, prompts, tags, label, unguarded } = scanned;
   const trust = { ...label, unguarded: unguarded.length };
@@ -933,7 +934,7 @@ function recordScan(
   );
   for (const event of scanned.activity)
     if (stores.events.record(context, event, scanned.body, standIns)) fresh++;
-  stores.events.request(context, scanned.scanMs, fresh);
+  stores.events.request(context, scanned.scanMs, fresh, shaped);
   if (scanned.body !== undefined)
     stores.kept.record(context, scanned.body, isMainRequest(scanned.object));
 }

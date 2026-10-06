@@ -79,6 +79,11 @@ export interface Stats {
   kinds: Record<string, number>;
   swappedText: number;
   swappedCalls: number;
+  // What context shaping took off the wire: tool results stubbed, results
+  // compacted, and the characters both saved (shape.ts).
+  shapedMasked: number;
+  shapedCompacted: number;
+  shapedSavedChars: number;
   blocked: number;
   refused: number;
   // Distinct places a watched string was found in a request.
@@ -237,6 +242,9 @@ function newStats(startedAt: number): Stats {
     kinds: {},
     swappedText: 0,
     swappedCalls: 0,
+    shapedMasked: 0,
+    shapedCompacted: 0,
+    shapedSavedChars: 0,
     blocked: 0,
     refused: 0,
     leaked: 0,
@@ -323,11 +331,23 @@ export class EventLog {
   }
 
   // A request was scanned. `masked` is the number of new values it held.
-  request(context: Context, ms: number, masked: number): void {
+  request(
+    context: Context,
+    ms: number,
+    masked: number,
+    shaped: { masked: number; compacted: number; savedChars: number } = {
+      masked: 0,
+      compacted: 0,
+      savedChars: 0,
+    },
+  ): void {
     this.stats.requests++;
     this.stats.routes[context.route] = (this.stats.routes[context.route] ?? 0) + 1;
     this.stats.scanMsTotal += ms;
     this.stats.scanMsMax = Math.max(this.stats.scanMsMax, ms);
+    this.stats.shapedMasked += shaped.masked;
+    this.stats.shapedCompacted += shaped.compacted;
+    this.stats.shapedSavedChars += shaped.savedChars;
     this.add(context, { type: "request", ms, count: masked });
   }
 

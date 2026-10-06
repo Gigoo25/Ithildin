@@ -472,6 +472,9 @@ describe("dashboard", () => {
           distinct: 1,
           swappedText: 0,
           swappedCalls: 0,
+          shapedMasked: 355276,
+          shapedCompacted: 0,
+          shapedSavedChars: 355276,
           blocked: 0,
           refused: 0,
         },
@@ -534,6 +537,17 @@ describe("dashboard", () => {
       "0",
     ]);
     expect(read("num_safety")).toEqual(["Leaks found", "none", "Held back", "0", "Refused", "0"]);
+    // One request, 355276 characters saved by 91 stubbed results.
+    expect(read("num_shaping")).toEqual([
+      "Saved",
+      "0.3 MiB",
+      "Per request",
+      "0.3 MiB",
+      "Results stubbed",
+      "355,276",
+      "Compacted",
+      "0",
+    ]);
   });
 
   it("carries its own icon, so the browser never asks the proxy for /favicon.ico", () => {
