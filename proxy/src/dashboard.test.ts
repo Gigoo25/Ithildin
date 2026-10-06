@@ -472,9 +472,17 @@ describe("dashboard", () => {
           distinct: 1,
           swappedText: 0,
           swappedCalls: 0,
-          shapedMasked: 355276,
+          shapedMasked: 91,
           shapedCompacted: 0,
           shapedSavedChars: 355276,
+          usageReplies: 1,
+          usageInput: 1000,
+          usageCacheRead: 8000,
+          usageCacheWrite: 1000,
+          usageOutput: 420,
+          cacheBreaksAgent: 1,
+          cacheBreaksShaping: 0,
+          lastBreak: "system in claude 1 (agent)",
           blocked: 0,
           refused: 0,
         },
@@ -544,9 +552,22 @@ describe("dashboard", () => {
       "Per request",
       "0.3 MiB",
       "Results stubbed",
-      "355,276",
+      "91",
       "Compacted",
       "0",
+    ]);
+    // 8000 of 10000 prompt tokens read from the cache, one break by the agent.
+    expect(read("num_cache")).toEqual([
+      "Read from cache",
+      "80%",
+      "Prompt tokens",
+      "10,000 (1,000 written)",
+      "Output tokens",
+      "420",
+      "Prefix breaks",
+      "1 agent, 0 shaping",
+      "Last break",
+      "system in claude 1 (agent)",
     ]);
   });
 

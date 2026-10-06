@@ -271,7 +271,11 @@ when the watch list finds something in it. A red count
 beside a session is its leaks. Requests without a session, and refusals,
 gather under *Other traffic*. Below the sessions, *Numbers* has the
 values masked by kind, routes, replacements, swaps, blocks, refusals, scan
-time and uptime. The page remembers what you fold.
+time and uptime, what shaping saved, and *Cache*: the share of prompt tokens
+the provider read from its cache, from the replies' own usage figures, and how
+often a conversation's cached prefix broke. A break is put down to the agent
+(a changed system prompt, a reordered tool list) or to shaping (a cutoff step),
+and the latest names where it happened. The page remembers what you fold.
 
 Pick a session to read its conversation as the provider saw it: its latest
 turn as it went upstream, after masking, updated as new turns arrive. It reads

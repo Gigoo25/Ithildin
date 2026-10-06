@@ -21,6 +21,8 @@
 import { createHash } from "node:crypto";
 import { aliasKind } from "../engine/lib/aliases.ts";
 import { type ActivityEvent, REPLY_TEXT } from "../engine/lib/activity.ts";
+import type { Break } from "./prefix.ts";
+import type { Usage } from "./usage.ts";
 
 export interface Context {
   route: string;
@@ -84,6 +86,18 @@ export interface Stats {
   shapedMasked: number;
   shapedCompacted: number;
   shapedSavedChars: number;
+  // What the replies said they cost (usage.ts): tokens sent fresh, read from
+  // the provider's prompt cache, written to it, and generated.
+  usageReplies: number;
+  usageInput: number;
+  usageCacheRead: number;
+  usageCacheWrite: number;
+  usageOutput: number;
+  // Requests whose cached prefix broke (prefix.ts), by whose doing, and the
+  // latest one's place.
+  cacheBreaksAgent: number;
+  cacheBreaksShaping: number;
+  lastBreak?: string;
   blocked: number;
   refused: number;
   // Distinct places a watched string was found in a request.
@@ -245,6 +259,13 @@ function newStats(startedAt: number): Stats {
     shapedMasked: 0,
     shapedCompacted: 0,
     shapedSavedChars: 0,
+    usageReplies: 0,
+    usageInput: 0,
+    usageCacheRead: 0,
+    usageCacheWrite: 0,
+    usageOutput: 0,
+    cacheBreaksAgent: 0,
+    cacheBreaksShaping: 0,
     blocked: 0,
     refused: 0,
     leaked: 0,
@@ -349,6 +370,23 @@ export class EventLog {
     this.stats.shapedCompacted += shaped.compacted;
     this.stats.shapedSavedChars += shaped.savedChars;
     this.add(context, { type: "request", ms, count: masked });
+  }
+
+  // A reply's usage, as the provider reported it.
+  usage(usage: Usage): void {
+    this.stats.usageReplies++;
+    this.stats.usageInput += usage.input;
+    this.stats.usageCacheRead += usage.cacheRead;
+    this.stats.usageCacheWrite += usage.cacheWrite;
+    this.stats.usageOutput += usage.output;
+  }
+
+  // A request whose cached prefix broke, named by where and in which session.
+  cacheBreak(context: Context, found: Break): void {
+    if (found.cause === "agent") this.stats.cacheBreaksAgent++;
+    else this.stats.cacheBreaksShaping++;
+    const where = context.sessionName ? ` in ${context.sessionName}` : "";
+    this.stats.lastBreak = `${found.at}${where} (${found.cause})`;
   }
 
   // A watched string found in a request. Returns whether this place is new.

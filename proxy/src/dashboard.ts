@@ -410,6 +410,10 @@ export const DASHBOARD_HTML = `<!doctype html>
         <h3>Shaping</h3>
         <dl id="num_shaping"></dl>
       </div>
+      <div class="group">
+        <h3>Cache</h3>
+        <dl id="num_cache"></dl>
+      </div>
     </div>
   </details>
 </aside>
@@ -771,6 +775,26 @@ function renderStats(stats, watch) {
     ['Per request', stats.requests ? mib(Math.round(saved / stats.requests)) : 'none yet'],
     ['Results stubbed', count(stats.shapedMasked || 0)],
     ['Compacted', count(stats.shapedCompacted || 0)],
+  ]);
+  renderCache(stats);
+}
+
+// What the replies said the prompts cost, and how often a conversation's
+// cached prefix broke. The share read from the cache is the figure that says
+// whether shaping's savings are real: a result already cached costs a tenth.
+function renderCache(stats) {
+  const read = stats.usageCacheRead || 0;
+  const write = stats.usageCacheWrite || 0;
+  const prompt = (stats.usageInput || 0) + read + write;
+  const agent = stats.cacheBreaksAgent || 0;
+  const shaping = stats.cacheBreaksShaping || 0;
+  figures('num_cache', [
+    ['Read from cache', prompt ? Math.round((read / prompt) * 100) + '%' : 'no usage yet'],
+    ['Prompt tokens', count(prompt) + ' (' + count(write) + ' written)'],
+    ['Output tokens', count(stats.usageOutput || 0)],
+    ['Prefix breaks', agent + shaping === 0 ? 'none' :
+      agent + ' agent, ' + shaping + ' shaping'],
+    ['Last break', stats.lastBreak || 'none'],
   ]);
 }
 

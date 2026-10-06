@@ -48,6 +48,8 @@ import {
 } from "./titles.ts";
 import { AGENT, GUESS, SessionNames, USER } from "./sessions.ts";
 import { createStatusBook } from "./status.ts";
+import { PrefixWatch } from "./prefix.ts";
+import { merge, type Usage, usageOf, usageOfEvent, usageText } from "./usage.ts";
 import { findWatched, knownValues, watchPolicy } from "./watch.ts";
 import { type SelfTest, selfTest } from "./selftest.ts";
 import { createRewriter, formatSse, parseSseBlock, swapResponseBody } from "./streams.ts";
@@ -289,10 +291,11 @@ function rewriteSse(
   body: ReadableStream<Uint8Array>,
   format: Format,
   tags: Set<string>,
-  done: (swapped: number) => void,
+  done: (swapped: number, usage: Usage | undefined) => void,
   tap: (event: ActivityEvent) => unknown,
 ): ReadableStream<Uint8Array> {
   const rewriter = createRewriter(format, tags);
+  let usage: Usage | undefined;
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
   let buffer = "";
@@ -302,6 +305,8 @@ function rewriteSse(
       if (block.trim() !== "") controller.enqueue(encoder.encode(`${block}\n\n`));
       return;
     }
+    const part = usageOfEvent(format, event.data);
+    if (part) usage = merge(usage, part);
     const outs = observeActivity(tap, () => rewriter.push(event));
     for (const out of outs) controller.enqueue(encoder.encode(formatSse(out)));
   };
@@ -318,7 +323,7 @@ function rewriteSse(
         if (buffer.trim() !== "") emit(buffer, controller);
         for (const out of observeActivity(tap, () => rewriter.flush()))
           controller.enqueue(encoder.encode(formatSse(out)));
-        done(rewriter.swapped);
+        done(rewriter.swapped, usage);
       },
     }),
   );
@@ -360,6 +365,8 @@ export type Scanned = {
 // session: undefined when there is no switch either way.
 export type Forwarded = {
   body: string | undefined;
+  // The shaped body before it was serialized, when shaping changed it.
+  object?: Record<string, unknown>;
   on: boolean | undefined;
   masked: number;
   compacted: number;
@@ -570,6 +577,7 @@ interface Stores {
   events: EventLog;
   kept: SentRequests;
   names: SessionNames;
+  prefixes: PrefixWatch;
   turns: number;
 }
 
@@ -613,6 +621,7 @@ async function forward(
     turn: ++stores.turns,
   };
   recordScan({ book, events, kept }, context, scanned, shaped.on, shaped);
+  const broke = noteBreak(stores, context, format, scanned, shaped);
   const stopped = watchOutgoing(events, context, scanned, sent);
   if (stopped) return stopped;
   const renamed = nameSession(names, session, scanned);
@@ -632,8 +641,38 @@ async function forward(
   }
   if (session && ask && upstream.ok) noteTitle(upstream.clone(), ask, session.id, names, renamed);
 
-  const line = journalLine(name, sent.rest, upstream.status, scanMs, tags, scanned.hits, shaped);
-  return relayReply(upstream, format, tags, line, (event) => events.record(context, event));
+  const line =
+    journalLine(name, sent.rest, upstream.status, scanMs, tags, scanned.hits, shaped) + broke;
+  const tap = (event: ActivityEvent) => events.record(context, event);
+  return relayReply(upstream, format, tags, line, tap, usageCounter(events));
+}
+
+// What a reply says it cost, counted for the dashboard and named in the
+// journal line it ends.
+function usageCounter(events: EventLog): (usage: Usage | undefined) => string {
+  return (usage) => {
+    if (!usage) return "";
+    events.usage(usage);
+    return ` usage=${usageText(usage)}`;
+  };
+}
+
+// Whether this request broke its conversation's cached prefix, and where:
+// counted for the dashboard, and the journal's words for it. Only a main
+// request is compared, since a side request has a conversation of its own.
+function noteBreak(
+  stores: Stores,
+  context: Context,
+  format: Format | undefined,
+  scanned: Scanned,
+  shaped: Forwarded,
+): string {
+  const arrived = scanned.object as Record<string, unknown> | undefined;
+  if (!format || !context.session || !isMainRequest(arrived)) return "";
+  const found = stores.prefixes.check(format, context.session, arrived!, shaped.object ?? arrived!);
+  if (!found) return "";
+  stores.events.cacheBreak(context, found);
+  return ` cachebreak=${found.at.replace(" ", "")}(${found.cause})`;
 }
 
 // The body to forward and whether shaping was on for it. `on` is undefined
@@ -658,6 +697,7 @@ export function shapeOutgoing(scanned: Scanned, format: Format, session: string 
     if (!result) return { ...off, on: state.on };
     return {
       body: JSON.stringify(result.body),
+      object: result.body,
       on: state.on,
       masked: result.masked,
       compacted: result.compacted,
@@ -684,6 +724,7 @@ export function createHandler(
     events: new EventLog(),
     kept: new SentRequests(),
     names: new SessionNames(),
+    prefixes: new PrefixWatch(),
     turns: 0,
   };
   const { book, events, kept, names } = stores;
@@ -915,6 +956,14 @@ function isMainRequest(body: unknown): boolean {
   return Array.isArray(tools) && tools.length > 0 && titleAsk(body) === undefined;
 }
 
+const NOT_SHAPED: Forwarded = {
+  body: undefined,
+  on: undefined,
+  masked: 0,
+  compacted: 0,
+  savedChars: 0,
+};
+
 // A scanned request: the status badge, what it masked, the request itself, and the
 // text as sent.
 function recordScan(
@@ -922,7 +971,7 @@ function recordScan(
   context: Context,
   scanned: Scanned,
   shaping?: boolean,
-  shaped: Forwarded = { body: undefined, on: undefined, masked: 0, compacted: 0, savedChars: 0 },
+  shaped: Forwarded = NOT_SHAPED,
 ): void {
   const { counts, prompts, tags, label, unguarded } = scanned;
   const trust = { ...label, unguarded: unguarded.length };
@@ -948,6 +997,7 @@ async function relayReply(
   tags: Set<string>,
   line: string,
   tap: (event: ActivityEvent) => unknown,
+  counted: (usage: Usage | undefined) => string = () => "",
 ): Promise<Response> {
   // A client following a redirect resends its original, unredacted body to
   // the new URL, around the proxy: refuse it, and never pass its Location.
@@ -965,7 +1015,7 @@ async function relayReply(
       upstream.body,
       format,
       tags,
-      (swapped) => log(`${line} swapped=${swapped} (stream)`),
+      (swapped, usage) => log(`${line} swapped=${swapped}${counted(usage)} (stream)`),
       tap,
     );
     return new Response(stream, init);
@@ -973,7 +1023,7 @@ async function relayReply(
   if (format && contentType.includes("json") && upstream.ok) {
     const parsed = await swapJsonReply(upstream, format, tags, tap);
     if (parsed instanceof Response) return parsed;
-    log(`${line} swapped=${parsed.swapped}`);
+    log(`${line} swapped=${parsed.swapped}${counted(usageOf(format, parsed.body))}`);
     // Always re-serialized: a blocked call changes arguments without a swap.
     return new Response(JSON.stringify(parsed.body), init);
   }
