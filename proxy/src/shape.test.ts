@@ -546,3 +546,38 @@ describe("old call inputs", () => {
     expect(JSON.stringify(shaped?.body)).not.toContain("const x = 1;");
   });
 });
+
+describe("old thinking", () => {
+  const thought = { type: "thinking", thinking: "t".repeat(2_000), signature: "sig" };
+  const hidden = { type: "redacted_thinking", data: "d".repeat(500) };
+  const said = { type: "text", text: "done" };
+
+  it("drops an old turn's thinking whole, and keeps a recent turn's", () => {
+    const early = [{ role: "assistant", content: [thought, hidden, said] }];
+    const late = [{ role: "assistant", content: [thought, said] }];
+    const shaped = shapeRequest("anthropic", { messages: around(early, late) });
+    const out = shaped!.body.messages as Array<Record<string, unknown>>;
+    expect(at(out, 4).content).toEqual([said]);
+    expect(out.at(-1)?.content).toEqual([thought, said]);
+    expect(shaped!.savedChars).toBeGreaterThan(2_500);
+  });
+
+  it("keeps the thinking of a turn that has nothing else", () => {
+    const early = [{ role: "assistant", content: [thought] }];
+    const out = shapeRequest("anthropic", { messages: around(early, []) })!.body.messages;
+    expect(at(out, 4).content).toEqual([thought]);
+  });
+});
+
+describe("small old results", () => {
+  it("masks one from MASK_MIN_CHARS, with a stub shorter than it", () => {
+    // A stub quotes at most 80 characters of the command, however long.
+    const small = "s".repeat(MASK_MIN_CHARS);
+    const long = { command: `echo ${"c".repeat(MASK_MIN_CHARS)}` };
+    const early = [call("s1", "Bash", long), result("s1", small)];
+    const shaped = shapeRequest("anthropic", { messages: around(early, []) });
+    const stub = String(contentAt(shaped!.body.messages, 5));
+    expect(stub).toContain("[masked");
+    expect(stub.length).toBeLessThan(MASK_MIN_CHARS);
+  });
+});

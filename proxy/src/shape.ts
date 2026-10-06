@@ -45,7 +45,8 @@ import type { Format } from "./redact.ts";
 // thresholds and the stub wording are the measured ones.
 export const MASK_KEEP_TURNS = 10;
 export const MASK_STEP_TURNS = 10;
-export const MASK_MIN_CHARS = 1_000;
+// A stub is about 150 characters, so a result is worth one from about 400.
+export const MASK_MIN_CHARS = 400;
 export const MASK_THRESHOLD_TOKENS = 30_000;
 // Prices relative to uncached input. Anthropic charges 1.25x for a cache
 // write, 2x when it is asked to keep it an hour; OpenAI's caching writes at the
@@ -384,10 +385,12 @@ function shaped(content: unknown, id: unknown, walk: Walk, old: boolean): Change
     : { text: compacted, saved: text.length - compacted.length, kind: "compacted" };
 }
 
+const CRUSH_MIN_CHARS = 1_000;
+
 // A JSON output with its long arrays cut to the items that differ (crush.ts).
 // Lossy, so only with a way to read the whole output back.
 function crushed(text: string, retrieval: Retrieval | undefined): string | undefined {
-  if (!retrieval || text.length < MASK_MIN_CHARS) return;
+  if (!retrieval || text.length < CRUSH_MIN_CHARS) return;
   const result = crushJson(text);
   if (!result) return;
   const id = retrieval.keep(text);
@@ -500,7 +503,7 @@ function shapeEntry(
 // ran with the full text and that a new one needs it, because a model that
 // reads its own history as having written placeholders will write them.
 
-export const INPUT_MIN_CHARS = MASK_MIN_CHARS;
+export const INPUT_MIN_CHARS = 1_000;
 // Deep enough for an edit list inside an input, no deeper.
 const INPUT_DEPTH_MAX = 4;
 
@@ -560,17 +563,32 @@ function shapeCall(format: Format, item: unknown): Replacement | undefined {
   );
 }
 
+// An old assistant turn's thinking is dropped whole: it is signed, so it cannot
+// be cut, and the API takes a past turn without it (its own clear_thinking
+// context edit does the same). Only the latest turn of a tool loop must keep
+// its thinking, and an old turn is never that. A turn that is nothing but
+// thinking keeps it, since an empty turn is refused.
+const THINKING = new Set(["thinking", "redacted_thinking"]);
+
 function shapeBlocks(entry: Record_): Replacement | undefined {
   if (entry.role !== "assistant" || !Array.isArray(entry.content)) return;
+  const blocks = entry.content as unknown[];
+  const isThinking = (block: unknown) => THINKING.has(String(record(block)?.type));
+  const drop = blocks.some((block) => !isThinking(block));
   let saved = 0;
   let masked = 0;
-  const content = (entry.content as unknown[]).map((block) => {
+  const content = blocks.flatMap((block) => {
     const typed = record(block);
+    if (drop && isThinking(block)) {
+      saved += JSON.stringify(block).length;
+      masked++;
+      return [];
+    }
     const next = typed?.type === "tool_use" ? maskedValue(typed.input) : undefined;
-    if (!next) return block;
+    if (!next) return [block];
     saved += next.saved;
     masked++;
-    return { ...typed, input: next.value };
+    return [{ ...typed, input: next.value }];
   });
   return masked === 0
     ? undefined
