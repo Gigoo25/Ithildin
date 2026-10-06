@@ -228,6 +228,7 @@ ITHILDIN ON · 12m 1f 3l 2i (+2) · 40 req · untrusted · private · ?1t · +pi
 | `private`   | a secret file was seen or copied, so sends are blocked      |
 | `?1t`       | tools the agent offers that act but no guard reads          |
 | `+pii`      | allow tags your latest prompt carries                       |
+| `SHAPE`     | context shaping is on (`SHAPE OFF` when the session opted out) |
 
 Counts cover the whole conversation, and kinds at zero are left out. With
 nothing hidden, the badge reads `ITHILDIN ON · 0 · N req`. The request count
@@ -382,6 +383,37 @@ for the rest of the session, until you type `[mask-images]` or the proxy
 restarts. It needs a client that names its session, and the footer shows
 `+images` while it is on.
 
+## Shaping
+
+Old tool results are masked before the request leaves: past the cutoff, a
+result over 1k characters becomes a one-line stub naming the call that made it,
+and newer ones are compacted where they can be. rtk condenses command output
+at the source, so what reaches here is mostly what rtk does not recognise: MCP
+results, a direct grep, a fetch.
+
+Two things to know about it. It is **pure**: the same request shapes to the
+same bytes every time, which is what keeps the provider's prompt cache intact,
+so nothing in it may read the clock or a counter. And it **fails open** — a
+request it cannot shape is forwarded exactly as redaction left it, never
+refused, because it is an optimization and a turn matters more than tokens.
+
+The conversation the dashboard keeps is the one that **arrived**; only the
+forwarded copy is shaped.
+
+Three ways to turn it off, each independent:
+
+| How | Scope |
+|-----|-------|
+| `ITHILDIN_SHAPE=off` in the proxy's environment | every route |
+| `[raw]` in a prompt | that session, until `[shape]` |
+| no client session header | never off — a session it cannot name cannot have opted out |
+
+`[raw]` and `[shape]` are session switches rather than allow tags: they hold
+for the rest of the session however many prompts follow, because the proxy
+remembers them and the prompt that set one may be compacted out of the
+history. The badge reads `· SHAPE` or `· SHAPE OFF` once a request in the
+conversation has an answer, and says nothing before that.
+
 A tag opens every call of its kind. `[allow-once:<id>]` opens only the call
 whose refusal gave that id: the same command sent again runs, and anything
 else is still checked. It lifts the protected, send and secret-send guards,
@@ -447,6 +479,7 @@ Settings are environment variables:
 | `ITHILDIN_INFRA_INVENTORY`   | `off` skips SSH, repo, network and Tailscale     |
 | `ITHILDIN_SCAN_BUDGET_MS`    | per-request scan time limit (default 30000)      |
 | `ITHILDIN_KEEP_REQUESTS`     | requests the dashboard keeps (default 20, 0 is off) |
+| `ITHILDIN_SHAPE`             | `off` disables context shaping on every route         |
 
 ## What it does not do
 

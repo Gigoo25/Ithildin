@@ -204,6 +204,16 @@ function textBlocks(content: unknown): Array<{ type: "text"; text: string }> {
   });
 }
 
+// [raw] and [shape] turn context shaping off and on for the rest of the
+// session, the way [allow-images:session] and [mask-images] do for images:
+// the proxy remembers the switch per session, because the prompt that set it
+// may be compacted out of the history. Only what the user typed counts, so a
+// system reminder or a transcript quoting the tag does not move it. A client
+// without a session header gets no switch (shape.ts, status.ts).
+
+export const SHAPE_NOTICE =
+  "Context shaping is off for this session, so old tool results are sent whole: type [shape] to " +
+  "turn it back on, or [raw] to turn it off for the rest of the session.";
 const PROTECTED_TAG = /\[allow-protected\]/i;
 const SEND_TAG = /\[allow-send\]/i;
 const ONCE_TAG = /\[allow-once:([0-9a-f]{8})\]/gi;
@@ -300,6 +310,12 @@ export function requestAllowTags(
   const tags = latestAllowTags(users);
   // Proxy-only, like [allow-images]: the latest typed prompt decides, not a
   // tool-result turn, whatever tags that carries.
+  // [raw] and [shape] turn context shaping off and on for the whole session,
+  // and unlike the allow tags they do not follow the latest prompt: once the
+  // user has asked for raw text, every later turn of that conversation is raw
+  // until they ask for shaping again. The session's answer is remembered here
+  // and only the typed text can change it, so a prompt that quotes a tag does
+  // not (shape.ts, status.ts).
   if (PROTECTED_TAG.test(typed)) tags.add("protected");
   if (SEND_TAG.test(typed)) tags.add("send");
   for (const match of typed.matchAll(ONCE_TAG)) tags.add(`once:${match[1]!.toLowerCase()}`);
@@ -1190,6 +1206,55 @@ export const IMAGE_NOTICE =
   "or [allow-images:session] for the rest of the session.";
 const IMAGE_TAG = /\[allow-(?:images?|all)\]/i;
 const SESSION_SWITCH = /\[(?:allow-images:session|mask-images)\]/gi;
+
+// Each session's shaping switch, on the same terms as the image switch below:
+// remembered per session, because the prompt that set it may be compacted out
+// of the history, and decided only by what the user typed. [raw] and
+// [shape:session] turn shaping off for the session, [shape] turns it back on.
+// A session that has typed neither keeps the proxy's default.
+const SHAPE_SWITCH = /\[(?:raw|shape(?::session)?)\]/gi;
+const sessionShapes = new Map<string, boolean>();
+
+function rememberShape(session: string, on: boolean) {
+  sessionShapes.delete(session);
+  sessionShapes.set(session, on);
+  if (sessionShapes.size > SESSION_TAGS_MAX)
+    sessionShapes.delete(sessionShapes.keys().next().value!);
+}
+
+// Whether shaping is on for this session after this request, and whether the
+// request named a session at all.
+export function shapingSwitch(
+  format: Format,
+  body: Record<string, unknown>,
+  session?: string | null,
+): { on: boolean | undefined; session: boolean } {
+  // A request that reached the proxy unscanned (an empty body, a GET) has no
+  // object to read, and no session to remember a switch for.
+  if (!body || typeof body !== "object") return { on: undefined, session: false };
+  const key = format === "responses" ? "input" : "messages";
+  const list = body[key];
+  const id = session ?? undefined;
+  if (!Array.isArray(list) || id === undefined) return { on: undefined, session: false };
+  let decided: boolean | undefined;
+  for (const item of list) {
+    if (!item || typeof item !== "object") continue;
+    const entry = item as { role?: unknown; content?: unknown };
+    if (entry.role !== "user") continue;
+    // A tool-result turn is not a prompt, even with harness text beside it.
+    if (
+      Array.isArray(entry.content) &&
+      entry.content.some((block) => (block as { type?: unknown } | null)?.type === "tool_result")
+    )
+      continue;
+    const typed = userTypedText({ role: "user", content: promptBlocks(entry.content) });
+    const last = [...typed.matchAll(SHAPE_SWITCH)].at(-1)?.[0];
+    if (last !== undefined) decided = last.toLowerCase() === "[shape]";
+  }
+  const answer: boolean | undefined = decided;
+  if (answer !== undefined) rememberShape(id, answer);
+  return { on: sessionShapes.get(id), session: true };
+}
 
 // Each session's switch, for a history that no longer holds the prompt that
 // set it. Oldest sessions go first.

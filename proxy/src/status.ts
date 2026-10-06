@@ -45,6 +45,9 @@ export interface Status extends Counts {
   private: boolean;
   // Tools offered that act and that no guard reads (trust.ts).
   unguarded: number;
+  // Context shaping on for the latest request (shape.ts); undefined before
+  // this conversation has sent one, or when the client named no session.
+  shaping?: boolean | undefined;
   badge: string;
 }
 
@@ -71,25 +74,30 @@ const MAX_SESSIONS = 256;
 export function allowLabels(tags: ReadonlySet<string>): string[] {
   if (tags.has("all")) return ["all", ...(tags.has("protected") ? ["protected"] : [])];
   const once = [...tags].some((tag) => tag.startsWith("once:")) ? ["once"] : [];
-  return (["pii", "secret", "protected", "send", "images"] as const)
+  return (["pii", "secret", "protected", "send", "images", "raw"] as const)
     .filter((tag) => tags.has(tag))
     .map((tag): string => (tag === "secret" ? "secrets" : tag))
     .concat(once);
 }
 
+// `shaping`: whether context shaping was on for the last request of this
+// conversation. undefined when no request has been seen, so a badge never
+// claims a layer is off before the proxy has shaped anything.
 export function badgeText(
   counts: Counts,
   turn: number,
   requests = 0,
   allowed: readonly string[] = [],
   trust: Trust = {},
+  shaping?: boolean,
 ): string {
   const scanned =
     (requests > 0 ? ` · ${requests} req` : "") +
     (trust.untrusted ? " · untrusted" : "") +
     (trust.private ? " · private" : "") +
     (trust.unguarded ? ` · ?${trust.unguarded}t` : "") +
-    (allowed.length > 0 ? ` · ${allowed.map((tag) => `+${tag}`).join(" ")}` : "");
+    (allowed.length > 0 ? ` · ${allowed.map((tag) => `+${tag}`).join(" ")}` : "") +
+    (shaping === false ? " · SHAPE OFF" : shaping === true ? " · SHAPE" : "");
   const parts = [
     counts.masked && `${counts.masked}m`,
     counts.files && `${counts.files}f`,
@@ -114,6 +122,7 @@ export function createStatusBook() {
       prompts: number,
       tags: ReadonlySet<string> = new Set(),
       trust: Trust = {},
+      shaping?: boolean,
     ): void {
       const total = counts.masked + counts.files + counts.lines + counts.images;
       const key = session ?? `route:${route}`;
@@ -128,7 +137,7 @@ export function createStatusBook() {
       const turn = Math.max(0, total - baseline);
       const requests = (previous?.status.requests ?? 0) + 1;
       const allowed = allowLabels(tags);
-      const badge = badgeText(counts, turn, requests, allowed, trust);
+      const badge = badgeText(counts, turn, requests, allowed, trust, shaping);
       const status = {
         ...counts,
         route,
@@ -138,6 +147,7 @@ export function createStatusBook() {
         untrusted: trust.untrusted ?? false,
         private: trust.private ?? false,
         unguarded: trust.unguarded ?? 0,
+        shaping,
         badge,
       };
       sessions.delete(key);

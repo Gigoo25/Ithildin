@@ -27,8 +27,10 @@ import {
   redactRequest,
   refreshIdentity,
   saveScanCache,
+  shapingSwitch,
   typedPromptCount,
 } from "./redact.ts";
+import { shapeRequest, shapingOn } from "./shape.ts";
 import { configHome, NAME } from "../engine/lib/names.ts";
 import { aliasStyle } from "../engine/lib/rules.ts";
 import { type ActivityEvent, observeActivity } from "../engine/lib/activity.ts";
@@ -338,7 +340,7 @@ const REDACTORS: Redactors = {
 };
 
 // What scanning a request body gave: the body to forward and what it found.
-type Scanned = {
+export type Scanned = {
   body: string | undefined;
   // The body as parsed JSON, for the watch list (watch.ts).
   object: unknown;
@@ -351,6 +353,17 @@ type Scanned = {
   unguarded: string[];
   // What the engine masked, for the dashboard (events.ts).
   activity: ActivityEvent[];
+};
+
+// The body as it goes upstream, which is the redacted one unless context
+// shaping changed it, and what it did. `on` is shaping's answer for this
+// session: undefined when there is no switch either way.
+export type Forwarded = {
+  body: string | undefined;
+  on: boolean | undefined;
+  masked: number;
+  compacted: number;
+  savedChars: number;
 };
 
 function unscanned(): Scanned {
@@ -581,7 +594,12 @@ async function forward(
 
   const scanned = await scanRequest(request, format, redact, session?.id ?? null);
   if (scanned instanceof Response) return scanned;
-  const { body, tags, scanMs } = scanned;
+  const { tags, scanMs } = scanned;
+  // Context shaping runs after redaction and after the request is recorded, so
+  // the conversation the dashboard keeps is the one that arrived and only the
+  // forwarded copy is shaped. It is pure and fails open: a request it cannot
+  // shape goes upstream exactly as redaction left it.
+  const shaped = shapeOutgoing(scanned, format ?? "chat", session?.id ?? null);
   const sent = redactUrl(rest, url.search, headers, scanned, redact);
   if (sent instanceof Response) return sent;
   const routed = routeFor(route, name, sent.rest, sent.search, headers, format);
@@ -594,7 +612,7 @@ async function forward(
     ...(session ? { sessionName: names.name(session.client, session.id) } : {}),
     turn: ++stores.turns,
   };
-  recordScan({ book, events, kept }, context, scanned);
+  recordScan({ book, events, kept }, context, scanned, shaped.on);
   const stopped = watchOutgoing(events, context, scanned, sent);
   if (stopped) return stopped;
   const renamed = nameSession(names, session, scanned);
@@ -605,7 +623,7 @@ async function forward(
     upstream = await fetchUpstream(target, {
       method: request.method,
       headers,
-      body,
+      body: shaped.body,
       redirect: "manual",
       signal: request.signal,
     });
@@ -614,8 +632,43 @@ async function forward(
   }
   if (session && ask && upstream.ok) noteTitle(upstream.clone(), ask, session.id, names, renamed);
 
-  const line = journalLine(name, sent.rest, upstream.status, scanMs, tags, scanned.hits);
+  const line = journalLine(name, sent.rest, upstream.status, scanMs, tags, scanned.hits, shaped);
   return relayReply(upstream, format, tags, line, (event) => events.record(context, event));
+}
+
+// The body to forward and whether shaping was on for it. `on` is undefined
+// when the client named no session and the switch could not be read, which is
+// what leaves the badge unmentioned rather than claiming a layer is off.
+export function shapeOutgoing(scanned: Scanned, format: Format, session: string | null): Forwarded {
+  const object = scanned.object as Record<string, unknown>;
+  const off: Forwarded = {
+    body: scanned.body,
+    on: undefined,
+    masked: 0,
+    compacted: 0,
+    savedChars: 0,
+  };
+  try {
+    // Reading the session's switch walks the body, so it belongs inside the
+    // guard with the shaping itself: a body that throws leaves shaping
+    // unanswered, which the badge reads as "no answer", not as "off".
+    const state = shapingSwitch(format, object, session);
+    if (!shapingOn() || state.on === false) return { ...off, on: state.on };
+    const result = shapeRequest(format, object);
+    if (!result) return { ...off, on: state.on };
+    return {
+      body: JSON.stringify(result.body),
+      on: state.on,
+      masked: result.masked,
+      compacted: result.compacted,
+      savedChars: result.savedChars,
+    };
+  } catch {
+    // Shaping is an optimization. A request it cannot handle is forwarded as
+    // redaction left it, never refused: refusing here would fail a turn over
+    // saved tokens.
+    return off;
+  }
 }
 
 export function createHandler(
@@ -670,9 +723,16 @@ export function journalLine(
   scanMs: number,
   tags: ReadonlySet<string>,
   hits: number,
+  shaped?: Forwarded,
 ): string {
   const allowed = tags.size > 0 ? ` allow=${[...tags].sort().join(",")}` : "";
-  return `${route}${rest} ${status} scan=${scanMs}ms${allowed} redacted=${hits}`;
+  // Shaping is named only when it changed the body, so the journal reads the
+  // same as before on a request nothing was shaped on.
+  const work =
+    shaped && (shaped.masked > 0 || shaped.compacted > 0)
+      ? ` shaped=${shaped.masked}m${shaped.compacted}c saved=${shaped.savedChars}`
+      : "";
+  return `${route}${rest} ${status} scan=${scanMs}ms${allowed} redacted=${hits}${work}`;
 }
 
 // The oldest Bun the engine's per-rule scan deadlines work on. Before this they
@@ -861,10 +921,12 @@ function recordScan(
   stores: { book: ReturnType<typeof createStatusBook>; events: EventLog; kept: SentRequests },
   context: Context,
   scanned: Scanned,
+  shaping?: boolean,
 ): void {
   const { counts, prompts, tags, label, unguarded } = scanned;
   const trust = { ...label, unguarded: unguarded.length };
-  if (counts) stores.book.record(context.session, context.route, counts, prompts, tags, trust);
+  if (counts)
+    stores.book.record(context.session, context.route, counts, prompts, tags, trust, shaping);
   let fresh = 0;
   const standIns = scanned.activity.flatMap((event) =>
     event.type === "masked" ? [event.standIn] : [],
