@@ -59,8 +59,8 @@ to disk.
 
 ## What it catches
 
-**Secrets** get random fakes in the same format, and those fakes are never
-swapped back:
+**Secrets** get fakes in the same format, keyed like the rest so a secret's
+fake survives a restart, and those fakes are never swapped back:
 
 - Cloud and platform keys: AWS, GCP, Azure, DigitalOcean, Fly.io, Databricks,
   Vault, Doppler, Tailscale and others.

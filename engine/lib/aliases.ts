@@ -28,7 +28,7 @@
 // ordinary addresses. 240.0.0.0/5 instead of the IPv4 documentation ranges:
 // those hold only three /24s, too few to keep one stand-in per subnet.
 
-import { createHmac, randomBytes } from "node:crypto";
+import { createCipheriv, createHmac, randomBytes } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -980,6 +980,22 @@ export class AliasBook {
 
   // The stand-in for one finding. Unparseable network values fall back to a
   // labelled stand-in rather than passing through.
+  // Keyed bytes for a secret's stand-in: the same secret gets the same
+  // stand-in in every process, so a restart leaves the provider's cached
+  // prefix intact, and without the key it says nothing about the secret.
+  // One HMAC per secret, stretched by AES-CTR: a secret can be megabytes, and
+  // an HMAC per 32 bytes of it costs a minute.
+  secretBytes(value: string, length: number): Buffer {
+    const seed = createHmac("sha256", this.key).update(`secret\0${value}`).digest();
+    const stream = createCipheriv("aes-256-ctr", seed, Buffer.alloc(16));
+    return stream.update(Buffer.alloc(length));
+  }
+
+  // A short keyed tag for a value no stand-in can disguise.
+  secretTag(value: string): string {
+    return this.hex("secret-tag", value, 8);
+  }
+
   standIn(ruleId: string, value: string, customLabel?: string): string {
     const kind = aliasKind(ruleId);
     let out: string | undefined;

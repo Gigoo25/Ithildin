@@ -3,8 +3,11 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { withScanBudget } from "./lib/rules.ts";
+import { AliasBook } from "./lib/aliases.ts";
 import {
+  aliases,
   blocksInventoryAccess,
+  clearCaches,
   blocksSecretAccess,
   commandPathCandidates,
   isSyntheticValue,
@@ -12,6 +15,7 @@ import {
   redactText,
   redactValue,
   SYNTHESIS_NOTICE,
+  setAliasBook,
   setCacheBudgets,
   syntheticValue,
 } from "./core.ts";
@@ -216,6 +220,30 @@ describe("redactText", () => {
     const synthetic = syntheticValue("!!!!--!!!!");
     expect(synthetic).not.toBe("!!!!--!!!!");
     expect(syntheticValue("!!!!--!!!!")).toBe(synthetic);
+  });
+
+  it("gives a secret the same stand-in after a restart, and another under another key", () => {
+    const secret = "sk-live-4f9Qz81LmPx7Rt2Vb6";
+    const book = aliases();
+    try {
+      clearCaches();
+      setAliasBook(new AliasBook(Buffer.alloc(32, 3)));
+      const first = syntheticValue(secret);
+      const token = syntheticValue("!!!!--!!!!");
+      expect(first).not.toBe(secret);
+      expect(token).toMatch(/^__ITHILDIN_SECRET_[0-9a-f]{8}__$/);
+      // A restart: nothing in memory, the same key from disk.
+      clearCaches();
+      setAliasBook(new AliasBook(Buffer.alloc(32, 3)));
+      expect(syntheticValue(secret)).toBe(first);
+      expect(syntheticValue("!!!!--!!!!")).toBe(token);
+      clearCaches();
+      setAliasBook(new AliasBook(Buffer.alloc(32, 4)));
+      expect(syntheticValue(secret)).not.toBe(first);
+    } finally {
+      clearCaches();
+      setAliasBook(book);
+    }
   });
 
   it("names tokens by kind when aliases are tokens", () => {

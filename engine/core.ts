@@ -137,7 +137,6 @@ function storeSynthetic(value: string, synthetic: string): void {
 // so repeated values keep their identity. Secrets keep realistic
 // shape-preserving synthesis.
 function tokenTagFor(ruleId: string): string {
-  if (ruleId === "unchanged-secret") return "SECRET";
   if (/ip/i.test(ruleId)) return "IP";
   if (/host/i.test(ruleId)) return "HOST";
   if (/user|login|owner/i.test(ruleId)) return "USER";
@@ -156,15 +155,23 @@ function syntheticToken(ruleId: string, value: string): string {
   return synthetic;
 }
 
-// Stable within this process so repeated values keep their identity and the
-// model can still follow references. Character classes and separators survive,
+// Keyed rather than counted, like the rest of a secret's stand-in, so it is
+// the same after a restart.
+function secretToken(value: string): string {
+  const synthetic = `__ITHILDIN_SECRET_${aliases().secretTag(value)}__`;
+  storeSynthetic(value, synthetic);
+  return synthetic;
+}
+
+// Keyed by the alias key, so repeated values keep their identity across
+// restarts and the model can still follow references. Character classes and separators survive,
 // preserving JSON, URLs, IP-shaped values, and quoted configuration syntax.
 export function syntheticValue(value: string): string {
   const cached = SYNTHETIC_VALUES.get(value);
   if (cached !== undefined) return cached;
 
   const chars = Array.from(value);
-  const entropy = randomBytes(Math.max(chars.length, 1));
+  const entropy = aliases().secretBytes(value, Math.max(chars.length, 1));
   const synthetic = chars
     .map((char, index) => {
       const byte = entropy[index] ?? 0;
@@ -180,7 +187,7 @@ export function syntheticValue(value: string): string {
     .join("");
   // Punctuation-only credentials (or random short-value collisions) must not
   // pass through unchanged merely to preserve their shape.
-  if (synthetic === value) return syntheticToken("unchanged-secret", value);
+  if (synthetic === value) return secretToken(value);
   storeSynthetic(value, synthetic);
   return synthetic;
 }
