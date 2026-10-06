@@ -5,7 +5,18 @@
 // Excluded from coverage gates in checks/coverage.ts, like bench and tests.
 import { existsSync } from "node:fs";
 import { runCheck } from "./check.ts";
-import { DRAIN_MS, readOptions, selfTestCli, start } from "./server.ts";
+import { bunTooOld, DRAIN_MS, MIN_BUN, readOptions, selfTestCli, start } from "./server.ts";
+
+// Refused before anything is served: on an older Bun the scan deadlines do not
+// fire, so a large conversation hangs the proxy for minutes instead of seconds.
+if (import.meta.main && bunTooOld(Bun.version)) {
+  console.error(
+    `ithildin: needs Bun ${MIN_BUN} or newer, and this is ${Bun.version}.\n` +
+      "On an older Bun the engine's scan deadlines do not fire, so a long " +
+      "conversation hangs the proxy for minutes instead of seconds.",
+  );
+  process.exit(1);
+}
 
 if (import.meta.main && process.argv[2] === "check") {
   // exitCode, not exit(): stdout may still be draining into a pipe.

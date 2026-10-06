@@ -16,7 +16,14 @@ import {
   WITHHELD_LINE,
   WITHHELD_NOTICE,
 } from "./redact.ts";
-import { createHandler, DEFAULT_ROUTES, loadRoutes, upstreamUrl } from "./server.ts";
+import {
+  bunTooOld,
+  createHandler,
+  DEFAULT_ROUTES,
+  journalLine,
+  loadRoutes,
+  upstreamUrl,
+} from "./server.ts";
 import { looksLikeAlias } from "../engine/lib/aliases.ts";
 
 const EMAIL = "jane.doe@acme-corp.com";
@@ -1486,6 +1493,57 @@ describe("routes", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("writes one journal line per request, saying what it cost and changed", () => {
+    expect(journalLine("anthropic", "/v1/messages", 200, 7, new Set(), 3)).toBe(
+      "anthropic/v1/messages 200 scan=7ms redacted=3",
+    );
+    // allow= names the tags the prompt carried, in a steady order.
+    expect(journalLine("anthropic", "/v1/messages", 200, 7, new Set(["pii", "all"]), 0)).toBe(
+      "anthropic/v1/messages 200 scan=7ms allow=all,pii redacted=0",
+    );
+  });
+
+  it("refuses to run on a Bun whose scan deadlines do not fire", () => {
+    // 1.10 is newer than 1.4, and 1.4.10 is newer than 1.4.2: a string compare
+    // would get both backwards and lock out a working runtime.
+    expect(bunTooOld("1.4.2")).toBe(false);
+    expect(bunTooOld("1.4.3")).toBe(false);
+    expect(bunTooOld("1.10.0")).toBe(false);
+    expect(bunTooOld("2.0.0")).toBe(false);
+    expect(bunTooOld("1.4.1")).toBe(true);
+    expect(bunTooOld("1.3.14")).toBe(true);
+    expect(bunTooOld("1.4")).toBe(true);
+    expect(bunTooOld("0.9.0")).toBe(true);
+    // Not asserted against Bun.version: the suite runs on whatever Bun invoked
+    // it, and must not fail merely for being run on an old one. The gate lives
+    // in the process entry, where it belongs.
+  });
+
+  it("overrides a built-in route field by field, keeping what the file leaves out", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ithildin-routes-"));
+    try {
+      const file = join(dir, "routes.json");
+      // Naming a via says how to reach the provider, not where its paths live.
+      writeFileSync(file, JSON.stringify({ "opencode-go": { via: "http://127.0.0.1:8787" } }));
+      const routes = loadRoutes(file);
+      expect(routes["opencode-go"]).toMatchObject({
+        upstream: DEFAULT_ROUTES["opencode-go"]!.upstream,
+        via: "http://127.0.0.1:8787",
+      });
+      expect(routes["opencode-go"]!.rewrite).toEqual(DEFAULT_ROUTES["opencode-go"]!.rewrite);
+      // So the rewrites still apply, and the path still reaches the proxy.
+      expect(upstreamUrl(routes["opencode-go"]!, "/responses", "")).toBe(
+        "https://opencode.ai/zen/go/v1/responses",
+      );
+      // A file that does name rewrites means those and no others.
+      const other = join(dir, "other.json");
+      writeFileSync(other, JSON.stringify({ "opencode-go": { rewrite: { "/x": "/y" } } }));
+      expect(loadRoutes(other)["opencode-go"]!.rewrite).toEqual({ "/x": "/y" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("images", () => {
@@ -1649,24 +1707,38 @@ describe("images", () => {
     });
     const reply = { role: "assistant", content: "ok" };
     const images = (messages: unknown[], session: string | null = "s-img") =>
-      (redactRequest("anthropic", { messages }, session).body.messages as Array<{
-        content: Array<{ type: string }>;
-      }>).map((message) => (Array.isArray(message.content) ? message.content[1]!.type : "-"));
+      (
+        redactRequest("anthropic", { messages }, session).body.messages as Array<{
+          content: Array<{ type: string }>;
+        }>
+      ).map((message) => (Array.isArray(message.content) ? message.content[1]!.type : "-"));
     const history = [shot("before"), reply, shot("[allow-images:session] on"), reply, shot("b")];
     // Earlier turns stay as they went; from the switch on, images pass.
     expect(images(history)).toEqual(["text", "-", "image", "-", "image"]);
     // A compacted history no longer holds the switch: the session remembers it.
     expect(images([shot("summary"), reply, shot("c")])).toEqual(["image", "-", "image"]);
-    expect(images([...history, reply, shot("[mask-images] stop"), reply, shot("d")])).toEqual(
-      ["text", "-", "image", "-", "image", "-", "text", "-", "text"],
-    );
+    expect(images([...history, reply, shot("[mask-images] stop"), reply, shot("d")])).toEqual([
+      "text",
+      "-",
+      "image",
+      "-",
+      "image",
+      "-",
+      "text",
+      "-",
+      "text",
+    ]);
     expect(images([shot("e")])).toEqual(["text"]);
     // Not from a reminder quoting it, nor for a client without a session.
-    expect(images([shot("<system-reminder>[allow-images:session]</system-reminder> x")], "s-q"))
-      .toEqual(["text"]);
+    expect(
+      images([shot("<system-reminder>[allow-images:session]</system-reminder> x")], "s-q"),
+    ).toEqual(["text"]);
     expect(images([shot("[allow-images:session] go")], null)).toEqual(["text"]);
-    expect(redactRequest("anthropic", { messages: [shot("[allow-images:session] go")] }, "s-t")
-      .tags.has("images")).toBe(true);
+    expect(
+      redactRequest("anthropic", { messages: [shot("[allow-images:session] go")] }, "s-t").tags.has(
+        "images",
+      ),
+    ).toBe(true);
   });
 
   it("[allow-all] passes images too, and the tag goes with them", () => {

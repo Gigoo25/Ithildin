@@ -35,8 +35,16 @@ import { type ActivityEvent, observeActivity } from "../engine/lib/activity.ts";
 import { DASHBOARD_CSP, DASHBOARD_HTML, DASHBOARD_PATH } from "./dashboard.ts";
 import { type Context, EventLog } from "./events.ts";
 import { SentRequests } from "./requests.ts";
-import { renamedIn, replyText, type TitleAsk, titleAsk, titleFrom } from "./titles.ts";
-import { SessionNames } from "./sessions.ts";
+import {
+  firstPrompt,
+  looksLikeNaming,
+  renamedIn,
+  replyText,
+  type TitleAsk,
+  titleAsk,
+  titleFrom,
+} from "./titles.ts";
+import { AGENT, GUESS, SessionNames, USER } from "./sessions.ts";
 import { createStatusBook } from "./status.ts";
 import { findWatched, knownValues, watchPolicy } from "./watch.ts";
 import { type SelfTest, selfTest } from "./selftest.ts";
@@ -47,6 +55,11 @@ export interface Route {
   upstream: string;
   // Path prefix rewrites, first match wins: {"/chat/": "/v1/chat/"}.
   rewrite?: Record<string, string>;
+  // A proxy in front of the provider (Headroom, on 127.0.0.1:8787). The
+  // request goes to this host with the endpoint suffix on the path and the
+  // upstream in x-headroom-base-url, which is how Headroom learns where to
+  // send it. Without it the request goes straight to `upstream`.
+  via?: string;
 }
 
 // Upstreams for the subscriptions in use. A routes file adds to the table
@@ -67,15 +80,15 @@ export const DEFAULT_ROUTES: Record<string, Route> = {
 export function loadRoutes(file: string | undefined): Record<string, Route> {
   if (!file) return DEFAULT_ROUTES;
   const parsed = JSON.parse(readFileSync(file, "utf8")) as Record<string, string | Route>;
-  return {
-    ...DEFAULT_ROUTES,
-    ...Object.fromEntries(
-      Object.entries(parsed).map(([name, route]) => [
-        name,
-        typeof route === "string" ? { upstream: route } : route,
-      ]),
-    ),
-  };
+  const routes: Record<string, Route> = { ...DEFAULT_ROUTES };
+  for (const [name, route] of Object.entries(parsed)) {
+    const over = typeof route === "string" ? { upstream: route } : route;
+    // Field by field, not route by route: a file that says how to reach a
+    // provider through a proxy should not have to repeat where its paths live,
+    // and silently losing the rewrites turns every request into a refusal.
+    routes[name] = { ...routes[name], ...over } as Route;
+  }
+  return routes;
 }
 
 export function formatForPath(pathname: string): Format | undefined {
@@ -96,6 +109,63 @@ export function upstreamUrl(route: Route, rest: string, search: string): string 
   return route.upstream.replace(/\/+$/, "") + tail + search;
 }
 
+// The endpoints a via host recognises at the end of a path. It appends a path
+// of its own to whatever base it is given, so the proxy sends the suffix on and
+// the upstream in a header. Longest first: /v1/messages/count_tokens must not
+// be read as a /v1/messages request with a tail.
+// Where a request goes, and what the headers say about it. Rewrites run first,
+// so a via host is named the upstream the request would really have gone to. A
+// path it would not recognise is refused rather than sent on: letting it
+// through would leave the host to choose the upstream, which is the one thing
+// the proxy has just decided.
+function routeFor(
+  route: Route,
+  name: string,
+  rest: string,
+  search: string,
+  headers: Headers,
+): { target: string } | Response {
+  const split = splitVia(route, rest, search);
+  if (route.via && !split)
+    return refuse(502, `route ${name} goes via ${route.via}, which cannot serve ${rest}`);
+  if (split) headers.set(BASE_URL_HEADER, split.base);
+  return { target: split?.url ?? upstreamUrl(route, rest, search) };
+}
+
+// How a via host is told where to send a request.
+const BASE_URL_HEADER = "x-headroom-base-url";
+
+const VIA_SUFFIXES = [
+  "/v1/messages/count_tokens",
+  "/v1/messages",
+  "/v1/chat/completions",
+  "/chat/completions",
+  "/v1/responses",
+];
+
+// Where a request goes when its route names a via host: the endpoint suffix on
+// the path, and the upstream to reach behind it. Undefined when the route has
+// no via, or when the path ends in something a via host would not recognise —
+// which is refused rather than guessed at, since sending it on would let the
+// host pick the upstream itself.
+export function splitVia(
+  route: Route,
+  rest: string,
+  search: string,
+): { url: string; base: string } | undefined {
+  if (!route.via) return undefined;
+  const full = upstreamUrl(route, rest, search);
+  const at = full.indexOf("?");
+  const path = at < 0 ? full : full.slice(0, at);
+  const query = at < 0 ? "" : full.slice(at);
+  const suffix = VIA_SUFFIXES.find((end) => path.endsWith(end));
+  if (!suffix) return undefined;
+  return {
+    url: route.via.replace(/\/+$/, "") + suffix + query,
+    base: path.slice(0, path.length - suffix.length),
+  };
+}
+
 // Pi's footer tags its requests with its session id (the proxy's own header,
 // never forwarded); Claude sends X-Claude-Code-Session-Id itself. opencode
 // sends x-opencode-session to its own providers, with x-opencode-client
@@ -108,7 +178,8 @@ const SESSION_HEADERS: [string, string][] = [
   ["x-session-affinity", "opencode"],
 ];
 const CLIENT_HEADER = "x-opencode-client";
-const OWN_PATH = /^\/(?:_ithildin\/(selftest|health)|(dashboard)(?:\/(activity|requests|request))?)$/;
+const OWN_PATH =
+  /^\/(?:_ithildin\/(selftest|health)|(dashboard)(?:\/(activity|requests|request))?)$/;
 // Set by refuse() and removed by the handler, which logs the refusal for the
 // dashboard. It never reaches the client.
 const REFUSED_HEADER = "x-ithildin-refused";
@@ -447,6 +518,74 @@ function health(
 
 // `gated`: refuse model requests until a self-test passes (selftest.ts). The
 // server's handler is gated; the self-test's own and the tests' are not.
+// What the proxy keeps between requests, and the turn counter it numbers them
+// with. One object, so the request path can be handed over whole.
+interface Stores {
+  book: ReturnType<typeof createStatusBook>;
+  events: EventLog;
+  kept: SentRequests;
+  names: SessionNames;
+  turns: number;
+}
+
+// A request for a provider: scan it, mask it, send it, and check the reply on
+// the way back. Everything the proxy knows about one request happens here, and
+// nothing above it decides anything but which of the proxy's own endpoints the
+// path names.
+async function forward(
+  stores: Stores,
+  deps: { routes: Record<string, Route>; fetchUpstream: typeof fetch; redact: Redactors },
+  request: Request,
+  url: URL,
+  name: string,
+  route: Route,
+  rest: string,
+  format: Format | undefined,
+): Promise<Response> {
+  const { book, events, kept, names } = stores;
+  const { fetchUpstream, redact } = deps;
+  const session = sessionOf(request);
+  const headers = forwardedHeaders(request);
+
+  const scanned = await scanRequest(request, format, redact, session?.id ?? null);
+  if (scanned instanceof Response) return scanned;
+  const { body, tags, scanMs } = scanned;
+  const sent = redactUrl(rest, url.search, headers, scanned, redact);
+  if (sent instanceof Response) return sent;
+  const routed = routeFor(route, name, sent.rest, sent.search, headers);
+  if (routed instanceof Response) return routed;
+  const { target } = routed;
+  const context = {
+    route: name,
+    endpoint: sent.rest,
+    session: session?.id,
+    ...(session ? { sessionName: names.name(session.client, session.id) } : {}),
+    turn: ++stores.turns,
+  };
+  recordScan({ book, events, kept }, context, scanned);
+  const stopped = watchOutgoing(events, context, scanned, sent);
+  if (stopped) return stopped;
+  const renamed = nameSession(names, session, scanned);
+  const ask = session ? titleAsk(scanned.object) : undefined;
+
+  let upstream: Response;
+  try {
+    upstream = await fetchUpstream(target, {
+      method: request.method,
+      headers,
+      body,
+      redirect: "manual",
+      signal: request.signal,
+    });
+  } catch (error) {
+    return refuse(502, `upstream unreachable (${(error as Error).message})`);
+  }
+  if (session && ask && upstream.ok) noteTitle(upstream.clone(), ask, session.id, names, renamed);
+
+  const line = journalLine(name, sent.rest, upstream.status, scanMs, tags, scanned.hits);
+  return relayReply(upstream, format, tags, line, (event) => events.record(context, event));
+}
+
 export function createHandler(
   routes: Record<string, Route>,
   fetchUpstream: typeof fetch = fetch,
@@ -455,11 +594,14 @@ export function createHandler(
 ) {
   // What redaction did per conversation, for the status badges (status.ts):
   // only this machine learns that swapping happens.
-  const book = createStatusBook();
-  const events = new EventLog();
-  const kept = new SentRequests();
-  const names = new SessionNames();
-  let turns = 0;
+  const stores: Stores = {
+    book: createStatusBook(),
+    events: new EventLog(),
+    kept: new SentRequests(),
+    names: new SessionNames(),
+    turns: 0,
+  };
+  const { book, events, kept, names } = stores;
   let proof: SelfTest | undefined;
   const respond = async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
@@ -479,55 +621,45 @@ export function createHandler(
     // A socket's frames cannot be scanned one request at a time.
     if (request.headers.get("upgrade")) return refuse(501, "WebSocket upgrades cannot be scanned");
     const rest = match[2] ?? "";
-    const format = formatForPath(rest);
-
-    const session = sessionOf(request);
-    const headers = forwardedHeaders(request);
-
-    const scanned = await scanRequest(request, format, redact, session?.id ?? null);
-    if (scanned instanceof Response) return scanned;
-    const { body, tags, scanMs } = scanned;
-    const sent = redactUrl(rest, url.search, headers, scanned, redact);
-    if (sent instanceof Response) return sent;
-    const target = upstreamUrl(route, sent.rest, sent.search);
-    const context = {
-      route: match[1]!,
-      endpoint: sent.rest,
-      session: session?.id,
-      ...(session ? { sessionName: names.name(session.client, session.id) } : {}),
-      turn: ++turns,
-    };
-    recordScan({ book, events, kept }, context, scanned);
-    const stopped = watchOutgoing(events, context, scanned, sent);
-    if (stopped) return stopped;
-    const renamed = session ? renamedIn(scanned.object) : undefined;
-    if (session && renamed) names.title(session.id, renamed, true);
-    const ask = session ? titleAsk(scanned.object) : undefined;
-
-    let upstream: Response;
-    try {
-      upstream = await fetchUpstream(target, {
-        method: request.method,
-        headers,
-        body,
-        redirect: "manual",
-        signal: request.signal,
-      });
-    } catch (error) {
-      return refuse(502, `upstream unreachable (${(error as Error).message})`);
-    }
-    if (session && ask && upstream.ok) noteTitle(upstream.clone(), ask, session.id, names);
-
-    // scan= is the redaction time this proxy adds to each request; allow=
-    // names the tags the user's latest prompt carried ([allow-pii] → pii), so
-    // the journal shows when masking or a guard was lifted.
-    const allowed = tags.size > 0 ? ` allow=${[...tags].sort().join(",")}` : "";
-    const line =
-      `${match[1]}${sent.rest} ${upstream.status} scan=${scanMs}ms${allowed}` +
-      ` redacted=${scanned.hits}`;
-    return relayReply(upstream, format, tags, line, (event) => events.record(context, event));
+    const deps = { routes, fetchUpstream, redact };
+    return forward(stores, deps, request, url, match[1]!, route, rest, formatForPath(rest));
   };
   return async (request: Request): Promise<Response> => logRefusal(events, await respond(request));
+}
+
+// One line in the journal: what was asked, what came back, what it cost, and
+// what was changed. scan= is the redaction time this proxy adds to each
+// request; allow= names the tags the user's latest prompt carried ([allow-pii]
+// → pii), so the journal shows when masking or a guard was lifted.
+export function journalLine(
+  route: string,
+  rest: string,
+  status: number,
+  scanMs: number,
+  tags: ReadonlySet<string>,
+  hits: number,
+): string {
+  const allowed = tags.size > 0 ? ` allow=${[...tags].sort().join(",")}` : "";
+  return `${route}${rest} ${status} scan=${scanMs}ms${allowed} redacted=${hits}`;
+}
+
+// The oldest Bun the engine's per-rule scan deadlines work on. Before this they
+// do not fire in time: a scan that should take a second takes minutes, with no
+// error anywhere, which reads as a hung proxy rather than an old runtime.
+export const MIN_BUN = "1.4.2";
+
+// Whether `version` is older than `min`, compared part by part so 1.10 is newer
+// than 1.4 and 1.4.10 is newer than 1.4.2.
+export function bunTooOld(version: string, min = MIN_BUN): boolean {
+  const parts = (text: string) => text.split(".").map((part) => Number(part) || 0);
+  const at = parts(version);
+  const want = parts(min);
+  for (let part = 0; part < Math.max(at.length, want.length); part++) {
+    const got = at[part] ?? 0;
+    const need = want[part] ?? 0;
+    if (got !== need) return got < need;
+  }
+  return false;
 }
 
 // The session id, and the agent that sent it, by the header it used.
@@ -546,6 +678,11 @@ function forwardedHeaders(request: Request): Headers {
   const headers = new Headers(request.headers);
   for (const name of HOP_HEADERS) headers.delete(name);
   headers.delete(SESSION_HEADERS[0]![0]);
+  // The proxy names the upstream, never the agent: a client's own routing
+  // header is dropped whether or not this route goes through a via host.
+  for (const name of [...headers.keys()]) {
+    if (name.toLowerCase().startsWith("x-headroom-")) headers.delete(name);
+  }
   headers.set("accept-encoding", "identity");
   return headers;
 }
@@ -560,13 +697,25 @@ function logRefusal(events: EventLog, response: Response): Response {
 }
 
 // A naming request's reply, read beside the client's copy: the session's
-// title, with stand-ins, as the provider sent it (titles.ts).
-function noteTitle(reply: Response, ask: TitleAsk, id: string, names: SessionNames): void {
+// title, with stand-ins, as the provider sent it (titles.ts). The user's own
+// name stands: a later model title does not replace it.
+function noteTitle(
+  // Only the body is wanted, and asking for that rather than for a Response
+  // keeps clear of the two Response types the runtime declares: `fetch` gives
+  // back one, and the global constructor is the other.
+  reply: { text(): Promise<string> },
+  ask: TitleAsk,
+  id: string,
+  names: SessionNames,
+  renamed: string | undefined,
+): void {
   reply
     .text()
     .then((raw) => {
       const title = titleFrom(ask, replyText(raw));
-      if (title) names.title(id, title, ask === "name");
+      if (!title) return;
+      names.title(id, title, renamed ? USER : ask === "name" ? USER : AGENT);
+      log(`session naming: ${id.slice(0, 8)} is now "${title}"`);
     })
     .catch(() => undefined);
 }
@@ -600,6 +749,45 @@ function dashboard(
   const known = policy.known ? knownValues().length : 0;
   const watch = { terms: policy.terms.length, action: policy.action, known };
   return Response.json({ ...snapshot, watch, sessions: names.list() }, { headers });
+}
+
+// What the session is called, from the traffic around it (titles.ts): the
+// user's own name first, then the agent's naming request, then nothing, for an
+// agent that names none. Returns what the user named, so a model title never
+// stands over it.
+function nameSession(
+  names: SessionNames,
+  session: { id: string; client: string } | undefined,
+  scanned: Scanned,
+): string | undefined {
+  if (!session) return undefined;
+  const renamed = renamedIn(scanned.object);
+  if (renamed) {
+    names.title(session.id, renamed, USER);
+    return renamed;
+  }
+  // An agent that names no session of its own still gets one, from what was
+  // asked first. A real title replaces this when it arrives.
+  const about = firstPrompt(scanned.object);
+  // A title reaches the dashboard, which must never carry a real value, so one
+  // taken from a prompt the watch list is not satisfied with is not taken. A
+  // name is worth less than the promise it would break.
+  if (about && !watchHits(scanned, about)) names.title(session.id, about, GUESS);
+  // A naming request no pattern recognised: say so, so a reworded agent costs
+  // titles out loud rather than in silence. The prompt itself is not logged.
+  if (!titleAsk(scanned.object) && looksLikeNaming(scanned.object))
+    log("session naming: a naming request was not recognised; session left unnamed");
+  return undefined;
+}
+
+// Whether the watch list finds anything in text that is about to be shown
+// rather than sent: a session name from a prompt, say. Known values are not
+// counted: they were masked already, so the prompt holds their stand-ins.
+function watchHits(scanned: Scanned, text: string): boolean {
+  const policy = watchPolicy();
+  const known = policy.known ? knownValues() : [];
+  const target = { body: scanned.object, path: "", search: "" };
+  return findWatched(policy, known, target).some((hit) => text.includes(hit.value));
 }
 
 // The watch list's check of what is about to go out (watch.ts). The refusal,
