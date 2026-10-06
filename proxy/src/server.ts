@@ -15,6 +15,7 @@
 // It fails closed: an unknown route, an unreadable JSON body, a compressed
 // request body, or a WebSocket upgrade is refused instead of forwarded raw.
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import {
@@ -264,7 +265,13 @@ export function jsonDepth(value: unknown, limit: number): number {
   return deepest;
 }
 
+// Set while the self-test runs its probes: their requests, and the redirect it
+// refuses on purpose, would read in the journal as real traffic. Its verdict
+// is logged outside. Per async context, so a real request alongside still logs.
+const selfTesting = new AsyncLocalStorage<true>();
+
 function log(line: string): void {
+  if (selfTesting.getStore()) return;
   process.stderr.write(`ithildin: ${line}\n`);
 }
 
@@ -521,7 +528,9 @@ function redactUrl(
 }
 
 async function runSelfTest(routes: Record<string, Route>, redact: Redactors): Promise<SelfTest> {
-  const proof = await selfTest((upstream) => createHandler(routes, upstream, redact));
+  const proof = await selfTesting.run(true, () =>
+    selfTest((upstream) => createHandler(routes, upstream, redact)),
+  );
   log(
     proof.ok
       ? `self-test passed (${proof.ms}ms)`

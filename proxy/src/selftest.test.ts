@@ -211,6 +211,23 @@ describe("gated handler", () => {
     expect(health.selftest.ok).toBe(true);
   });
 
+  it("logs only its verdict, not its probes' requests", async () => {
+    const lines: string[] = [];
+    const write = spyOn(process.stderr, "write").mockImplementation((chunk: unknown) => {
+      lines.push(String(chunk));
+      return true;
+    });
+    try {
+      const handler = createHandler(DEFAULT_ROUTES, refuse, undefined, true);
+      expect((await handler(new Request("http://127.0.0.1/_ithildin/selftest"))).status).toBe(200);
+    } finally {
+      write.mockRestore();
+    }
+    expect(lines.filter((line) => line.startsWith("ithildin: "))).toEqual([
+      expect.stringMatching(/^ithildin: self-test passed \(\d+ms\)\n$/),
+    ]);
+  });
+
   it("stays closed, and reads as down, after a failed self-test", async () => {
     const handler = createHandler(DEFAULT_ROUTES, refuse, leaking, true);
     expect((await handler(new Request("http://127.0.0.1/_ithildin/selftest"))).status).toBe(503);
