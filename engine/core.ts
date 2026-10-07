@@ -230,6 +230,9 @@ export function isSyntheticValue(value: string): boolean {
 const OPAQUE_PROVIDER_FIELDS: Record<string, true> = {
   encrypted_content: true,
   encryptedContent: true,
+  // Gemini's signed thinking, which the provider checks on the next turn.
+  thoughtSignature: true,
+  thought_signature: true,
 };
 // Responses wire enums are never free text. When the shared scan budget is
 // exhausted, fail-closed omission rewrites e.g. include[0] into

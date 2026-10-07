@@ -763,6 +763,10 @@ function explainBlocked(format: Format, body: Record<string, unknown>): Record<s
 
 // Query parameter values, scanned like body strings. API query strings are
 // flags (?beta=true), so this rarely finds anything, but a URL is sent too.
+// Query parameters passed as they are, like PASSED_HEADERS: Gemini and Azure
+// take the user's key in the query, where masking it fails the call.
+const PASSED_QUERY = new Set(["key", "api-key", "api_key", "api-version", "alt"]);
+
 export function redactQuery(
   search: string,
   tags: Set<string>,
@@ -775,6 +779,10 @@ export function redactQuery(
   const { values } = collectValues(() =>
     withScanBudget(() => {
       for (const [name, value] of params) {
+        if (PASSED_QUERY.has(name.toLowerCase())) {
+          out.append(name, value);
+          continue;
+        }
         const result = redactValue(value, tags, name, undefined, ["query", name], true);
         hits += result.hits;
         out.append(name, result.hits === 0 ? value : String(result.value));

@@ -127,6 +127,7 @@ describe("blocksInventoryAccess", () => {
 describe("redactValue", () => {
   it("passes opaque ciphertext and binary through", () => {
     expect(redactValue(TOKEN, NONE, "encrypted_content")).toEqual({ value: TOKEN, hits: 0 });
+    expect(redactValue(TOKEN, NONE, "thoughtSignature")).toEqual({ value: TOKEN, hits: 0 });
     const bytes = new Uint8Array([1, 2, 3]);
     expect(redactValue(bytes, NONE).value).toBe(bytes);
     expect(redactValue(42, NONE)).toEqual({ value: 42, hits: 0 });

@@ -268,6 +268,14 @@ describe("replies the proxy refuses", () => {
     const stream = () =>
       new Response("{}\n", { headers: { "content-type": "application/x-ndjson" } });
     expect((await refusal(await via(stream))).status).toBe(502);
+    // Gemini's stream without SSE: an array of replies.
+    expect((await refusal(await via(json([{ candidates: [] }])))).status).toBe(502);
+    // Bedrock's event stream, or no type at all, answering a body.
+    const typed = (type?: string) => () =>
+      new Response("bytes", type ? { headers: { "content-type": type } } : {});
+    const bedrock = await refusal(await via(typed("application/vnd.amazon.eventstream")));
+    expect(bedrock.message).toContain("application/vnd.amazon.eventstream reply");
+    expect((await refusal(await via(typed()))).message).toContain("untyped reply");
     const list = await via(json({ data: [{ id: "m" }] }));
     expect(await list.json()).toEqual({ data: [{ id: "m" }] });
     expect(

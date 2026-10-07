@@ -481,6 +481,17 @@ deadlines do not fire in time, so one long conversation hangs the proxy for
 minutes with nothing in the log. Two megabytes of messages scan in well under a
 second on 1.4.2 and were still running after four minutes on 1.3.14.
 
+It reads three wire formats, known by the path's ending: Anthropic Messages
+(`/v1/messages`), OpenAI Chat Completions (`/chat/completions`) and OpenAI
+Responses (`/responses`). That covers any host speaking one of them: OpenRouter,
+Groq, DeepSeek, Mistral, LiteLLM, vLLM, Ollama's `/v1`, Gemini's OpenAI-style
+`/v1beta/openai`, Azure's deployments. A harness's base URL is the route's name
+on the proxy plus whatever it would have put after the host, so one that adds
+only `/chat/completions` needs `/v1` in it. Other formats (Gemini's own
+`generateContent`, Ollama's `/api/chat`) are scanned going out, but a reply that
+could be a model's is refused rather than passed unread; Bedrock signs its body,
+so it cannot go through a proxy that rewrites it.
+
 The built-in routes are `anthropic`, `openai-codex` and `opencode-go`. Add
 local or LAN model servers in `~/.config/ithildin/routes.json`. A route is an
 upstream, optional path rewrites, and an optional `via`:
@@ -549,14 +560,15 @@ It's a guardrail for a cooperative agent. It is not a sandbox.
   that arrives some other way does not mark the conversation. Labels live in
   memory: a restart, or a file written now and read in a later session,
   starts clean.
-- **Some request parts go out unscanned.** Provider credentials and the
-  cookie and beta headers, query names and path segments shaped like provider
-  object ids (`msgbatch_…`, `resp_…`), thinking blocks and encrypted reasoning
-  (providers verify their signatures), and images the provider fetches by URL
-  or file id.
+- **Some request parts go out unscanned.** Provider credentials (in headers,
+  and the `key`/`api-key` a provider takes in the query), the cookie and beta
+  headers, query names and path segments shaped like provider object ids
+  (`msgbatch_…`, `resp_…`), thinking blocks, encrypted reasoning and Gemini's
+  thought signatures (providers verify them), and images the provider fetches
+  by URL or file id.
 - **Routes in unread formats.** A route to a path the proxy can't parse
   (Ollama's `/api/chat`, a wrapping gateway) has its requests scanned, but a
-  reply without model-shaped top-level keys passes unread.
+  JSON reply without model-shaped top-level keys passes unread.
 - **The identity list stops at 1000 values.** Values found after that aren't
   masked; the log warns.
 - **Traffic that skips the proxy isn't covered.** That includes an agent not

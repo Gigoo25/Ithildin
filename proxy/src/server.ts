@@ -673,7 +673,8 @@ async function forward(
   const line =
     journalLine(name, sent.rest, upstream.status, scanMs, tags, scanned.hits, shaped) + broke;
   const tap = (event: ActivityEvent) => events.record(context, event);
-  return relayReply(upstream, format, tags, line, tap, usageCounter(events));
+  const asked = request.method !== "GET" && request.method !== "HEAD";
+  return relayReply(upstream, { format, asked }, tags, line, tap, usageCounter(events));
 }
 
 // How long an upstream has to start its reply. A long non-streamed answer
@@ -1114,9 +1115,11 @@ function recordScan(
 // The upstream reply with stand-ins in tool calls swapped back, or a refusal
 // when a model reply cannot be checked. `line` is the start of its log line;
 // `tap` gets what the swaps did, for the dashboard.
+// `asked` is whether the request carried a body: a reply to one may be a
+// model's answer, a reply to a GET (a models list) is not.
 async function relayReply(
   upstream: Response,
-  format: Format | undefined,
+  { format, asked }: { format: Format | undefined; asked: boolean },
   tags: Set<string>,
   line: string,
   tap: (event: ActivityEvent) => unknown,
@@ -1156,7 +1159,7 @@ async function relayReply(
     await upstream.body.cancel();
     return refuse(502, `upstream reply type ${contentType.split(";")[0]} cannot be checked`);
   }
-  if (!format && upstream.ok && upstream.body) return relayUnread(upstream, init, line);
+  if (!format && upstream.ok && upstream.body) return relayUnread(upstream, init, line, asked);
   log(line);
   return new Response(upstream.body, init);
 }
@@ -1169,11 +1172,18 @@ const MODEL_REPLY_KEYS = ["choices", "message", "response", "candidates", "conte
 // A successful reply on a path formatForPath does not know. A model reply
 // there (a stream, or JSON shaped like one) is refused: no guard read its
 // tool calls. Anything else (model lists, health checks) passes.
-async function relayUnread(upstream: Response, init: ResponseInit, line: string) {
+async function relayUnread(upstream: Response, init: ResponseInit, line: string, asked: boolean) {
   const contentType = upstream.headers.get("content-type") ?? "";
   if (/event-stream|ndjson/.test(contentType)) {
     await upstream.body?.cancel();
     return refuse(502, "streamed reply on a path this proxy does not read, refusing it unchecked");
+  }
+  // Answering a body with something not JSON (Bedrock's event stream, plain
+  // text, no type at all) could be a model's reply in a shape not read here.
+  if (asked && !contentType.includes("json")) {
+    await upstream.body?.cancel();
+    const type = contentType.split(";")[0] || "untyped";
+    return refuse(502, `${type} reply on a path this proxy does not read, refusing it unchecked`);
   }
   if (!contentType.includes("json")) {
     log(line);
@@ -1187,7 +1197,9 @@ async function relayUnread(upstream: Response, init: ResponseInit, line: string)
   } catch {
     parsed = undefined;
   }
-  if (parsed && typeof parsed === "object" && MODEL_REPLY_KEYS.some((key) => key in parsed))
+  // Gemini streams without SSE as one JSON array of replies: read each.
+  const replies = Array.isArray(parsed) ? parsed : [parsed];
+  if (replies.some((one) => isRecord(one) && MODEL_REPLY_KEYS.some((key) => key in one)))
     return refuse(502, "model reply on a path this proxy does not read, refusing it unchecked");
   log(line);
   return new Response(text, init);

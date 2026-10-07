@@ -243,6 +243,20 @@ describe("reworded stand-ins in writes", () => {
 });
 
 describe("query and stream fidelity", () => {
+  it("passes a provider's key in the query, and still scans the rest", () => {
+    const key = "AIzaSyD3x4mpl3K3yV4lu3F0rT3st1ngOnly0";
+    const email = "jane.doe@acme-corp.com";
+    const { search, hits } = redactQuery(
+      `?alt=sse&key=${key}&note=${encodeURIComponent(email)}`,
+      new Set(),
+    );
+    expect(hits).toBeGreaterThan(0);
+    const params = new URLSearchParams(search);
+    expect(params.get("key")).toBe(key);
+    expect(params.get("alt")).toBe("sse");
+    expect(params.get("note")).not.toBe(email);
+  });
+
   it("keeps every value of a repeated query key", () => {
     const email = "jane.doe@acme-corp.com";
     const { search, hits } = redactQuery(`?a=1&a=${encodeURIComponent(email)}&b=2`, new Set());
