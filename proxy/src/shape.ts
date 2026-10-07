@@ -39,6 +39,7 @@
 import { setting } from "../engine/lib/names.ts";
 import { compact } from "./compact.ts";
 import { crushJson } from "./crush.ts";
+import { markBoundary, markRoom } from "./mark.ts";
 import type { Format } from "./redact.ts";
 
 // Ported from Pi's output-shaping extension (mask.ts), which could only shape
@@ -188,17 +189,24 @@ function dueAt(turns: number, tokens: number): number {
   return Math.floor((turns - MASK_KEEP_TURNS) / MASK_STEP_TURNS) * MASK_STEP_TURNS;
 }
 
-// What a cache write costs, and whether it rewrites the whole conversation.
+// What a cache write costs, whether it rewrites the whole conversation, and
+// whether a marker at the previous cutoff (mark.ts) lets a step read back the
+// turns before it.
 interface Price {
   write: number;
   whole: boolean;
+  mark: boolean;
 }
 
 function writePrice(format: Format, body: Record_): Price {
-  if (format !== "anthropic") return { write: CACHE_WRITE.openai, whole: false };
+  if (format !== "anthropic") return { write: CACHE_WRITE.openai, whole: false, mark: false };
   // Claude Code marks its system prompt; a marker on any block says the same.
   const marked = JSON.stringify([body.system, body.tools]).includes('"ttl":"1h"');
-  return { write: marked ? CACHE_WRITE.hour : CACHE_WRITE.short, whole: true };
+  return {
+    write: marked ? CACHE_WRITE.hour : CACHE_WRITE.short,
+    whole: true,
+    mark: markRoom(body),
+  };
 }
 
 // What each item is: the turn it belongs to, its size, and how much masking it
@@ -239,11 +247,14 @@ function pays(items: Sized[], step: Step, price: Price): boolean {
   let gain = 0;
   let suffix = 0;
   let changed = false;
+  // With the marker, the turns up to the previous cutoff are read, not written.
+  const read = price.mark && from > 0 ? from : 0;
   for (let i = 0; i < end; i++) {
     const item = items[i]!;
     const inStep = item.turn > from && item.turn <= to;
     if (inStep && item.gain > 0) changed = true;
-    if (changed || price.whole) suffix += Math.max(0, item.tokens - (inStep ? item.gain : 0));
+    if (changed || (price.whole && item.turn > read))
+      suffix += Math.max(0, item.tokens - (inStep ? item.gain : 0));
     if (inStep) gain += item.gain;
   }
   const write = price.write;
@@ -252,10 +263,18 @@ function pays(items: Sized[], step: Step, price: Price): boolean {
   return !changed || gain * CACHE_READ * horizon >= suffix * (write - CACHE_READ);
 }
 
-function cutoffFor(format: Format, body: Record_, list: unknown[], walk: Walk): number {
+// The cutoff, and the cutoff as the request before this one had it: the one
+// decided just before the newest assistant turn, where that request ended.
+function cutoffFor(
+  format: Format,
+  body: Record_,
+  list: unknown[],
+  walk: Walk,
+): { cutoff: number; previous: number } {
   const items = sizes(format, list, walk.retrieval);
   const write = writePrice(format, body);
   let cutoff = 0;
+  let previous = 0;
   let turns = 0;
   let tokens = 0;
   // Every point a request could have ended: just before each assistant turn,
@@ -265,12 +284,13 @@ function cutoffFor(format: Format, body: Record_, list: unknown[], walk: Walk): 
     if (item === undefined || isAssistant(format, list[end])) {
       const due = dueAt(turns, tokens);
       if (due > cutoff && pays(items, { end, turns, from: cutoff, to: due }, write)) cutoff = due;
+      if (item !== undefined) previous = cutoff;
     }
     if (item === undefined) break;
     tokens += item.tokens;
     if (isAssistant(format, list[end])) turns++;
   }
-  return cutoff;
+  return { cutoff, previous };
 }
 
 function remember(format: Format, item: unknown, walk: Walk): void {
@@ -454,14 +474,17 @@ export function shapeRequest(
   const list = conversation(format, body);
   if (!list) return;
   const walk: Walk = { calls: new Map(), outputs: new Map(), retrieval };
-  const cutoff = cutoffFor(format, body, list, walk);
+  const { cutoff, previous } = cutoffFor(format, body, list, walk);
   const kept = latestNotes(format, list, cutoff);
   const totals: Counts = { masked: 0, compacted: 0, deduped: 0 };
   let turn = 0;
   let savedChars = 0;
+  // The last item of the turns the previous request had masked.
+  let boundary = -1;
   const out = list.map((item, at) => {
     remember(format, item, walk);
     if (isAssistant(format, item)) turn++;
+    if (turn <= previous) boundary = at;
     // A result answers the call above it, so it shares that call's turn: the
     // first `cutoff` turns are old, calls and results alike. A cutoff of zero
     // is a conversation too short to shape, so nothing in it is old, not even
@@ -477,7 +500,8 @@ export function shapeRequest(
   });
   // Any count is a change: a request with only compaction is still shaped.
   if (totals.masked + totals.compacted + totals.deduped === 0) return;
-  return { body: { ...body, [keyOf(format)]: out }, ...totals, savedChars };
+  const marked = format === "anthropic" && previous > 0 ? markBoundary(body, out, boundary) : out;
+  return { body: { ...body, [keyOf(format)]: marked }, ...totals, savedChars };
 }
 
 function keyOf(format: Format): "messages" | "input" {

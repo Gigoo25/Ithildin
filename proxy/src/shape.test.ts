@@ -359,8 +359,11 @@ describe("the cost of a step", () => {
       ]).flat(),
     );
     const again = shapeRequest("anthropic", { messages: later });
-    expect(JSON.stringify((again?.body.messages as unknown[]).slice(0, first.length))).toBe(
-      JSON.stringify(masked?.body.messages),
+    // The cutoff's cache marker moves with the cutoff; what it marks does not.
+    const unmarked = (list: unknown) =>
+      JSON.stringify(list, (key, value) => (key === "cache_control" ? undefined : value));
+    expect(unmarked((again?.body.messages as unknown[]).slice(0, first.length))).toBe(
+      unmarked(masked?.body.messages),
     );
   });
 });
