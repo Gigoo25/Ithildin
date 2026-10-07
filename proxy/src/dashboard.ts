@@ -144,8 +144,12 @@ export const DASHBOARD_HTML = `<!doctype html>
 
   main {
     flex: 1; min-height: 0; display: grid; gap: 0;
-    grid-template-columns: 250px minmax(0, 1fr);
+    grid-template-columns: var(--side, 290px) 6px minmax(0, 1fr);
   }
+  /* The handle between the sessions and the conversation: drag it, or focus
+     it and use the arrow keys. */
+  #grip { cursor: col-resize; overflow: hidden; border-left: 1px solid var(--edge); }
+  #grip:hover, #grip:focus-visible, #grip.on { background: var(--soft); outline: none; }
   main > * { min-height: 0; overflow-y: auto; }
   h2 {
     display: flex; align-items: center; gap: 8px; margin: 18px 0 6px;
@@ -163,7 +167,7 @@ export const DASHBOARD_HTML = `<!doctype html>
   .section:not([open]) h2 { color: var(--dim); }
 
   /* Left: sessions, what to show, and the totals. */
-  #side { padding: 0 14px 14px; border-right: 1px solid var(--edge); }
+  #side { padding: 0 14px 14px; }
   #side dl, .pick, .kind { font-family: var(--serif); }
   .pick {
     display: flex; align-items: baseline; gap: 6px; width: 100%; text-align: left;
@@ -273,7 +277,12 @@ export const DASHBOARD_HTML = `<!doctype html>
   #viewer:not(.raw) { font: 12.5px/1.5 var(--mono); }
   .step { display: flex; gap: 8px; margin: 0 0 8px; }
   details.step, .step.call { display: block; }
-  .glyph { flex: none; width: 1em; color: var(--dim); }
+  /* Who said it, as a word in its own column: an arrow there read as
+     something to click. */
+  .glyph {
+    flex: none; width: 5ch; color: var(--dim); font-size: 10.5px; line-height: 1.8;
+    text-transform: uppercase; letter-spacing: .08em; user-select: none;
+  }
   .said, .body { white-space: pre-wrap; overflow-wrap: anywhere; min-width: 0; }
   .step.prompt { padding: 6px 8px; border-radius: 4px; background: var(--head); }
   /* The timeline: each turn on a rail, a star where it starts. */
@@ -287,6 +296,7 @@ export const DASHBOARD_HTML = `<!doctype html>
     color: var(--dim);
   }
   .turn:first-child .turn_head { padding-top: 0; }
+  .turn:not([open]) .turn_head { padding-top: 6px; margin-bottom: 0; }
   .turn_head::before {
     content: '\\2726'; width: 11px; text-align: center; background: var(--panel);
     color: var(--dim); font-size: 11px;
@@ -299,6 +309,18 @@ export const DASHBOARD_HTML = `<!doctype html>
   .turn_head { cursor: pointer; }
   .turn_head:hover { color: var(--ink); }
   .turn_chev { font-size: 10px; }
+  /* What the turn asked, in the reader's case: the head is caps, this is not. */
+  .turn_gist, .turn_meta {
+    font: 12px var(--mono); letter-spacing: 0; text-transform: none;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .turn_gist { min-width: 0; color: var(--ink); }
+  /* An open turn shows its prompt in full; the head repeating it was noise. */
+  .turn[open] .turn_gist { display: none; }
+  .turn_meta { flex: none; }
+  .turn_meta:empty { display: none; }
+  /* A closed turn is one line, so the rail reads as a list of what was asked. */
+  .turn:not([open]) { padding-bottom: 0; }
   .turn:not([open]) .turn_chev::before { content: '\\25b8'; }
   .step.prompt .glyph { color: var(--silver); }
   .step.reply .glyph { color: var(--ink); }
@@ -417,6 +439,8 @@ export const DASHBOARD_HTML = `<!doctype html>
     </div>
   </details>
 </aside>
+<div id="grip" role="separator" aria-orientation="vertical" aria-label="Resize the sessions"
+  tabindex="0"></div>
 <section id="center">
   <div id="session_head">
     <h3 id="session_title">Connecting</h3>
@@ -464,8 +488,10 @@ let firstPoll = true;
 let lastStats;
 let lastWatch;
 const texts = new Map();
-// Turns the reader has put away, by number, so a rebuild leaves them so.
-const collapsed = new Set();
+// What the reader opened or closed, turns and folds alike, where it differs
+// from how the page would set it: the view is rebuilt whenever a request
+// arrives, and a rebuild must not undo a click.
+const folds = new Map();
 let shownId = 0;
 let view = 'chat';
 
@@ -560,7 +586,7 @@ function renderSessions() {
       shownId = 0;
       // Turn numbers count a session's own turns, so another session's folds
       // are not this one's.
-      collapsed.clear();
+      folds.clear();
       renderSessions();
       showSession();
     });
@@ -840,7 +866,7 @@ async function poll() {
       feed.length = 0;
       sessions.clear();
       texts.clear();
-      collapsed.clear();
+      folds.clear();
       shownId = 0;
     }
     since = data.next;
@@ -1032,7 +1058,20 @@ function fold(className, head, text, wants, needle) {
     if (count > 0) summary.appendChild(byClass('span', 'badge ' + type, String(count)));
   }
   box.open = body.querySelector('mark:not([data-type=masked])') !== null;
-  return { node: box, matches };
+  return { node: box, matches, fold: box };
+}
+
+// A fold as the reader last left it, unless the search has a match inside:
+// that opens it. Only a choice that differs from the page's own is kept, so
+// a turn the reader never touched closes once a newer one arrives.
+function remember(box, key) {
+  const usual = box.open;
+  const found = box.querySelector('mark[data-type=found]') !== null;
+  if (folds.has(key) && !found) box.open = folds.get(key);
+  box.addEventListener('toggle', () => {
+    if (box.open === usual) folds.delete(key);
+    else folds.set(key, box.open);
+  });
 }
 
 function said(className, glyph, text, wants, needle) {
@@ -1043,12 +1082,14 @@ function said(className, glyph, text, wants, needle) {
   return { node: box, matches };
 }
 
-// The conversation the way an agent's terminal shows it, newest turn first:
-// a prompt after "\\u203a", the model's words and each tool call after
-// "\\u23fa", a call's result under it after "\\u23bf", and the system prompt,
-// the tools and harness text folded. The model's own words get the marks
-// that say which stand-ins came back to it real; a leak is flagged on the
-// message it was found in.
+// The conversation newest first, turns and the messages in them alike, like
+// a feed: each message labelled with who said it (you, agent, tool), a call's
+// result folded under it after "\\u23bf", and the system prompt, the tools
+// and harness text folded. Only the newest turn is open; a closed turn's head
+// says what was asked and how many calls it took, so the closed ones still
+// read. The model's own words get
+// the marks that say which stand-ins came back to it real; a leak is flagged
+// on the message it was found in.
 function conversation(items, marks, needle, leaks) {
   const results = new Map();
   for (const item of items)
@@ -1061,41 +1102,52 @@ function conversation(items, marks, needle, leaks) {
     .filter((item) => item.kind === 'user' && !WRAPPED.test(item.text))
     .map((item) => item.at));
   const nodes = [];
+  const calls = [];
+  const metas = [];
+  // What each turn holds, kept apart until the end so it can go in newest
+  // first; a leak's flag stays above the message it is about.
+  const groups = [];
   let turn;
   let count = 0;
   let started = -2;
-  // A turn is a fold of its own: click its head to put it away. The page is
-  // rebuilt when a turn arrives, so which are put away is remembered by number.
-  const start = (title) => {
+  // Folds are known by where their message sits, which a later request of the
+  // same conversation leaves alone, so a rebuild finds the reader's choices.
+  const seen = new Map();
+  const start = (title, asked) => {
     turn = document.createElement('details');
     turn.className = 'turn';
-    turn.open = !collapsed.has(count + 1);
-    turn.addEventListener('toggle', () => {
-      if (turn.open) collapsed.delete(count + 1);
-      else collapsed.add(count + 1);
-    });
-    turn.appendChild(byClass('summary', 'turn_head', title));
-    turn.firstChild.appendChild(byClass('span', 'chev turn_chev'));
+    const head = byClass('summary', 'turn_head', title);
+    if (asked) head.appendChild(byClass('span', 'turn_gist', oneLine(asked, 120)));
+    const meta = byClass('span', 'turn_meta');
+    head.append(meta, byClass('span', 'chev turn_chev'));
+    metas.push(meta);
+    turn.appendChild(head);
     nodes.push(turn);
+    groups.push([]);
+    calls.push(0);
   };
   let matches = 0;
   const put = (item, shown) => {
     if (!turn) start('Before the first prompt');
     const found = leaks.get(item.at);
+    const group = [];
     if (found && !flagged.has(item.at)) {
       flagged.add(item.at);
-      const flag = byClass('div', 'flag', '\\u26a0 Leak: ' + leakDetail(found[0]));
-      turn.appendChild(flag);
+      group.push(byClass('div', 'flag', '\\u26a0 Leak: ' + leakDetail(found[0])));
     }
-    turn.appendChild(shown.node);
+    group.push(shown.node);
+    groups[groups.length - 1].push(group);
     matches += shown.matches;
+    const nth = seen.get(item.at) || 0;
+    seen.set(item.at, nth + 1);
+    if (shown.fold) remember(shown.fold, item.at + ':' + nth);
   };
   const plain = marks.plain;
   const model = marks.model;
   for (const item of items) {
     if (prompts.has(item.at) && item.at !== started) {
       started = item.at;
-      start('Turn ' + ++count);
+      start('Turn ' + ++count, item.text);
     }
     if (item.kind === 'tools') {
       put(item, fold('meta', item.name + ' tools offered', item.text, plain, needle));
@@ -1105,9 +1157,9 @@ function conversation(items, marks, needle, leaks) {
     } else if (item.kind === 'user') {
       const tag = WRAPPED.exec(item.text);
       if (tag) put(item, fold('meta', '\\u2699 ' + tag[1], item.text, plain, needle));
-      else put(item, said('prompt', '\\u203a', item.text, plain, needle));
+      else put(item, said('prompt', 'you', item.text, plain, needle));
     } else if (item.kind === 'assistant') {
-      put(item, said('reply', '\\u23fa', item.text, model, needle));
+      put(item, said('reply', 'agent', item.text, model, needle));
     } else if (item.kind === 'thinking') {
       put(item, fold('meta', '\\u273b Thinking', item.text, plain, needle));
     } else if (item.kind === 'tool_call') {
@@ -1118,7 +1170,7 @@ function conversation(items, marks, needle, leaks) {
       const head = byClass('div', 'head');
       const args = byClass('span', 'args');
       matches += markInto(args, '(' + gist.text + ')', model, needle);
-      head.append(byClass('span', 'glyph', '\\u23fa'), byClass('b', '', item.name || 'tool'), args);
+      head.append(byClass('span', 'glyph', 'tool'), byClass('b', '', item.name || 'tool'), args);
       const output = result ? result.text : '';
       const lines = output.split('\\n');
       const first = output ? oneLine(lines[0], 90) : '(no output)';
@@ -1127,7 +1179,8 @@ function conversation(items, marks, needle, leaks) {
       const shown = fold('out', '\\u23bf  ' + first + more, body, plain, needle);
       matches += shown.matches;
       box.append(head, shown.node);
-      put(item, { node: box, matches: 0 });
+      put(item, { node: box, matches: 0, fold: shown.fold });
+      calls[calls.length - 1]++;
     } else if (item.kind === 'tool_result') {
       if (paired.has(item)) continue;
       put(item, fold('out', '\\u23bf  ' + oneLine(item.text, 90), item.text, plain, needle));
@@ -1137,12 +1190,63 @@ function conversation(items, marks, needle, leaks) {
       put(item, fold('meta', item.who + ' \\u00b7 ' + item.kind, item.text, plain, needle));
     }
   }
-  const last = nodes.at(-1);
-  if (count > 0 && last) {
-    last.classList.add('latest');
-    last.firstChild.textContent += ' \\u00b7 latest';
-  }
+  nodes.forEach((node, index) => {
+    for (const group of groups[index].reverse()) node.append(...group);
+    const latest = index === nodes.length - 1;
+    const said = [];
+    if (calls[index] > 0) said.push(plural(calls[index], 'tool call'));
+    if (latest && count > 0) said.push('latest');
+    metas[index].textContent = said.join(' \\u00b7 ');
+    if (latest && count > 0) node.classList.add('latest');
+    // An older turn opens when the search found something in it.
+    node.open = latest || node.querySelector('mark[data-type=found]') !== null;
+    remember(node, 'turn ' + (index + 1));
+  });
+  // Newest first, turns and what is in them, so what just happened is on top.
   return { nodes: nodes.reverse(), matches };
+}
+
+// The left column's width, which the reader sets by dragging the handle or
+// with the arrow keys on it, kept between visits. It stays wide enough for a
+// session's name and narrow enough to leave the conversation room.
+const SIDE_MIN = 180;
+const SIDE_MAX = 560;
+function resizable(grip) {
+  const main = grip.parentElement;
+  const set = (width) => {
+    const px = Math.round(Math.min(SIDE_MAX, Math.max(SIDE_MIN, width)));
+    main.style.setProperty('--side', px + 'px');
+    grip.setAttribute('aria-valuenow', String(px));
+    return px;
+  };
+  let width = set(Number(localStorage.getItem('ithildin.side')) || 290);
+  const keep = () => localStorage.setItem('ithildin.side', String(width));
+  grip.addEventListener('pointerdown', (event) => {
+    event.preventDefault();
+    grip.setPointerCapture(event.pointerId);
+    grip.classList.add('on');
+    const left = main.getBoundingClientRect().left;
+    const move = (moved) => (width = set(moved.clientX - left));
+    const done = () => {
+      grip.classList.remove('on');
+      grip.removeEventListener('pointermove', move);
+      grip.removeEventListener('pointerup', done);
+      keep();
+    };
+    grip.addEventListener('pointermove', move);
+    grip.addEventListener('pointerup', done);
+  });
+  grip.addEventListener('keydown', (event) => {
+    const step = event.key === 'ArrowLeft' ? -20 : event.key === 'ArrowRight' ? 20 : 0;
+    if (step === 0) return;
+    event.preventDefault();
+    width = set(width + step);
+    keep();
+  });
+  grip.addEventListener('dblclick', () => {
+    width = set(290);
+    keep();
+  });
 }
 
 // What to mark in a session's conversation: the stand-ins the proxy made,
@@ -1244,8 +1348,11 @@ function showText(place) {
   byId('view_chat').disabled = items.length === 0;
   for (const button of document.querySelectorAll('.view'))
     button.classList.toggle('on', button.dataset.view === (raw ? 'raw' : 'chat'));
-  const fromBottom = viewer.scrollHeight - viewer.scrollTop;
-  const atTop = viewer.scrollTop <= 4;
+  // The newest is on top, so a reader there sees it arrive, and one who
+  // scrolled down to read stays on what they were reading: what arrives
+  // lands above them, and the scroll moves by as much.
+  const atTop = viewer.scrollTop <= 24;
+  const below = viewer.scrollHeight - viewer.scrollTop;
   viewer.classList.toggle('raw', raw);
   viewer.replaceChildren();
   let matches = 0;
@@ -1265,7 +1372,7 @@ function showText(place) {
   } else if (place === 'top' || atTop) {
     viewer.scrollTop = 0;
   } else {
-    viewer.scrollTop = viewer.scrollHeight - fromBottom;
+    viewer.scrollTop = viewer.scrollHeight - below;
   }
 }
 
@@ -1282,6 +1389,7 @@ for (const section of document.querySelectorAll('.section')) {
   section.addEventListener('toggle', () =>
     localStorage.setItem(key, section.open ? 'open' : 'closed'));
 }
+resizable(byId('grip'));
 offerNotifications();
 poll();
 setInterval(poll, POLL_MS);

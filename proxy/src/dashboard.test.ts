@@ -434,12 +434,14 @@ describe("dashboard", () => {
         textContent: "",
         value: "",
         dataset: {},
-        style: {},
+        style: { setProperty() {} },
         classList: { add() {}, remove() {}, toggle() {} },
         append: (...kids: Fake[]) => node.children.push(...kids),
         appendChild: (kid: Fake) => node.children.push(kid),
         replaceChildren: (...kids: Fake[]) => (node.children = kids),
-        addEventListener() {},
+        addEventListener: (type: string, listener: () => void) => {
+          node["on" + type] = listener;
+        },
         setAttribute() {},
         querySelector: () => null,
         querySelectorAll: () => [],
@@ -448,13 +450,20 @@ describe("dashboard", () => {
         scrollHeight: 0,
       };
       Object.defineProperty(node, "firstChild", { get: () => node.children[0] });
+      Object.defineProperty(node, "parentElement", { get: () => byId("main") });
       return node;
     };
     const nodes = new Map<string, Fake>();
     const byId = (id: string) => nodes.get(id) ?? nodes.set(id, fake()).get(id)!;
     const sent = JSON.stringify({
       tools: [{ name: "Bash" }],
-      messages: [{ role: "user", content: "hi" }],
+      messages: [
+        { role: "user", content: "first ask" },
+        { role: "assistant", content: [{ type: "tool_use", id: "t", name: "Bash", input: {} }] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "t", content: "ok" }] },
+        { role: "assistant", content: "done" },
+        { role: "user", content: "second ask" },
+      ],
     });
     const answers: Record<string, unknown> = {
       "/dashboard/activity?since=0": {
@@ -521,7 +530,45 @@ describe("dashboard", () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(byId("state").textContent).toBe("proxy up");
     expect(byId("session_title").textContent).toBe("Fix the login");
-    expect(byId("viewer").children.length).toBeGreaterThan(0);
+    // Newest turn first, and only it open.
+    const shown = byId("viewer").children;
+    const heads = shown.map((turn) =>
+      [turn.children[0]!, ...turn.children[0]!.children].map((part) => part.textContent),
+    );
+    expect(heads).toEqual([
+      ["Turn 2", "second ask", "latest", ""],
+      ["Turn 1", "first ask", "1 tool call", ""],
+      ["Before the first prompt", "", ""],
+    ]);
+    expect(shown.map((turn) => turn.open)).toEqual([true, false, false]);
+    // Inside a turn too: the reply, above the call, above the prompt.
+    expect(shown[1]!.children.slice(1).map((step) => step.className)).toEqual([
+      "step reply",
+      "step call",
+      "step prompt",
+    ]);
+    // Each says who spoke in a word, not an arrow that reads as a control;
+    // a call's sits in the head it shares with the tool's name.
+    const label = (step: Fake) => (step.className === "step call" ? step.children[0]! : step);
+    expect(shown[1]!.children.slice(1).map((step) => label(step).children[0]!.textContent)).toEqual(
+      ["agent", "tool", "you"],
+    );
+    // A fold the reader opened stays open across the rebuild a new request makes.
+    const toggle = (node: Fake, open: boolean) => {
+      node.open = open;
+      (node.ontoggle as () => void)();
+    };
+    toggle(shown[1]!, true);
+    toggle(shown[1]!.children[2]!.children[1]!, true);
+    toggle(shown[0]!, false);
+    (byId("detail_search").oninput as () => void)();
+    const again = byId("viewer").children;
+    expect(again.map((turn) => turn.open)).toEqual([false, true, false]);
+    expect(again[1]!.children[2]!.children[1]!.open).toBe(true);
+    // Put back the way the page had it, the choice is forgotten.
+    toggle(again[0]!, true);
+    (byId("detail_search").oninput as () => void)();
+    expect(byId("viewer").children.map((turn) => turn.open)).toEqual([true, true, false]);
     // The totals are three groups, each with its figures laid out in order.
     const read = (id: string) =>
       byId(id).children.flatMap((child: { textContent: string }) =>
@@ -726,15 +773,11 @@ describe("dashboard", () => {
     }
   });
 
-  it("folds each turn away on a click of its head, and remembers it", () => {
-    // A turn is a details element, so it folds on a click and opens on another,
-    // with the keyboard, without any script of its own.
+  it("folds each turn on a click of its head, with the keyboard too", () => {
+    // A turn is a details element, so it folds without any script of its own.
     expect(DASHBOARD_HTML).toContain("turn = document.createElement('details');");
-    expect(DASHBOARD_HTML).toContain("turn.open = !collapsed.has(count + 1);");
-    expect(DASHBOARD_HTML).toContain("turn.appendChild(byClass('summary', 'turn_head', title));");
     // The chevron points the way it will go.
     expect(DASHBOARD_HTML).toContain(".turn:not([open]) .turn_chev::before");
-    // Nothing else folds a turn: the turn rail still hangs on the summary.
     expect(DASHBOARD_HTML).toMatch(/\.turn \{[^}]*border-left: 1px solid var\(--edge\)/);
   });
 
