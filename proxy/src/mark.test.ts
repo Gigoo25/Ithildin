@@ -178,7 +178,7 @@ describe("the cutoff marker", () => {
     );
   });
 
-  it("lets a step pay that a rewrite of the whole conversation would not", () => {
+  it("prices a step as a whole rewrite, room for markers or not", () => {
     // Prose in turns 2-10 that masking never touches, about 40k tokens, and a
     // 10k-token result in turn 11: worth masking only if the step to 20 reads
     // the prose back rather than writing it again.
@@ -193,8 +193,8 @@ describe("the cutoff marker", () => {
     }
     const kept = (body: Record<string, unknown>) =>
       JSON.stringify(shapeRequest("anthropic", body)?.body.messages).includes("x".repeat(40_000));
-    expect(kept(claude(list))).toBe(false);
-    // With all four markers taken, the same step is not worth it.
+    // The step is not worth a whole rewrite, and a read back is not counted on.
+    expect(kept(claude(list))).toBe(true);
     const system = [text("a", hour), text("b", hour), text("c", hour)];
     const tools = [{ name: "a", cache_control: hour }];
     expect(kept({ system, tools, messages: list })).toBe(true);

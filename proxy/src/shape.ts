@@ -39,7 +39,7 @@
 import { setting } from "../engine/lib/names.ts";
 import { compact } from "./compact.ts";
 import { crushJson } from "./crush.ts";
-import { markBoundaries, markRoom } from "./mark.ts";
+import { markBoundaries } from "./mark.ts";
 import type { Format } from "./redact.ts";
 
 // Ported from Pi's output-shaping extension (mask.ts), which could only shape
@@ -189,26 +189,22 @@ function dueAt(turns: number, tokens: number): number {
   return Math.floor((turns - MASK_KEEP_TURNS) / MASK_STEP_TURNS) * MASK_STEP_TURNS;
 }
 
-// What a cache write costs, whether it rewrites the whole conversation, and
-// whether a marker at the previous cutoff (mark.ts) lets a step read back the
-// turns before it.
+// What a cache write costs, and whether it rewrites the whole conversation.
+// The markers at the cutoff (mark.ts) often let a step read back the turns
+// before it, but not always: on live traffic some steps found the entry the
+// step before wrote and some did not, with the same bytes. So a step is priced
+// as the whole rewrite it may be, and a read is a saving the gate does not
+// count on.
 interface Price {
   write: number;
   whole: boolean;
-  mark: boolean;
 }
 
 function writePrice(format: Format, body: Record_): Price {
-  if (format !== "anthropic") return { write: CACHE_WRITE.openai, whole: false, mark: false };
+  if (format !== "anthropic") return { write: CACHE_WRITE.openai, whole: false };
   // Claude Code marks its system prompt; a marker on any block says the same.
   const marked = JSON.stringify([body.system, body.tools]).includes('"ttl":"1h"');
-  return {
-    write: marked ? CACHE_WRITE.hour : CACHE_WRITE.short,
-    whole: true,
-    // A step reads back at the old boundary only when the step before wrote it,
-    // and that takes both of its markers.
-    mark: markRoom(body) >= 2,
-  };
+  return { write: marked ? CACHE_WRITE.hour : CACHE_WRITE.short, whole: true };
 }
 
 // What each item is: the turn it belongs to, its size, and how much masking it
@@ -249,14 +245,11 @@ function pays(items: Sized[], step: Step, price: Price): boolean {
   let gain = 0;
   let suffix = 0;
   let changed = false;
-  // With the marker, the turns up to the previous cutoff are read, not written.
-  const read = price.mark && from > 0 ? from : 0;
   for (let i = 0; i < end; i++) {
     const item = items[i]!;
     const inStep = item.turn > from && item.turn <= to;
     if (inStep && item.gain > 0) changed = true;
-    if (changed || (price.whole && item.turn > read))
-      suffix += Math.max(0, item.tokens - (inStep ? item.gain : 0));
+    if (changed || price.whole) suffix += Math.max(0, item.tokens - (inStep ? item.gain : 0));
     if (inStep) gain += item.gain;
   }
   const write = price.write;
