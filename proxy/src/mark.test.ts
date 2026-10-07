@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { markBoundary, markRoom, MARKERS_MAX } from "./mark.ts";
+import { markBoundaries, markRoom, MARKERS_MAX } from "./mark.ts";
 import { shapeRequest } from "./shape.ts";
 
 const hour = { type: "ephemeral", ttl: "1h" };
@@ -20,47 +20,47 @@ function marks(messages: unknown[]): string[] {
 }
 
 describe("markRoom", () => {
-  it("counts markers on tools, system and messages against the limit", () => {
-    const system = [text("a", hour), text("b", hour)];
+  it("counts the markers left, and a system marker another makes redundant", () => {
     const tools = [{ name: "Bash", cache_control: hour }];
-    expect(markRoom({ system, messages: [] })).toBe(true);
-    const full = { system, tools, messages: [said("user", text("c", hour))] };
     expect(MARKERS_MAX).toBe(4);
-    expect(markRoom(full)).toBe(false);
+    expect(markRoom({ system: [text("a", hour)], messages: [] })).toBe(3);
+    // Claude Code: two adjacent system markers and one on the newest message.
+    const claude = {
+      system: [text("a", hour), text("b", hour)],
+      messages: [said("user", text("c", hour))],
+    };
+    expect(markRoom(claude)).toBe(2);
+    expect(markRoom({ ...claude, tools })).toBe(1);
   });
 });
 
-describe("markBoundary", () => {
+// The messages of a marked body.
+const messagesOf = (body: Record<string, unknown>) => body.messages as unknown[];
+const markerOf = (message: unknown, block: number) =>
+  (message as { content: Array<{ cache_control: unknown }> }).content[block]!.cache_control;
+
+describe("markBoundaries", () => {
   const messages = [
     said("user", text("one")),
     said("assistant", { type: "thinking", thinking: "t", signature: "s" }, text("two")),
     said("user", text("three", hour)),
   ];
 
-  it("marks the boundary's last block with the TTL of the marker before it", () => {
-    const body = { system: [text("sys", hour)], messages };
-    const out = markBoundary(body, messages, 1);
+  it("marks a boundary's last block with the TTL of the marker before it", () => {
+    const out = messagesOf(
+      markBoundaries({ system: [text("sys", hour)], messages }, messages, [1]),
+    );
     expect(marks(out)).toEqual(["1.1", "2.0"]);
-    expect(
-      (out[1] as { content: Array<{ cache_control: unknown }> }).content[1]!.cache_control,
-    ).toEqual(hour);
+    expect(markerOf(out[1], 1)).toEqual(hour);
     // Pure: the list it was given is unchanged.
     expect(marks(messages)).toEqual(["2.0"]);
   });
 
-  it("takes the TTL of the marker after it when there is none before", () => {
-    const out = markBoundary({ messages }, messages, 0);
-    expect(
-      (out[0] as { content: Array<{ cache_control: unknown }> }).content[0]!.cache_control,
-    ).toEqual(hour);
-  });
-
-  it("marks with the default TTL when the request has no markers", () => {
+  it("takes the TTL of the marker after it, or the default with none", () => {
+    expect(markerOf(messagesOf(markBoundaries({ messages }, messages, [0]))[0], 0)).toEqual(hour);
     const plain = [said("user", text("one")), said("assistant", text("two"))];
-    const out = markBoundary({ messages: plain }, plain, 1);
-    expect(
-      (out[1] as { content: Array<{ cache_control: unknown }> }).content[0]!.cache_control,
-    ).toEqual({ type: "ephemeral" });
+    const out = messagesOf(markBoundaries({ messages: plain }, plain, [1]));
+    expect(markerOf(out[1], 0)).toEqual({ type: "ephemeral" });
   });
 
   it("steps back past a message it cannot mark, and never respells a string", () => {
@@ -70,22 +70,61 @@ describe("markBoundary", () => {
       said("user", text("")),
       { role: "user", content: "plain" },
     ];
-    const out = markBoundary({ messages: list }, list, 3);
+    const out = messagesOf(markBoundaries({ messages: list }, list, [3]));
     expect(marks(out)).toEqual(["0.0"]);
     expect(out[3]).toBe(list[3]);
+    // A message that already carries a marker is passed for the one before.
+    expect(marks(messagesOf(markBoundaries({ messages }, messages, [2])))).toEqual(["1.1", "2.0"]);
   });
 
-  it("leaves a message alone that already carries a marker, and steps back", () => {
-    expect(marks(markBoundary({ messages }, messages, 2))).toEqual(["1.1", "2.0"]);
+  it("marks two boundaries, and one where both fall on the same message", () => {
+    const list = [
+      said("user", text("a")),
+      said("assistant", text("b")),
+      said("user", text("c", hour)),
+    ];
+    expect(marks(messagesOf(markBoundaries({ messages: list }, list, [0, 1])))).toEqual([
+      "0.0",
+      "1.0",
+      "2.0",
+    ]);
+    expect(marks(messagesOf(markBoundaries({ messages: list }, list, [1, 1])))).toEqual([
+      "1.0",
+      "2.0",
+    ]);
   });
 
-  it("leaves the list as it came with no room, no place, or nothing to mark", () => {
+  it("frees the first of two system markers when it needs the room, and only then", () => {
+    const list = [
+      said("user", text("a")),
+      said("assistant", text("b")),
+      said("user", text("c", hour)),
+    ];
+    const system = [text("x", hour), text("y", hour)];
+    const one = markBoundaries({ system, messages: list }, list, [0]);
+    expect(one.system).toBe(system);
+    const two = markBoundaries({ system, messages: list }, list, [0, 1]);
+    expect(
+      (two.system as Array<Record<string, unknown>>).map((block) => "cache_control" in block),
+    ).toEqual([false, true]);
+    expect(marks(messagesOf(two))).toEqual(["0.0", "1.0", "2.0"]);
+    // Markers too far apart to stand for each other are both kept, and the
+    // second boundary goes unmarked.
+    const far = [text("x", hour), ...Array.from({ length: 25 }, () => text("p")), text("y", hour)];
+    const apart = markBoundaries({ system: far, messages: list }, list, [0, 1]);
+    expect(apart.system).toBe(far);
+    expect(marks(messagesOf(apart))).toEqual(["0.0", "2.0"]);
+  });
+
+  it("leaves the body's messages as they came with no room or nothing to mark", () => {
     const tools = [{ name: "a", cache_control: hour }];
-    const full = { system: [text("a", hour), text("b", hour)], tools, messages };
-    expect(markBoundary(full, messages, 1)).toBe(messages);
-    expect(markBoundary({ messages }, messages, 3)).toBe(messages);
+    const far = [text("a", hour), ...Array.from({ length: 25 }, () => text("p")), text("b", hour)];
+    expect(
+      marks(messagesOf(markBoundaries({ system: far, tools, messages }, messages, [1]))),
+    ).toEqual(["2.0"]);
+    expect(marks(messagesOf(markBoundaries({ messages }, messages, [])))).toEqual(["2.0"]);
     const strings = [{ role: "user", content: "plain" }, null];
-    expect(markBoundary({ messages: strings }, strings, 1)).toBe(strings);
+    expect(messagesOf(markBoundaries({ messages: strings }, strings, [1]))).toEqual(strings);
   });
 });
 
@@ -107,14 +146,29 @@ function conversation(turns: number, filler: number): Array<Record<string, unkno
 const claude = (messages: unknown[]) => ({ system: [text("sys", hour)], messages });
 
 describe("the cutoff marker", () => {
-  it("marks where the previous request's cutoff ended, and nowhere on a first step", () => {
-    // Turn 21 just arrived: the request before ended at turn 20, cut at 10.
+  it("marks where the previous request's cutoff ended, and where a step's ends", () => {
+    // Turn 21 just arrived: the request before ended at turn 20, cut at 10,
+    // and so is this one, so both boundaries are the same message.
     const list = conversation(21, 10);
     const out = shapeRequest("anthropic", claude(list))!.body.messages as unknown[];
     expect(marks(out)).toEqual(["20.0", `${list.length - 1}.0`]);
-    // On the first step there is no earlier cutoff to read back.
-    const first = shapeRequest("anthropic", claude(conversation(20, 10)))!.body.messages;
-    expect(marks(first as unknown[])).toEqual([`${conversation(20, 10).length - 1}.0`]);
+    // The first step has no earlier cutoff to read back, but writes its own.
+    const first = conversation(20, 10);
+    const stepped = shapeRequest("anthropic", claude(first))!.body.messages as unknown[];
+    expect(marks(stepped)).toEqual(["20.0", `${first.length - 1}.0`]);
+  });
+
+  it("marks both the old boundary and the new one on a step", () => {
+    // Turn 30: the request before was cut at 10, this one at 20.
+    const list = conversation(30, 10);
+    const system = [text("x", hour), text("y", hour)];
+    const out = shapeRequest("anthropic", { system, messages: list })!.body;
+    expect(marks(out.messages as unknown[])).toEqual(["20.0", "40.0", `${list.length - 1}.0`]);
+    // The first system marker made room: the second stands for it.
+    const kept = (out.system as Array<Record<string, unknown>>).map(
+      (block) => "cache_control" in block,
+    );
+    expect(kept).toEqual([false, true]);
   });
 
   it("gives the same bytes twice", () => {

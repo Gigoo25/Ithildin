@@ -39,7 +39,7 @@
 import { setting } from "../engine/lib/names.ts";
 import { compact } from "./compact.ts";
 import { crushJson } from "./crush.ts";
-import { markBoundary, markRoom } from "./mark.ts";
+import { markBoundaries, markRoom } from "./mark.ts";
 import type { Format } from "./redact.ts";
 
 // Ported from Pi's output-shaping extension (mask.ts), which could only shape
@@ -205,7 +205,9 @@ function writePrice(format: Format, body: Record_): Price {
   return {
     write: marked ? CACHE_WRITE.hour : CACHE_WRITE.short,
     whole: true,
-    mark: markRoom(body),
+    // A step reads back at the old boundary only when the step before wrote it,
+    // and that takes both of its markers.
+    mark: markRoom(body) >= 2,
   };
 }
 
@@ -479,12 +481,15 @@ export function shapeRequest(
   const totals: Counts = { masked: 0, compacted: 0, deduped: 0 };
   let turn = 0;
   let savedChars = 0;
-  // The last item of the turns the previous request had masked.
+  // The last item of the turns the previous request had masked, and of those
+  // this one masks: the same but on a step.
   let boundary = -1;
+  let current = -1;
   const out = list.map((item, at) => {
     remember(format, item, walk);
     if (isAssistant(format, item)) turn++;
     if (turn <= previous) boundary = at;
+    if (turn <= cutoff) current = at;
     // A result answers the call above it, so it shares that call's turn: the
     // first `cutoff` turns are old, calls and results alike. A cutoff of zero
     // is a conversation too short to shape, so nothing in it is old, not even
@@ -500,8 +505,10 @@ export function shapeRequest(
   });
   // Any count is a change: a request with only compaction is still shaped.
   if (totals.masked + totals.compacted + totals.deduped === 0) return;
-  const marked = format === "anthropic" && previous > 0 ? markBoundary(body, out, boundary) : out;
-  return { body: { ...body, [keyOf(format)]: marked }, ...totals, savedChars };
+  const ats = [previous > 0 ? boundary : -1, cutoff > 0 ? current : -1].filter((at) => at >= 0);
+  const shaped = { ...body, [keyOf(format)]: out };
+  const marked = format === "anthropic" ? markBoundaries(shaped, out, ats) : shaped;
+  return { body: marked, ...totals, savedChars };
 }
 
 function keyOf(format: Format): "messages" | "input" {

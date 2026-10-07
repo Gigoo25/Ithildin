@@ -7,20 +7,25 @@
 // what follows the previous cutoff changed. Measured on Claude Code sessions,
 // that unchanged prefix was 60-70% of every later step's write.
 //
-// So the forwarded copy carries one more marker, on the last message of the
-// turns the previous request had already masked. Every request between two
-// steps writes or reads the same entry there, and the step itself, which
-// changes only what follows it, reads it back. It is placed by the cutoff as
-// of the request before this one, a function of the message list like the
-// cutoff itself: on the step it is still at the old boundary, the entry the
-// step can read, and it moves to the new one on the request after.
+// So the forwarded copy carries a marker on the last message of the turns
+// the previous request had already masked, where a step can read back what it
+// does not change. An entry is written only where a request processes the
+// prompt rather than reads it, and every request between two steps reads that
+// prefix from the newest message's entry, so nothing there writes one. The
+// step is the request that does: it rewrites what follows the old boundary, so
+// it also carries a marker on the new one, and writes the entry the next step
+// reads. Both are functions of the message list, like the cutoff itself.
 //
-// Anthropic allows four markers. Claude Code uses three, so this takes the
-// last; a request that already has four is left as it came.
+// Anthropic allows four markers and Claude Code uses three, two of them on
+// adjacent system blocks. A step needs two, so it takes the first system
+// marker off: the second looks back far enough to find the same entry. A
+// request without that room is marked only as far as it has room.
 
 type Record_ = Record<string, unknown>;
 
 export const MARKERS_MAX = 4;
+// How far back from a marker Anthropic looks for an earlier entry, in blocks.
+const LOOKBACK_BLOCKS = 20;
 // Blocks a marker may not sit on: Anthropic refuses one on thinking.
 const UNMARKABLE = new Set(["thinking", "redacted_thinking"]);
 
@@ -41,11 +46,6 @@ function markers(body: Record_): Array<{ at: number; ttl: unknown }> {
   const messages = Array.isArray(body.messages) ? body.messages : [];
   messages.forEach((message, at) => walk(message, at));
   return found;
-}
-
-// Whether a request has a marker to spare for the cutoff.
-export function markRoom(body: Record_): boolean {
-  return markers(body).length < MARKERS_MAX;
 }
 
 // The marker to add before message `at`. A longer TTL may not follow a
@@ -78,17 +78,44 @@ function marked(message: unknown, marker: Record_): Record_ | undefined {
   return { ...entry, content: blocks };
 }
 
-// The messages with a marker on the last message at or before `at` that can
-// carry one, placed against the markers the request arrived with; the list
-// unchanged when there is no room or no such message.
-export function markBoundary(body: Record_, messages: unknown[], at: number): unknown[] {
-  if (at >= messages.length || !markRoom(body)) return messages;
-  for (let i = at; i >= 0; i--) {
-    const next = marked(messages[i], markerAt(body, i));
-    if (!next) continue;
-    const out = messages.slice();
-    out[i] = next;
-    return out;
-  }
-  return messages;
+// The index of the last message at or before `at` that can carry a marker,
+// or -1 when there is none.
+function markable(messages: unknown[], at: number): number {
+  for (let i = Math.min(at, messages.length - 1); i >= 0; i--)
+    if (marked(messages[i], { type: "ephemeral" })) return i;
+  return -1;
+}
+
+// The system blocks with their first marker taken off, when a later system
+// block carries one too: that later marker looks back far enough to find the
+// first one's entry, so the first only spends a marker. Undefined when there
+// is no such pair.
+function spared(system: unknown): unknown[] | undefined {
+  if (!Array.isArray(system)) return;
+  const at = system.flatMap((block, i) =>
+    block && typeof block === "object" && "cache_control" in block ? [i] : [],
+  );
+  if (at.length < 2 || at[1]! - at[0]! > LOOKBACK_BLOCKS) return;
+  const { cache_control: _dropped, ...rest } = system[at[0]!] as Record_;
+  return system.map((block, i) => (i === at[0] ? rest : block));
+}
+
+// How many markers a request can add: the ones it has room for, and one more
+// when it carries a system marker that another makes redundant.
+export function markRoom(body: Record_): number {
+  return MARKERS_MAX - markers(body).length + (spared(body.system) ? 1 : 0);
+}
+
+// The body with a marker on the last markable message at or before each of
+// `ats`, placed against the markers the request arrived with, freeing a
+// redundant system marker when it needs the room. A boundary that does not fit
+// is left unmarked, and the body is unchanged when none does.
+export function markBoundaries(body: Record_, messages: unknown[], ats: number[]): Record_ {
+  const wanted = [...new Set(ats.map((at) => markable(messages, at)).filter((i) => i >= 0))];
+  const free = MARKERS_MAX - markers(body).length;
+  const system = wanted.length > free ? spared(body.system) : undefined;
+  const room = free + (system ? 1 : 0);
+  const out = messages.slice();
+  for (const i of wanted.slice(0, room)) out[i] = marked(out[i], markerAt(body, i));
+  return { ...body, ...(system && { system }), messages: out };
 }
