@@ -258,6 +258,27 @@ describe("dashboard", () => {
     ]);
   });
 
+  it("marks short stand-ins too, and stays quick with thousands in a request", () => {
+    const sent = JSON.stringify({ content: "ab and abc at ann@x.io" });
+    expect(around(sent, "ann@x.io", ["ab", "abc", "ab"]).parts).toEqual([
+      { text: "ab", mark: "other" },
+      { text: " and " },
+      { text: "abc", mark: "other" },
+      { text: " at " },
+      { text: "ann@x.io", mark: "this" },
+    ]);
+    // Every value in a large request gets its own window: this took minutes
+    // when each window was searched for every stand-in.
+    const many = Array.from({ length: 5000 }, (_, n) => `user${n}@corp.example`);
+    const body = JSON.stringify({ content: many.join(" ") });
+    const started = performance.now();
+    for (const standIn of many) around(body, standIn, many);
+    expect(performance.now() - started).toBeLessThan(5000);
+    expect(around(body, many[1]!, many).parts!.filter((part) => part.mark === "other")).not.toEqual(
+      [],
+    );
+  });
+
   it("names each session by its agent, in the feed and the sent requests", async () => {
     const handler = createHandler(
       DEFAULT_ROUTES,

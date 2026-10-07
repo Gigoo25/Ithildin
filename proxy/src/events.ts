@@ -156,8 +156,9 @@ export function around(
   const at = sent === undefined || standIn === "" ? -1 : sent.indexOf(standIn);
   if (sent === undefined || at < 0) return {};
   const end = at + standIn.length;
+  const marker = markerFor(others);
   // Read wider than shown, so a stand-in at the edge is whole before it is cut.
-  const reach = AROUND_CHARS + Math.max(0, ...others.map((other) => other.length));
+  const reach = AROUND_CHARS + marker.longest;
   let before = sent.slice(Math.max(0, at - reach), at);
   let after = sent.slice(end, end + reach);
   const more = { before: at > reach, after: sent.length > end + reach };
@@ -175,8 +176,8 @@ export function around(
       break;
     }
   }
-  const left = trimParts(markOthers(unescaped(before), others), true);
-  const right = trimParts(markOthers(unescaped(after), others), false);
+  const left = trimParts(markOthers(unescaped(before), marker), true);
+  const right = trimParts(markOthers(unescaped(after), marker), false);
   return {
     parts: [
       ...(more.before || left.cut ? [{ text: "…" }] : []),
@@ -213,25 +214,57 @@ function trimParts(parts: Part[], fromEnd: boolean): { parts: Part[]; cut: boole
   return { parts: fromEnd ? kept.reverse() : kept, cut };
 }
 
-// The text in pieces, with each of the stand-ins found in it marked.
-function markOthers(text: string, standIns: string[]): Part[] {
-  const wanted = standIns.filter((standIn) => standIn !== "");
+// A request's stand-ins by their first PREFIX_CHARS, longest first. A request
+// can hold thousands, each with its own window to mark: searching every window
+// for every stand-in was quadratic, and stalled the proxy on a large body.
+const PREFIX_CHARS = 4;
+interface Marker {
+  byPrefix: Map<string, string[]>;
+  short: string[];
+  longest: number;
+}
+const markers = new WeakMap<string[], Marker>();
+
+function markerFor(standIns: string[]): Marker {
+  const known = markers.get(standIns);
+  if (known) return known;
+  const marker: Marker = { byPrefix: new Map(), short: [], longest: 0 };
+  for (const standIn of new Set(standIns)) {
+    if (standIn === "") continue;
+    marker.longest = Math.max(marker.longest, standIn.length);
+    if (standIn.length < PREFIX_CHARS) marker.short.push(standIn);
+    else {
+      const prefix = standIn.slice(0, PREFIX_CHARS);
+      marker.byPrefix.set(prefix, [...(marker.byPrefix.get(prefix) ?? []), standIn]);
+    }
+  }
+  for (const list of marker.byPrefix.values()) list.sort((a, b) => b.length - a.length);
+  markers.set(standIns, marker);
+  return marker;
+}
+
+// The longest stand-in that starts at `at`, if any.
+function standInAt(text: string, at: number, marker: Marker): string | undefined {
+  let found = marker.byPrefix
+    .get(text.slice(at, at + PREFIX_CHARS))
+    ?.find((standIn) => text.startsWith(standIn, at));
+  for (const standIn of marker.short)
+    if (text.startsWith(standIn, at) && standIn.length > (found?.length ?? 0)) found = standIn;
+  return found;
+}
+
+// The text in pieces, with each of the stand-ins found in it marked: the
+// earliest first, and the longest of those that start at the same place.
+function markOthers(text: string, marker: Marker): Part[] {
   const pieces: Part[] = [];
   let from = 0;
-  while (from < text.length) {
-    let first = -1;
-    let found = "";
-    for (const standIn of wanted) {
-      const at = text.indexOf(standIn, from);
-      if (at >= 0 && (first < 0 || at < first || (at === first && standIn.length > found.length))) {
-        first = at;
-        found = standIn;
-      }
-    }
-    if (first < 0) break;
-    if (first > from) pieces.push({ text: text.slice(from, first) });
+  for (let at = 0; at < text.length; at++) {
+    const found = standInAt(text, at, marker);
+    if (found === undefined) continue;
+    if (at > from) pieces.push({ text: text.slice(from, at) });
     pieces.push({ text: found, mark: "other" });
-    from = first + found.length;
+    from = at + found.length;
+    at = from - 1;
   }
   if (from < text.length) pieces.push({ text: text.slice(from) });
   return pieces;
