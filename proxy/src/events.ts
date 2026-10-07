@@ -105,8 +105,25 @@ export interface Stats {
   leaked: number;
 }
 
+// One session's share of the stats, for the dashboard's head: what shaping
+// took off its requests and what its replies said the cache did.
+export interface Tally {
+  shapedMasked: number;
+  shapedCompacted: number;
+  shapedDeduped: number;
+  shapedSavedChars: number;
+  usageInput: number;
+  usageCacheRead: number;
+  usageCacheWrite: number;
+  usageOutput: number;
+  cacheBreaksAgent: number;
+  cacheBreaksShaping: number;
+}
+
 // Bounds memory over a long run; the oldest are dropped first.
 export const ENTRIES_MAX = 5000;
+// Sessions tallied; the least recently heard from goes first.
+export const TALLIES_MAX = 200;
 // Stand-ins remembered, to log each value once. A value past the limit that
 // comes back is logged again.
 export const SEEN_MAX = 1000;
@@ -272,7 +289,7 @@ function markOthers(text: string, marker: Marker): Part[] {
 
 // Personal details are named by what they are; any secret is just a secret,
 // with its rule beside it.
-function kindOf(event: { ruleId: string; category?: string }): string {
+export function kindOf(event: { ruleId: string; category?: string }): string {
   return event.category === undefined || event.category === "pii"
     ? aliasKind(event.ruleId)
     : "secret";
@@ -307,6 +324,21 @@ function newStats(startedAt: number): Stats {
   };
 }
 
+function newTally(): Tally {
+  return {
+    shapedMasked: 0,
+    shapedCompacted: 0,
+    shapedDeduped: 0,
+    shapedSavedChars: 0,
+    usageInput: 0,
+    usageCacheRead: 0,
+    usageCacheWrite: 0,
+    usageOutput: 0,
+    cacheBreaksAgent: 0,
+    cacheBreaksShaping: 0,
+  };
+}
+
 type Masked = Extract<ActivityEvent, { type: "masked" }>;
 
 export class EventLog {
@@ -314,6 +346,7 @@ export class EventLog {
   private readonly seen = new Set<string>();
   private readonly leaks = new Set<string>();
   private readonly stats: Stats;
+  private readonly tallies = new Map<string, Tally>();
   private readonly now: () => number;
   private lastId = 0;
 
@@ -405,22 +438,38 @@ export class EventLog {
     this.stats.shapedCompacted += shaped.compacted;
     this.stats.shapedDeduped += shaped.deduped ?? 0;
     this.stats.shapedSavedChars += shaped.savedChars;
+    const tally = this.tally(context);
+    if (tally) {
+      tally.shapedMasked += shaped.masked;
+      tally.shapedCompacted += shaped.compacted;
+      tally.shapedDeduped += shaped.deduped ?? 0;
+      tally.shapedSavedChars += shaped.savedChars;
+    }
     this.add(context, { type: "request", ms, count: masked });
   }
 
   // A reply's usage, as the provider reported it.
-  usage(usage: Usage): void {
+  usage(usage: Usage, context?: Context): void {
     this.stats.usageReplies++;
     this.stats.usageInput += usage.input;
     this.stats.usageCacheRead += usage.cacheRead;
     this.stats.usageCacheWrite += usage.cacheWrite;
     this.stats.usageOutput += usage.output;
+    const tally = this.tally(context);
+    if (!tally) return;
+    tally.usageInput += usage.input;
+    tally.usageCacheRead += usage.cacheRead;
+    tally.usageCacheWrite += usage.cacheWrite;
+    tally.usageOutput += usage.output;
   }
 
   // A request whose cached prefix broke, named by where and in which session.
   cacheBreak(context: Context, found: Break): void {
     if (found.cause === "agent") this.stats.cacheBreaksAgent++;
     else this.stats.cacheBreaksShaping++;
+    const tally = this.tally(context);
+    if (tally && found.cause === "agent") tally.cacheBreaksAgent++;
+    else if (tally) tally.cacheBreaksShaping++;
     const where = context.sessionName ? ` in ${context.sessionName}` : "";
     this.stats.lastBreak = `${found.at}${where} (${found.cause})`;
   }
@@ -455,10 +504,29 @@ export class EventLog {
   }
 
   // Everything after `since` (an entry id; 0 for all), with the stats.
-  snapshot(since: number): { entries: Entry[]; next: number; stats: Stats } {
+  // A session's tally, moved to the back as the most recently heard from.
+  private tally(context: Context | undefined): Tally | undefined {
+    const key = context?.session?.slice(0, SESSION_CHARS);
+    if (!key) return undefined;
+    const tally = this.tallies.get(key) ?? newTally();
+    this.tallies.delete(key);
+    this.tallies.set(key, tally);
+    if (this.tallies.size > TALLIES_MAX) this.tallies.delete(this.tallies.keys().next().value!);
+    return tally;
+  }
+
+  snapshot(since: number): {
+    entries: Entry[];
+    next: number;
+    stats: Stats;
+    tallies: Record<string, Tally>;
+  } {
+    const tallies: Record<string, Tally> = {};
+    for (const [key, tally] of this.tallies) tallies[key] = { ...tally };
     return {
       entries: this.entries.filter((entry) => entry.id > since),
       next: this.lastId,
+      tallies,
       stats: {
         ...this.stats,
         routes: { ...this.stats.routes },

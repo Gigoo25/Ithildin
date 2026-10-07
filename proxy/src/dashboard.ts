@@ -249,7 +249,8 @@ export const DASHBOARD_HTML = `<!doctype html>
     background: none; border: 0; padding: 0; cursor: pointer; color: var(--dim);
     font-size: 12px;
   }
-  .key:hover { color: var(--ink); }
+  .key:hover, .key.on { color: var(--ink); }
+  .key.on { outline: 1px solid currentColor; }
   .key mark { padding: 0 5px; font: 600 11px var(--mono); }
   .badge {
     margin-left: 8px; padding: 0 6px; border-radius: 8px; font: 600 10px/16px var(--mono);
@@ -474,8 +475,6 @@ const ICON_ALERT = ${JSON.stringify(FAVICON_ALERT)};
 const HELD_NOTICES = ${JSON.stringify(
   [IMAGE_NOTICE, INVENTORY_NOTICE, WITHHELD_NOTICE].map((notice) => notice.split(". ")[0]!),
 )};
-// Stand-ins seen, marked in a conversation: enough for a long session.
-const KNOWN_MAX = 300;
 // Request bodies held in the page. Each can be megabytes, so the page keeps
 // the few it may show again rather than every one it has read.
 const TEXTS_MAX = 4;
@@ -491,12 +490,18 @@ let firstPoll = true;
 let lastStats;
 let lastWatch;
 const texts = new Map();
+// What each of those requests masked, from the proxy, by the same id.
+const values = new Map();
 // What the reader opened or closed, turns and folds alike, where it differs
 // from how the page would set it: the view is rebuilt whenever a request
 // arrives, and a rebuild must not undo a click.
 const folds = new Map();
 let shownId = 0;
 let view = 'chat';
+// Each session's shaping and cache figures, by the proxy's tally.
+let tallies = {};
+// The kind of mark the conversation is narrowed to, by its key in the legend.
+let only;
 
 function byId(id) {
   return document.getElementById(id);
@@ -568,9 +573,10 @@ function sessionLabel(known) {
   return known.title || known.name;
 }
 
-// The sessions, in the order seen so the list holds still; other traffic last.
+// The sessions, newest first like the turns; other traffic last.
 function renderSessions() {
-  const list = [...sessions.values()].sort((a, b) => (a.id === OTHER) - (b.id === OTHER));
+  const list = [...sessions.values()]
+    .sort((a, b) => (a.id === OTHER) - (b.id === OTHER) || b.last - a.last);
   const rows = list.map((known) => {
     const button = byClass('button', 'pick session' + (known.id === chosen ? ' on' : ''));
     const label = byClass('span', 'label');
@@ -621,6 +627,8 @@ function renderHead(known) {
     counts.filter(Boolean).join(' \\u00b7 '));
   if (known.leaked > 0)
     note.append(' \\u00b7 ', byClass('span', 'leaks', plural(known.leaked, 'leak')));
+  const tally = tallyLine(tallies[known.id]);
+  if (tally) note.append(byClass('br', ''), tally);
   const alarms = feed.filter((entry) => (entry.session || OTHER) === known.id &&
     (entry.type === 'leaked' || entry.type === 'blocked' || entry.type === 'refused'));
   const lines = alarms.slice(0, ALERTS_SHOWN).map((entry) => {
@@ -638,6 +646,29 @@ function renderHead(known) {
   byId('alerts').replaceChildren(...lines);
 }
 const ALERTS_SHOWN = 4;
+
+// What shaping took off a session's requests and what its replies said the
+// cache did, in a line; nothing for a session with neither.
+function tallyLine(tally) {
+  if (!tally) return '';
+  const said = [];
+  const shaped = tally.shapedMasked + tally.shapedCompacted + tally.shapedDeduped;
+  if (shaped > 0) {
+    const parts = [count(tally.shapedMasked) + ' stubbed'];
+    if (tally.shapedCompacted) parts.push(count(tally.shapedCompacted) + ' compacted');
+    if (tally.shapedDeduped) parts.push(count(tally.shapedDeduped) + ' repeats');
+    said.push('Shaping: ' + parts.join(', ') + ', ' + mib(tally.shapedSavedChars) + ' saved');
+  }
+  const read = tally.usageCacheRead;
+  const prompt = tally.usageInput + read + tally.usageCacheWrite;
+  if (prompt > 0) {
+    const breaks = tally.cacheBreaksAgent + tally.cacheBreaksShaping;
+    said.push('Cache: ' + Math.round((read / prompt) * 100) + '% read of ' + count(prompt) +
+      ' prompt tokens, ' + (breaks === 0 ? 'no breaks' : tally.cacheBreaksAgent +
+      ' agent / ' + tally.cacheBreaksShaping + ' shaping breaks'));
+  }
+  return said.join(' \\u00b7 ');
+}
 
 // Traffic without a session has no conversation to show: a line per event.
 function renderOther() {
@@ -692,11 +723,19 @@ async function showSession() {
   }
   if (sent.id === shownId) return;
   if (!texts.has(sent.id)) {
-    const response = await fetch('${REQUEST_PATH}?id=' + sent.id, { cache: 'no-store' });
+    const [response, masked] = await Promise.all([
+      fetch('${REQUEST_PATH}?id=' + sent.id, { cache: 'no-store' }),
+      fetch('${REQUEST_PATH}?masked&id=' + sent.id, { cache: 'no-store' }),
+    ]);
     if (!response.ok) return;
     texts.set(sent.id, await response.text());
+    values.set(sent.id, masked.ok ? await masked.json() : []);
     // The page may show an older turn again, so the last few are kept.
-    while (texts.size > TEXTS_MAX) texts.delete(texts.keys().next().value);
+    while (texts.size > TEXTS_MAX) {
+      const oldest = texts.keys().next().value;
+      texts.delete(oldest);
+      values.delete(oldest);
+    }
   }
   if (chosen !== known.id) return;
   const first = shownId === 0;
@@ -879,6 +918,7 @@ async function poll() {
     noteNames(data.sessions);
     lastStats = data.stats;
     lastWatch = data.watch;
+    tallies = data.tallies || {};
     renderStats(data.stats, data.watch);
     alertTab(data.stats.leaked);
     // At first, the session that sent last; after that, the one picked.
@@ -984,24 +1024,61 @@ function turns(body) {
   return out;
 }
 
+// The stand-ins to mark, found by how each starts: a search of the text for
+// every one was a pass per value, which a long session's thousands of them
+// made too slow to keep them all. Built once per set of marks.
+const PREFIX_CHARS = 4;
+const wantIndexes = new WeakMap();
+function wantIndex(wants) {
+  let index = wantIndexes.get(wants);
+  if (index) return index;
+  index = { byPrefix: new Map(), short: [] };
+  const longest = wants.filter((want) => want.text).sort((a, b) => b.text.length - a.text.length);
+  for (const want of longest) {
+    if (want.text.length < PREFIX_CHARS) {
+      index.short.push(want);
+      continue;
+    }
+    const prefix = want.text.slice(0, PREFIX_CHARS);
+    if (!index.byPrefix.has(prefix)) index.byPrefix.set(prefix, []);
+    index.byPrefix.get(prefix).push(want);
+  }
+  wantIndexes.set(wants, index);
+  return index;
+}
+
+// Where the stand-ins are in a text: the earliest first, the longest of
+// those starting at the same place, none inside another.
+function standInsIn(text, wants) {
+  const index = wantIndex(wants);
+  const found = [];
+  for (let at = 0; at < text.length && found.length < MARKS_MAX; at++) {
+    let hit = (index.byPrefix.get(text.slice(at, at + PREFIX_CHARS)) || [])
+      .find((want) => text.startsWith(want.text, at));
+    for (const want of index.short)
+      if (text.startsWith(want.text, at) && want.text.length > (hit ? hit.text.length : 0))
+        hit = want;
+    if (!hit) continue;
+    const end = at + hit.text.length;
+    found.push({ at, end, type: hit.type, title: hit.title, back: hit.back });
+    at = end - 1;
+  }
+  return found;
+}
+
 // The text in a node, with each stand-in of the card and each match of the
 // search marked, as plain text nodes. Returns how many search matches.
 function markInto(node, text, wants, needle) {
-  const lower = text.toLowerCase();
-  const found = [];
-  const look = (wanted, type, fold, title, back) => {
-    if (!wanted) return 0;
-    const haystack = fold ? lower : text;
-    const what = fold ? wanted.toLowerCase() : wanted;
-    let count = 0;
-    for (let at = haystack.indexOf(what); at >= 0; at = haystack.indexOf(what, at + what.length)) {
-      count++;
-      if (found.length < MARKS_MAX) found.push({ at, end: at + what.length, type, title, back });
+  const found = standInsIn(text, wants);
+  let matches = 0;
+  if (needle) {
+    const lower = text.toLowerCase();
+    const what = needle.toLowerCase();
+    for (let at = lower.indexOf(what); at >= 0; at = lower.indexOf(what, at + what.length)) {
+      matches++;
+      if (found.length < MARKS_MAX) found.push({ at, end: at + what.length, type: 'found' });
     }
-    return count;
-  };
-  for (const want of wants) look(want.text, want.type, false, want.title, want.back);
-  const matches = look(needle, 'found', true);
+  }
   found.sort((a, b) => a.at - b.at || b.end - a.end);
   let from = 0;
   for (const hit of found) {
@@ -1273,16 +1350,21 @@ function resizable(grip) {
 // What to mark in a session's conversation: the stand-ins the proxy made,
 // and what it held back (a guard's refusal, a withheld file or image). In
 // the model's own words, a stand-in it used that came back real is marked so.
-function marksFor(id) {
+function marksFor(id, masked = []) {
   const back = new Map();
   const known = new Map();
-  for (const entry of feed) {
+  // The request's own values first: every one it masked, however many, where
+  // the feed has only the newest across all sessions.
+  for (const value of masked) if (!known.has(value.standIn)) known.set(value.standIn, value);
+  // The session's own first, so a value of its own is never crowded out.
+  const own = (entry) => (entry.session || OTHER) === id;
+  for (const entry of feed.filter(own).concat(feed.filter((entry) => !own(entry)))) {
     if (!entry.standIn) continue;
-    if (entry.type === 'swapped' && (entry.session || OTHER) === id) {
+    if (entry.type === 'swapped' && own(entry)) {
       if (!back.has(entry.standIn)) back.set(entry.standIn, new Set());
       back.get(entry.standIn).add(entry.where === 'reply text' ? 'the reply' : entry.where);
     }
-    if (known.size < KNOWN_MAX && !known.has(entry.standIn)) known.set(entry.standIn, entry);
+    if (!known.has(entry.standIn)) known.set(entry.standIn, entry);
   }
   const held = new Map(HELD_NOTICES.map((text) => [text, 'The proxy held this back']));
   for (const entry of feed)
@@ -1292,8 +1374,8 @@ function marksFor(id) {
   const plain = [...known].map(value);
   const model = [...known].map(([text, entry]) => !back.has(text) ? value([text, entry]) : {
     text, type: 'masked', back: true,
-    title: valueTitle(entry) + '\\nThe model used it: swapped back to the real value in ' +
-      [...back.get(text)].join(', '),
+    title: valueTitle(entry) + '\\nThe model used it, and the proxy put the real value back in ' +
+      [...back.get(text)].join(', ') + '.',
   });
   return { plain: plain.concat(heldMarks), model: model.concat(heldMarks) };
 }
@@ -1315,9 +1397,27 @@ function leaksFor(id) {
 // What a stand-in stands for: the kind of value, the rule that matched it,
 // and the preview of the real value.
 function valueTitle(entry) {
-  return 'Masked ' + entry.kind + (entry.rule ? ', matched by ' + entry.rule : '') +
-    '\\nReal value: ' + entry.preview;
+  const shape = /^(.*) \\((\\d+)\\)$/.exec(entry.preview || '');
+  const real = shape ? shape[1] + ', ' + plural(Number(shape[2]), 'character') : entry.preview;
+  return (VALUE_KINDS[entry.kind] || entry.kind) + ', masked' +
+    '\\nThe model sees this stand-in; the real value stays on this machine.' +
+    (real ? '\\nReal value: ' + real : '') +
+    (entry.rule ? '\\nFound by rule ' + entry.rule : '');
 }
+
+// The kinds a stand-in can be (aliasKind, and kindOf's secret), in words.
+const VALUE_KINDS = {
+  email: 'Email address',
+  host: 'Host name',
+  'user-at-host': 'User at host',
+  user: 'User name',
+  home: 'Home directory',
+  ipv4: 'IP address',
+  ipv6: 'IPv6 address',
+  mac: 'MAC address',
+  label: 'Personal detail',
+  secret: 'Secret',
+};
 
 // The kinds of mark as the page shows them, for the key and the folds.
 const MARK_KINDS = [
@@ -1326,17 +1426,30 @@ const MARK_KINDS = [
   ['held', 'mark[data-type=held]', 'held back'],
 ];
 
-// A key to the marks, with counts; a click goes to the next of that kind.
-function renderLegend() {
+// A key to the marks, with counts. In the conversation a click narrows it to
+// the messages holding that kind and a second click shows all again; in the
+// raw text, which has no messages, it goes to the next of that kind.
+function renderLegend(raw) {
   const viewer = byId('viewer');
+  if (raw || !MARK_KINDS.some(([type, selector]) =>
+    type === only && viewer.querySelector(selector))) only = undefined;
   const keys = MARK_KINDS.flatMap(([type, selector, words]) => {
     const marks = [...viewer.querySelectorAll(selector)];
     if (marks.length === 0) return [];
-    const key = byClass('button', 'key ' + type);
+    const key = byClass('button', 'key ' + type + (type === only ? ' on' : ''));
     key.append(byClass('mark', '', String(marks.length)), ' ' + words);
     key.dataset.type = type;
+    key.title = raw ? 'Go to the next' : 'Show only the messages with these';
     let next = 0;
     key.addEventListener('click', () => {
+      if (!raw) {
+        only = only === type ? undefined : type;
+        for (const other of byId('legend').children)
+          other.classList.toggle('on', other.dataset.type === only);
+        narrow(viewer);
+        viewer.scrollTop = 0;
+        return;
+      }
       const mark = marks[next++ % marks.length];
       for (const at of viewer.querySelectorAll('mark.at')) at.classList.remove('at');
       void mark.offsetWidth;
@@ -1348,6 +1461,23 @@ function renderLegend() {
     return [key];
   });
   byId('legend').replaceChildren(...keys);
+  narrow(viewer);
+}
+
+// The conversation narrowed to the legend's kind: a message without one is
+// hidden, and a turn without one too. Folds stay as the reader left them, so
+// clearing the filter puts back what was there before.
+function narrow(viewer) {
+  const kind = MARK_KINDS.find(([type]) => type === only);
+  for (const turn of viewer.querySelectorAll(':scope > details.turn')) {
+    let any = false;
+    for (const child of [...turn.children].slice(1)) {
+      const keep = !kind || child.querySelector(kind[1]) !== null;
+      child.hidden = !keep;
+      any = any || keep;
+    }
+    turn.hidden = !any;
+  }
 }
 
 // The kept text laid out, at the top for a session just picked, where the
@@ -1357,7 +1487,7 @@ function showText(place) {
   if (text === undefined) return;
   const viewer = byId('viewer');
   const needle = byId('detail_search').value.trim();
-  const marks = marksFor(chosen);
+  const marks = marksFor(chosen, values.get(shownId) || []);
   let body;
   try {
     body = JSON.parse(text);
@@ -1385,7 +1515,7 @@ function showText(place) {
     matches = shown.matches;
   }
   byId('detail_count').textContent = needle ? plural(matches, 'match') : '';
-  renderLegend();
+  renderLegend(raw);
   const first = needle ? viewer.querySelector('mark[data-type=found]') : null;
   if (first && place === 'find') {
     first.classList.add('at');

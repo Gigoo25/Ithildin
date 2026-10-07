@@ -46,6 +46,15 @@ describe("sent requests", () => {
     expect(kept.text(1)).toBeUndefined();
   });
 
+  it("keeps what a request masked beside its text, and out of the list", () => {
+    const kept = new SentRequests(5);
+    const value = { standIn: "a@example.invalid", kind: "email", rule: "email", preview: "a…" };
+    kept.record({ route: "anthropic", endpoint: "/", session: undefined }, "{}", true, [value]);
+    kept.record({ route: "anthropic", endpoint: "/", session: undefined }, "{}");
+    expect([kept.masked(1), kept.masked(2), kept.masked(9)]).toEqual([[value], [], undefined]);
+    expect(kept.list().requests[1]).not.toHaveProperty("masked");
+  });
+
   it("shortens a session id, lays out JSON for reading, and passes other text as it is", () => {
     const kept = new SentRequests(5);
     kept.record({ route: "anthropic", endpoint: "/", session: "0123456789abcdef" }, '{"a":[1,2]}');

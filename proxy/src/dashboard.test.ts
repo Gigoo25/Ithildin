@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { observeActivity, REPLY_TEXT, reportActivity } from "../engine/lib/activity.ts";
 import { DASHBOARD_HTML } from "./dashboard.ts";
-import { ENTRIES_MAX, around, EventLog, preview, SEEN_MAX } from "./events.ts";
+import { ENTRIES_MAX, around, EventLog, preview, SEEN_MAX, TALLIES_MAX } from "./events.ts";
 import { BODY_BYTES_MAX } from "./requests.ts";
 import { initEngine, redactRequest } from "./redact.ts";
 import { createHandler, DEFAULT_ROUTES } from "./server.ts";
@@ -41,6 +41,38 @@ describe("preview", () => {
 });
 
 describe("event log", () => {
+  it("tallies shaping, usage and breaks per session, and drops the oldest past the cap", () => {
+    const log = new EventLog();
+    const shaped = { masked: 3, compacted: 1, deduped: 2, savedChars: 900 };
+    log.request(context, 5, 0, shaped);
+    log.request({ ...context, session: undefined }, 5, 0, shaped);
+    log.usage({ input: 10, cacheRead: 80, cacheWrite: 10, output: 5 }, context);
+    log.usage({ input: 1, cacheRead: 1, cacheWrite: 1, output: 1 });
+    log.cacheBreak(context, { at: "message 4", cause: "agent" });
+    log.cacheBreak(context, { at: "message 9", cause: "shaping" });
+    const { tallies, stats } = log.snapshot(0);
+    expect(Object.keys(tallies)).toEqual(["01234567"]);
+    expect(tallies["01234567"]).toEqual({
+      shapedMasked: 3,
+      shapedCompacted: 1,
+      shapedDeduped: 2,
+      shapedSavedChars: 900,
+      usageInput: 10,
+      usageCacheRead: 80,
+      usageCacheWrite: 10,
+      usageOutput: 5,
+      cacheBreaksAgent: 1,
+      cacheBreaksShaping: 1,
+    });
+    expect(stats.shapedMasked).toBe(6);
+    expect(stats.usageInput).toBe(11);
+    for (let n = 0; n <= TALLIES_MAX; n++)
+      log.request({ ...context, session: String(n).padStart(8, "x") }, 1, 0);
+    const kept = Object.keys(log.snapshot(0).tallies);
+    expect(kept).toHaveLength(TALLIES_MAX);
+    expect(kept).not.toContain("01234567");
+  });
+
   it("records a value once, and counts the repeats", () => {
     let time = 1000;
     const log = new EventLog(() => time++);
@@ -339,6 +371,21 @@ describe("dashboard", () => {
       requests: Array<{ turn?: number }>;
     };
     expect(list.requests.map((sent) => sent.turn)).toEqual([2, 1]);
+  });
+
+  it("serves every value a kept request masked, once each, past the feed's reach", async () => {
+    const handler = createHandler(
+      DEFAULT_ROUTES,
+      upstream(() => Response.json({ content: [] })),
+    );
+    await send(handler, messages(`mail ${EMAIL} and again ${EMAIL}`));
+    const masked = await handler(dashboard("/dashboard/request?masked&id=1"));
+    const values = (await masked.json()) as Array<Record<string, string>>;
+    expect(values).toEqual([
+      { standIn, kind: "email", rule: expect.any(String), preview: expect.any(String) },
+    ]);
+    expect(values[0]!.preview).not.toBe(EMAIL);
+    expect((await handler(dashboard("/dashboard/request?masked&id=9"))).status).toBe(404);
   });
 
   it("shows the endpoint as the upstream gets it, with a value in the path masked", async () => {
@@ -769,6 +816,68 @@ describe("dashboard", () => {
       "bash-input  bun seed.ts",
     );
     expect(wrapped("bash-stderr", "<bash-stderr></bash-stderr>")).toBe("bash-stderr");
+  });
+
+  it("says what a stand-in is in words, with the real value's shape and its rule", () => {
+    const pick = (name: string) =>
+      new RegExp(`function ${name}[\\s\\S]*?\\n\\}`).exec(DASHBOARD_HTML)![0];
+    const kinds = /const VALUE_KINDS = \{[\s\S]*?\n\};/.exec(DASHBOARD_HTML)![0];
+    const source = `${pick("plural")}\n${pick("valueTitle")}\n${kinds}`;
+    const valueTitle = new Function(`${source}; return valueTitle;`)() as (
+      entry: Record<string, string>,
+    ) => string;
+    expect(valueTitle({ kind: "email", rule: "pii-email", preview: "ab…om (25)" })).toBe(
+      "Email address, masked\n" +
+        "The model sees this stand-in; the real value stays on this machine.\n" +
+        "Real value: ab…om, 25 characters\n" +
+        "Found by rule pii-email",
+    );
+    expect(valueTitle({ kind: "odd", preview: "a… (1)" })).toBe(
+      "odd, masked\n" +
+        "The model sees this stand-in; the real value stays on this machine.\n" +
+        "Real value: a…, 1 character",
+    );
+  });
+
+  it("says a session's shaping and cache in a line", () => {
+    const pick = (name: string) =>
+      new RegExp(`function ${name}[\\s\\S]*?\\n\\}`).exec(DASHBOARD_HTML)![0];
+    const source = ["count", "mib", "tallyLine"].map(pick).join("\n");
+    const tallyLine = new Function(`${source}; return tallyLine;`)() as (
+      tally?: Record<string, number>,
+    ) => string;
+    const none = {
+      shapedMasked: 0,
+      shapedCompacted: 0,
+      shapedDeduped: 0,
+      shapedSavedChars: 0,
+      usageInput: 0,
+      usageCacheRead: 0,
+      usageCacheWrite: 0,
+      usageOutput: 0,
+      cacheBreaksAgent: 0,
+      cacheBreaksShaping: 0,
+    };
+    expect(tallyLine(undefined)).toBe("");
+    expect(tallyLine(none)).toBe("");
+    const line = tallyLine({
+      ...none,
+      shapedMasked: 4,
+      shapedDeduped: 1,
+      shapedSavedChars: 2 * 1048576,
+      usageInput: 10,
+      usageCacheRead: 90,
+    });
+    expect(line).toContain("Shaping: 4 stubbed, 1 repeats, ");
+    expect(line).toContain("Cache: 90% read of 100 prompt tokens, no breaks");
+    expect(line).not.toContain("compacted");
+    expect(tallyLine({ ...none, usageCacheRead: 1, cacheBreaksShaping: 2 })).toBe(
+      "Cache: 100% read of 1 prompt tokens, 0 agent / 2 shaping breaks",
+    );
+  });
+
+  it("lists sessions newest first, other traffic last", () => {
+    expect(DASHBOARD_HTML).toContain("(a.id === OTHER) - (b.id === OTHER) || b.last - a.last");
   });
 
   it("cuts a guard notice to its first sentence for the page", () => {

@@ -36,8 +36,22 @@ export interface SentSummary {
   cut: boolean;
 }
 
+// A value masked in a request, as the dashboard marks it in that request.
+// The event feed holds only the newest few thousand of these across every
+// session, which a long session's values alone outrun.
+export interface MaskedValue {
+  standIn: string;
+  kind: string;
+  rule: string;
+  preview: string;
+}
+// Masked values kept per request: far past any real session's, and a bound
+// on what a request made of nothing else can hold.
+export const MASKED_PER_REQUEST_MAX = 100_000;
+
 interface Sent extends SentSummary {
   text: string;
+  masked: MaskedValue[];
 }
 
 const CLOSERS: Record<string, string> = { "{": "}", "[": "]" };
@@ -197,6 +211,7 @@ export class SentRequests {
     { route, endpoint, session, sessionName, turn }: Context,
     body: string,
     main = true,
+    masked: MaskedValue[] = [],
   ): void {
     if (!this.enabled) return;
     const cut = body.length > BODY_BYTES_MAX;
@@ -214,6 +229,7 @@ export class SentRequests {
       size: body.length,
       cut,
       text,
+      masked: masked.slice(0, MASKED_PER_REQUEST_MAX),
     });
     if (this.kept.length > this.keep) this.drop();
     while (this.chars > this.charsMax && this.kept.length > 1) this.drop();
@@ -237,8 +253,15 @@ export class SentRequests {
 
   // Newest first, without the text.
   list(): { enabled: boolean; keep: number; requests: SentSummary[] } {
-    const requests = this.kept.map(({ text: _text, ...summary }) => summary).reverse();
+    const requests = this.kept
+      .map(({ text: _text, masked: _masked, ...summary }) => summary)
+      .reverse();
     return { enabled: this.enabled, keep: this.keep, requests };
+  }
+
+  // The values masked in one request, for the dashboard to mark.
+  masked(id: number): MaskedValue[] | undefined {
+    return this.kept.find((entry) => entry.id === id)?.masked;
   }
 
   // One request's text, laid out for reading when it is JSON. A cut body is

@@ -36,8 +36,8 @@ import { configHome, NAME } from "../engine/lib/names.ts";
 import { aliasStyle } from "../engine/lib/rules.ts";
 import { type ActivityEvent, observeActivity } from "../engine/lib/activity.ts";
 import { DASHBOARD_CSP, DASHBOARD_HTML, DASHBOARD_PATH } from "./dashboard.ts";
-import { type Context, EventLog } from "./events.ts";
-import { SentRequests } from "./requests.ts";
+import { type Context, EventLog, kindOf, preview } from "./events.ts";
+import { type MaskedValue, SentRequests } from "./requests.ts";
 import {
   firstPrompt,
   looksLikeNaming,
@@ -674,7 +674,7 @@ async function forward(
     journalLine(name, sent.rest, upstream.status, scanMs, tags, scanned.hits, shaped) + broke;
   const tap = (event: ActivityEvent) => events.record(context, event);
   const asked = request.method !== "GET" && request.method !== "HEAD";
-  return relayReply(upstream, { format, asked }, tags, line, tap, usageCounter(events));
+  return relayReply(upstream, { format, asked }, tags, line, tap, usageCounter(events, context));
 }
 
 // How long an upstream has to start its reply. A long non-streamed answer
@@ -709,10 +709,10 @@ export async function fetchHeaders(
 
 // What a reply says it cost, counted for the dashboard and named in the
 // journal line it ends.
-function usageCounter(events: EventLog): (usage: Usage | undefined) => string {
+function usageCounter(events: EventLog, context: Context): (usage: Usage | undefined) => string {
   return (usage) => {
     if (!usage) return "";
-    events.usage(usage);
+    events.usage(usage, context);
     return ` usage=${usageText(usage)}`;
   };
 }
@@ -975,6 +975,11 @@ function dashboard(
     return new Response(DASHBOARD_HTML, { headers: page });
   }
   if (own === "requests") return Response.json(kept.list(), { headers });
+  if (own === "request" && url.searchParams.has("masked")) {
+    const masked = kept.masked(Number(url.searchParams.get("id")));
+    if (masked === undefined) return errorReply(404, "no such request");
+    return Response.json(masked, { headers });
+  }
   if (own === "request") {
     const text = kept.text(Number(url.searchParams.get("id")));
     if (text === undefined) return errorReply(404, "no such request");
@@ -1109,7 +1114,22 @@ function recordScan(
     if (stores.events.record(context, event, scanned.body, standIns)) fresh++;
   stores.events.request(context, scanned.scanMs, fresh, shaped);
   if (scanned.body !== undefined)
-    stores.kept.record(context, scanned.body, isMainRequest(scanned.object));
+    stores.kept.record(context, scanned.body, isMainRequest(scanned.object), maskedIn(scanned));
+}
+
+// Each value a request masked, once, as the dashboard marks it there.
+function maskedIn(scanned: Scanned): MaskedValue[] {
+  const values = new Map<string, MaskedValue>();
+  for (const event of scanned.activity) {
+    if (event.type !== "masked" || values.has(event.standIn)) continue;
+    values.set(event.standIn, {
+      standIn: event.standIn,
+      kind: kindOf(event),
+      rule: event.ruleId,
+      preview: preview(event.value),
+    });
+  }
+  return [...values.values()];
 }
 
 // The upstream reply with stand-ins in tool calls swapped back, or a refusal
