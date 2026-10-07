@@ -510,7 +510,26 @@ Settings are environment variables:
 | `ITHILDIN_INFRA_INVENTORY`   | `off` skips SSH, repo, network and Tailscale     |
 | `ITHILDIN_SCAN_BUDGET_MS`    | per-request scan time limit (default 30000)      |
 | `ITHILDIN_KEEP_REQUESTS`     | requests the dashboard keeps (default 20, 0 is off) |
-| `ITHILDIN_SHAPE`             | `off` disables context shaping on every route         |
+| `ITHILDIN_SHAPE`             | `off` disables context shaping on every route    |
+| `ITHILDIN_GENERALIZE`        | generalize list file (default beside the config) |
+| `ITHILDIN_ALIASES`           | `stand-ins` or `tokens`; wins over the config    |
+| `ITHILDIN_ALIAS_KEY_SCOPE`   | `session` or `shared`; wins over the config      |
+| `ITHILDIN_ALIAS_KEY_FILE`    | stand-in key file                                |
+| `ITHILDIN_PROXY_KEY_FILE`    | the proxy's stand-in key file                    |
+
+The proxy's own endpoints sit beside the routes, so no route may take their
+names. They answer only this machine, and not a page on another site:
+
+| Path         | Method | What it answers                                         |
+|--------------|--------|---------------------------------------------------------|
+| `/health`    | GET    | `ok`, the route names, and the badge (`?session=<id>`)  |
+| `/selftest`  | GET    | runs the self-test; 503 with the failures when it fails |
+| `/dashboard` | GET    | the dashboard, and the data it reads below that path    |
+| `/mcp`       | POST   | the retrieve tool (MCP over HTTP)                       |
+
+An error the proxy answers itself, on these or a route, is always
+`{"type":"error","error":{"type":"ithildin_error","message":"ithildin: …"}}`.
+A routes file it cannot use stops startup with the file's path and the reason.
 
 ## What it does not do
 

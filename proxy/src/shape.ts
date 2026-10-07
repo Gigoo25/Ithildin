@@ -36,6 +36,7 @@
 // already cleared, and it fails open: a request that cannot be shaped is
 // forwarded exactly as redaction left it.
 
+import { setting } from "../engine/lib/names.ts";
 import { compact } from "./compact.ts";
 import { crushJson } from "./crush.ts";
 import type { Format } from "./redact.ts";
@@ -57,7 +58,7 @@ const CACHE_WRITE = { short: 1.25, hour: 2, openai: 1 };
 
 // ITHILDIN_SHAPE=off (or raw) shapes nothing, on any route.
 export function shapingOn(env: Record<string, string | undefined> = process.env): boolean {
-  const value = env.ITHILDIN_SHAPE?.trim().toLowerCase();
+  const value = setting("SHAPE", env)?.trim().toLowerCase();
   return value !== "off" && value !== "raw" && value !== "false" && value !== "0";
 }
 

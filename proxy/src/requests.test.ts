@@ -21,6 +21,16 @@ describe("how many requests to keep", () => {
 });
 
 describe("sent requests", () => {
+  it("drops the oldest once the kept text outgrows its budget, keeping the newest", () => {
+    const kept = new SentRequests(10, Date.now, 25);
+    const context = { route: "anthropic", endpoint: "/v1/messages", session: undefined };
+    for (const n of [1, 2, 3]) kept.record(context, `{"n":${n},"pad":"xx"}`);
+    // Each is 16 characters: two would be 32, over 25, so only the newest stays.
+    expect(kept.list().requests.map((request) => request.id)).toEqual([3]);
+    kept.record(context, "x".repeat(40));
+    expect(kept.list().requests.map((request) => request.id)).toEqual([4]);
+  });
+
   it("keeps the newest, newest first, without their text in the list", () => {
     let time = 100;
     const kept = new SentRequests(2, () => time++);

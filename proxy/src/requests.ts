@@ -14,6 +14,10 @@ export const KEEP_MAX = 200;
 export const BODY_BYTES_MAX = 8 * 1024 * 1024;
 // Sessions whose latest turn is kept past the limit above.
 export const SESSIONS_MAX = 20;
+// All kept text together, in characters (UTF-16, so about twice that in
+// bytes). KEEP_MAX bodies at BODY_BYTES_MAX would be gigabytes; past this the
+// oldest go first, whatever the count allows.
+export const KEPT_CHARS_MAX = 128 * 1024 * 1024;
 const SESSION_CHARS = 8;
 
 export interface SentSummary {
@@ -169,13 +173,20 @@ export function keepFromSettings(value = setting("KEEP_REQUESTS")): number {
 export class SentRequests {
   private readonly kept: Sent[] = [];
   private readonly keep: number;
+  private readonly charsMax: number;
+  private chars = 0;
   private readonly now: () => number;
   private lastId = 0;
 
   // No parameter property: Node's type stripping (the node checks) rejects it.
-  constructor(keep: number = keepFromSettings(), now: () => number = Date.now) {
+  constructor(
+    keep: number = keepFromSettings(),
+    now: () => number = Date.now,
+    charsMax: number = KEPT_CHARS_MAX,
+  ) {
     this.keep = keep;
     this.now = now;
+    this.charsMax = charsMax;
   }
 
   get enabled(): boolean {
@@ -189,6 +200,8 @@ export class SentRequests {
   ): void {
     if (!this.enabled) return;
     const cut = body.length > BODY_BYTES_MAX;
+    const text = cut ? clampToJson(body, BODY_BYTES_MAX) : body;
+    this.chars += text.length;
     this.kept.push({
       id: ++this.lastId,
       time: this.now(),
@@ -200,9 +213,10 @@ export class SentRequests {
       main,
       size: body.length,
       cut,
-      text: cut ? clampToJson(body, BODY_BYTES_MAX) : body,
+      text,
     });
     if (this.kept.length > this.keep) this.drop();
+    while (this.chars > this.charsMax && this.kept.length > 1) this.drop();
   }
 
   // The oldest request, unless it is its session's latest turn: each session
@@ -217,7 +231,8 @@ export class SentRequests {
       if (seen.size <= SESSIONS_MAX) latest.add(sent);
     }
     const at = this.kept.findIndex((sent) => !latest.has(sent));
-    this.kept.splice(at < 0 ? 0 : at, 1);
+    const [gone] = this.kept.splice(at < 0 ? 0 : at, 1);
+    this.chars -= gone!.text.length;
   }
 
   // Newest first, without the text.

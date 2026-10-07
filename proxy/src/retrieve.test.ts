@@ -160,6 +160,18 @@ describe("the MCP endpoint", () => {
     );
     const huge = call("{}", { headers: { "content-length": String(1 << 20) } });
     expect(((await (await answerMcp(huge, store)).json()) as any).error.code).toBe(-32600);
+    // A chunked body declares no length, and is cut off as it is read.
+    const chunked = new Request("http://127.0.0.1/mcp", {
+      method: "POST",
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(new Uint8Array(1 << 20).fill(32));
+          controller.close();
+        },
+      }),
+    });
+    expect(chunked.headers.get("content-length")).toBeNull();
+    expect(((await (await answerMcp(chunked, store)).json()) as any).error.code).toBe(-32600);
   });
 });
 

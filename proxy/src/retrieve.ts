@@ -19,6 +19,7 @@
 
 import { createHash } from "node:crypto";
 import { swapText } from "./redact.ts";
+import { errorReply, readCapped } from "./reply.ts";
 
 export const TOOL_NAME = "retrieve";
 const SERVER_NAME = "ithildin";
@@ -28,7 +29,7 @@ const OFFERED = /(?:^|_)ithildin_{1,2}retrieve$/;
 const ID_CHARS = 12;
 const BYTES_MAX = 64 * 1024 * 1024;
 const ENTRIES_MAX = 10_000;
-const REQUEST_BYTES_MAX = 64 * 1024;
+const MCP_BYTES_MAX = 64 * 1024;
 const PROTOCOL = "2025-06-18";
 
 export function outputId(text: string): string {
@@ -111,12 +112,15 @@ function called(params: Record<string, unknown> | undefined, originals: Original
 // JSON: the tool is one call and one answer, so nothing here needs a stream.
 export async function answerMcp(request: Request, originals: Originals): Promise<Response> {
   if (request.method !== "POST")
-    return new Response("POST only", { status: 405, headers: { allow: "POST" } });
-  if (Number(request.headers.get("content-length") ?? 0) > REQUEST_BYTES_MAX)
+    return errorReply(405, `${request.method} not allowed`, { allow: "POST" });
+  if (Number(request.headers.get("content-length") ?? 0) > MCP_BYTES_MAX)
     return failure(null, -32600, "request too large");
+  // Capped as it is read too: a chunked body declares no length.
+  const raw = await readCapped(request.body, MCP_BYTES_MAX);
+  if (raw === undefined) return failure(null, -32600, "request too large");
   let message: Record<string, unknown>;
   try {
-    message = (await request.json()) as Record<string, unknown>;
+    message = JSON.parse(raw) as Record<string, unknown>;
   } catch {
     return failure(null, -32700, "parse error");
   }

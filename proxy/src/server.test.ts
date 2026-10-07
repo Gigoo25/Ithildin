@@ -171,11 +171,11 @@ describe("requests", () => {
     expect(sent).toContain("[allow-all]");
   });
 
-  it("reports the badge on /_ithildin/health, ignoring one-message side requests", async () => {
+  it("reports the badge on /health, ignoring one-message side requests", async () => {
     const up = fakeUpstream(() => Response.json({}));
     const handler = createHandler(DEFAULT_ROUTES, up.fetch);
     const health = async (query = "route=anthropic") =>
-      (await (await handler(new Request(`http://127.0.0.1/_ithildin/health?${query}`))).json()) as {
+      (await (await handler(new Request(`http://127.0.0.1/health?${query}`))).json()) as {
         badge: string;
       };
     expect((await health()).badge).toBe("ITHILDIN ON");
@@ -205,9 +205,9 @@ describe("requests", () => {
     ];
     const badge = async () =>
       (
-        (await (
-          await handler(new Request("http://127.0.0.1/_ithildin/health?route=anthropic"))
-        ).json()) as { badge: string }
+        (await (await handler(new Request("http://127.0.0.1/health?route=anthropic"))).json()) as {
+          badge: string;
+        }
       ).badge;
     await handler(
       post(
@@ -242,9 +242,7 @@ describe("requests", () => {
     const badge = async (session: string) =>
       (
         (await (
-          await handler(
-            new Request(`http://127.0.0.1/_ithildin/health?route=anthropic&session=${session}`),
-          )
+          await handler(new Request(`http://127.0.0.1/health?route=anthropic&session=${session}`))
         ).json()) as { badge: string }
       ).badge;
     const call = (id: string, content: string) => [

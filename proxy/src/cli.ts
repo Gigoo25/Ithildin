@@ -22,12 +22,34 @@ if (import.meta.main && process.argv[2] === "check") {
   // exitCode, not exit(): stdout may still be draining into a pipe.
   process.exitCode = runCheck(process.argv.slice(3), (text) => process.stdout.write(text));
 } else if (import.meta.main && process.argv[2] === "selftest") {
-  process.exit(await selfTestCli(readOptions(process.argv, process.env, existsSync).port));
+  process.exit(await selfTestCli(options().port));
 } else if (import.meta.main) {
-  const { drain } = start(readOptions(process.argv, process.env, existsSync));
-  // systemd's TimeoutStopSec is the backstop past DRAIN_MS.
-  process.on("SIGTERM", () => {
+  let started: ReturnType<typeof start>;
+  try {
+    started = start(options());
+  } catch (error) {
+    // A bad port, routes file, or a port in use: say which, without a stack.
+    console.error((error as Error).message);
+    process.exit(1);
+  }
+  const { drain } = started;
+  // systemd's TimeoutStopSec is the backstop past DRAIN_MS. Ctrl-C drains too,
+  // so the scan cache is saved either way; a second one exits at once.
+  const stop = (): void => {
+    process.removeListener("SIGINT", stop);
+    process.once("SIGINT", () => process.exit(130));
     void drain().then(() => process.exit(0));
     setTimeout(() => process.exit(0), DRAIN_MS).unref();
-  });
+  };
+  process.on("SIGTERM", stop);
+  process.on("SIGINT", stop);
+}
+
+function options(): ReturnType<typeof readOptions> {
+  try {
+    return readOptions(process.argv, process.env, existsSync);
+  } catch (error) {
+    console.error((error as Error).message);
+    process.exit(1);
+  }
 }

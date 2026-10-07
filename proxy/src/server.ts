@@ -53,6 +53,7 @@ import { PrefixWatch } from "./prefix.ts";
 import { answerMcp, offeredTool, Originals, outputId } from "./retrieve.ts";
 import { merge, type Usage, usageOf, usageOfEvent, usageText } from "./usage.ts";
 import { findWatched, knownValues, watchPolicy } from "./watch.ts";
+import { errorReply, readCapped } from "./reply.ts";
 import { type SelfTest, selfTest } from "./selftest.ts";
 import { createRewriter, formatSse, parseSseBlock, swapResponseBody } from "./streams.ts";
 import type { Label } from "./trust.ts";
@@ -83,18 +84,55 @@ export const DEFAULT_ROUTES: Record<string, Route> = {
   },
 };
 
+// The proxy's own paths: a route by one of these names could never be reached.
+const RESERVED_ROUTES = new Set(["health", "selftest", "mcp", "dashboard"]);
+
 export function loadRoutes(file: string | undefined): Record<string, Route> {
   if (!file) return DEFAULT_ROUTES;
-  const parsed = JSON.parse(readFileSync(file, "utf8")) as Record<string, string | Route>;
+  const fail = (why: string): never => {
+    throw new Error(`ithildin: routes file ${file}: ${why}`);
+  };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(file, "utf8"));
+  } catch (error) {
+    fail((error as Error).message);
+  }
+  if (!isRecord(parsed)) return fail("expected an object of routes by name");
   const routes: Record<string, Route> = { ...DEFAULT_ROUTES };
   for (const [name, route] of Object.entries(parsed)) {
+    if (RESERVED_ROUTES.has(name)) fail(`"${name}" is one of the proxy's own paths`);
     const over = typeof route === "string" ? { upstream: route } : route;
+    if (!isRecord(over)) return fail(`route "${name}" is not an object`);
     // Field by field, not route by route: a file that says how to reach a
     // provider through a proxy should not have to repeat where its paths live,
     // and silently losing the rewrites turns every request into a refusal.
-    routes[name] = { ...routes[name], ...over } as Route;
+    const merged = { ...routes[name], ...over };
+    const why = routeProblem(merged);
+    if (why) fail(`route "${name}": ${why}`);
+    routes[name] = merged as Route;
   }
   return routes;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isHttpUrl(value: unknown): boolean {
+  return typeof value === "string" && /^https?:\/\/[^/]/.test(value) && URL.canParse(value);
+}
+
+// Checked at startup, so a bad file stops the proxy with its reason rather
+// than failing every request that names the route.
+function routeProblem(route: Record<string, unknown>): string | undefined {
+  if (!isHttpUrl(route.upstream)) return "upstream must be an http(s) URL";
+  if (route.via !== undefined && !isHttpUrl(route.via)) return "via must be an http(s) URL";
+  const { rewrite } = route;
+  if (rewrite === undefined) return undefined;
+  if (!isRecord(rewrite) || Object.values(rewrite).some((to) => typeof to !== "string"))
+    return "rewrite must map path prefixes to path prefixes";
+  return undefined;
 }
 
 export function formatForPath(pathname: string): Format | undefined {
@@ -216,8 +254,8 @@ const SESSION_HEADERS: [string, string][] = [
   ["x-session-affinity", "opencode"],
 ];
 const CLIENT_HEADER = "x-opencode-client";
-const OWN_PATH =
-  /^\/(?:_ithildin\/(selftest|health)|(mcp)|(dashboard)(?:\/(activity|requests|request))?)$/;
+// One trailing slash is forgiven: `/dashboard/` is the same page.
+const OWN_PATH = /^\/(?:(selftest|health|mcp)|(dashboard)(?:\/(activity|requests|request))?)\/?$/;
 // Set by refuse() and removed by the handler, which logs the refusal for the
 // dashboard. It never reaches the client.
 const REFUSED_HEADER = "x-ithildin-refused";
@@ -289,10 +327,7 @@ function noteUnguarded(names: string[]): void {
 
 function refuse(status: number, message: string): Response {
   log(`refused (${status}): ${message}`);
-  return Response.json(
-    { type: "error", error: { type: "ithildin_error", message: `ithildin: ${message}` } },
-    { status, headers: { [REFUSED_HEADER]: message } },
-  );
+  return errorReply(status, message, { [REFUSED_HEADER]: message });
 }
 
 function rewriteSse(
@@ -395,24 +430,6 @@ function unscanned(): Scanned {
     unguarded: [],
     activity: [],
   };
-}
-
-// A body as text, read no further than the cap: a chunked body declares no
-// length. Undefined when it runs over.
-async function readCapped(
-  body: ReadableStream<Uint8Array> | null,
-  max: number,
-): Promise<string | undefined> {
-  if (!body) return "";
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  for await (const chunk of body) {
-    size += chunk.byteLength;
-    // Leaving the loop cancels the rest of the stream.
-    if (size > max) return undefined;
-    chunks.push(chunk);
-  }
-  return Buffer.concat(chunks).toString("utf8");
 }
 
 // The request body redacted, or the refusal. Bodies not read as JSON pass
@@ -639,24 +656,50 @@ async function forward(
   const renamed = nameSession(names, session, scanned);
   const ask = session ? titleAsk(scanned.object) : undefined;
 
-  let upstream: Response;
-  try {
-    upstream = await fetchUpstream(target, {
-      method: request.method,
-      headers,
-      body: shaped.body,
-      redirect: "manual",
-      signal: request.signal,
-    });
-  } catch (error) {
-    return refuse(502, `upstream unreachable (${(error as Error).message})`);
-  }
+  const reached = await fetchHeaders(fetchUpstream, target, request, {
+    method: request.method,
+    headers,
+    body: shaped.body,
+    redirect: "manual",
+  });
+  if ("refused" in reached) return reached.refused;
+  const { upstream } = reached;
   if (session && ask && upstream.ok) noteTitle(upstream.clone(), ask, session.id, names, renamed);
 
   const line =
     journalLine(name, sent.rest, upstream.status, scanMs, tags, scanned.hits, shaped) + broke;
   const tap = (event: ActivityEvent) => events.record(context, event);
   return relayReply(upstream, format, tags, line, tap, usageCounter(events));
+}
+
+// How long an upstream has to start its reply. A long non-streamed answer
+// can take minutes before its headers, so this is generous; it is there for
+// an upstream that took the connection and then went silent, which would
+// otherwise hold the agent until its own timeout.
+export const UPSTREAM_HEADERS_MS = 10 * 60 * 1000;
+
+// The upstream's reply, or the proxy's refusal when it cannot be reached or
+// does not start answering in time. The deadline ends at the headers: a
+// stream that has started runs as long as the agent keeps listening.
+export async function fetchHeaders(
+  fetchUpstream: typeof fetch,
+  target: string,
+  request: Request,
+  init: RequestInit,
+  deadlineMs = UPSTREAM_HEADERS_MS,
+): Promise<{ upstream: Response } | { refused: Response }> {
+  const late = new AbortController();
+  const timer = setTimeout(() => late.abort(), deadlineMs);
+  try {
+    const signal = AbortSignal.any([request.signal, late.signal]);
+    return { upstream: await fetchUpstream(target, { ...init, signal }) };
+  } catch (error) {
+    if (late.signal.aborted)
+      return { refused: refuse(504, `upstream sent no reply within ${deadlineMs / 1000}s`) };
+    return { refused: refuse(502, `upstream unreachable (${(error as Error).message})`) };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // What a reply says it cost, counted for the dashboard and named in the
@@ -749,21 +792,25 @@ export function createHandler(
   };
   const { book, events, kept, names } = stores;
   let proof: SelfTest | undefined;
+  // One run at a time: callers that arrive during a run share its result, so
+  // a burst of requests neither stacks probes nor races to set `proof`.
+  let proving: Promise<SelfTest> | undefined;
+  const prove = (): Promise<SelfTest> =>
+    (proving ??= runSelfTest(routes, redact)
+      .then((result) => (proof = result))
+      .finally(() => (proving = undefined)));
   const respond = async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
     const found = OWN_PATH.exec(url.pathname);
-    const own = found?.[1] ?? found?.[2] ?? (found?.[3] ? (found[4] ?? "dashboard") : undefined);
+    const own = found?.[1] ?? (found?.[2] ? (found[3] ?? "dashboard") : undefined);
+    const turnedAway = own ? ownRefusal(own, request, url) : undefined;
+    if (turnedAway) return turnedAway;
     if (own === "selftest") {
-      proof = await runSelfTest(routes, redact);
-      return Response.json(proof, { status: proof.ok ? 200 : 503 });
+      const result = await prove();
+      return Response.json(result, { status: result.ok ? 200 : 503 });
     }
     if (own === "health") return health(url, routes, book, proof, gated);
-    // The retrieve tool hands back outputs, so like the dashboard it answers
-    // only this machine.
-    if (own === "mcp")
-      return LOCAL_HOSTS.has(url.hostname)
-        ? answerMcp(request, stores.originals)
-        : new Response("forbidden", { status: 403 });
+    if (own === "mcp") return answerMcp(request, stores.originals);
     if (own === "dashboard" || own === "activity" || own === "requests" || own === "request")
       return dashboard(own, url, { events, kept, names });
     if (gated && !proof?.ok) return refuseUnproven(proof);
@@ -776,7 +823,33 @@ export function createHandler(
     const deps = { routes, fetchUpstream, redact };
     return forward(stores, deps, request, url, match[1]!, route, rest, formatForPath(rest));
   };
-  return async (request: Request): Promise<Response> => logRefusal(events, await respond(request));
+  return async (request: Request): Promise<Response> => {
+    let response: Response;
+    try {
+      response = await respond(request);
+    } catch (error) {
+      // A bug, not a refusal by design; still the proxy's JSON, and still on
+      // the dashboard, rather than the runtime's bare 500.
+      response = refuse(500, `internal error (${(error as Error).message})`);
+    }
+    return logRefusal(events, response);
+  };
+}
+
+// The proxy's own endpoints answer only this machine, and only the methods
+// they serve. A local name alone does not stop a page in the browser: it can
+// load http://127.0.0.1:<port>/selftest as an image. The browser says where a
+// request came from in sec-fetch-site; curl and the agents send none.
+function ownRefusal(own: string, request: Request, url: URL): Response | undefined {
+  const site = request.headers.get("sec-fetch-site");
+  // Following a link to the page is fine; it is what the page then fetches
+  // that must come from the page itself.
+  const opened = own === "dashboard" && request.headers.get("sec-fetch-mode") === "navigate";
+  const foreign = site !== null && site !== "same-origin" && site !== "none" && !opened;
+  if (!LOCAL_HOSTS.has(url.hostname) || foreign) return errorReply(403, "forbidden");
+  const allowed = own === "mcp" ? ["POST"] : ["GET", "HEAD"];
+  if (allowed.includes(request.method)) return undefined;
+  return errorReply(405, `${request.method} not allowed`, { allow: allowed.join(", ") });
 }
 
 // One line in the journal: what was asked, what came back, what it cost, and
@@ -887,7 +960,6 @@ function dashboard(
   url: URL,
   { events, kept, names }: { events: EventLog; kept: SentRequests; names: SessionNames },
 ): Response {
-  if (!LOCAL_HOSTS.has(url.hostname)) return new Response("forbidden", { status: 403 });
   const headers = { "cache-control": "no-store" };
   if (own === "dashboard") {
     const page = {
@@ -900,7 +972,7 @@ function dashboard(
   if (own === "requests") return Response.json(kept.list(), { headers });
   if (own === "request") {
     const text = kept.text(Number(url.searchParams.get("id")));
-    if (text === undefined) return new Response("no such request", { status: 404 });
+    if (text === undefined) return errorReply(404, "no such request");
     return new Response(text, { headers: { ...headers, "content-type": "text/plain" } });
   }
   const since = Number(url.searchParams.get("since") ?? 0);
@@ -1187,21 +1259,17 @@ export function start(
   initEngine();
   if (aliasStyle() === "tokens")
     log("aliases are tokens: nothing is swapped back, tools run with the tokens the model wrote");
+  const handler = createHandler(routes, fetchUpstream, REDACTORS, true);
+  // Bound before any timer starts, so a taken port leaves nothing running.
+  const server = listen(options.port, handler);
   const saving = setInterval(saveScanCache, 30_000);
   saving.unref();
-  const handler = createHandler(routes, fetchUpstream, REDACTORS, true);
-  const selfTestRequest = () => new Request("http://127.0.0.1/_ithildin/selftest");
+  const selfTestRequest = () => new Request("http://127.0.0.1/selftest");
   const refreshing = setInterval(() => {
     if (refreshIdentity()) log("identity inventory grew");
     void handler(selfTestRequest());
   }, IDENTITY_REFRESH_MS);
   refreshing.unref();
-  const server = Bun.serve({
-    hostname: "127.0.0.1",
-    port: options.port,
-    idleTimeout: 255,
-    fetch: handler,
-  });
   log(`listening on http://127.0.0.1:${server.port} (routes: ${Object.keys(routes).join(", ")})`);
   log(`dashboard on http://127.0.0.1:${server.port}${DASHBOARD_PATH}`);
   // Requests are refused until this passes; agents retry refused requests.
@@ -1219,18 +1287,32 @@ export function start(
   return { server, drain, proven };
 }
 
+// A port already taken stops startup with that, not the runtime's stack.
+function listen(
+  port: number,
+  handler: (request: Request) => Promise<Response>,
+): ReturnType<typeof Bun.serve> {
+  try {
+    return Bun.serve({ hostname: "127.0.0.1", port, idleTimeout: 255, fetch: handler });
+  } catch (error) {
+    if ((error as { code?: string }).code !== "EADDRINUSE") throw error;
+    throw new Error(`ithildin: port ${port} is in use (another ithildin running?)`);
+  }
+}
+
 // `ithildin selftest`: runs the self-test inside the proxy that is
 // running now, so a pass means that process masks, not a fresh copy.
 export async function selfTestCli(port: number, fetchProxy: typeof fetch = fetch): Promise<number> {
   let report: SelfTest;
   try {
-    report = (await (
-      await fetchProxy(`http://127.0.0.1:${port}/_ithildin/selftest`)
-    ).json()) as SelfTest;
+    report = (await (await fetchProxy(`http://127.0.0.1:${port}/selftest`)).json()) as SelfTest;
   } catch (error) {
-    process.stdout.write(
-      `ithildin is not answering on port ${port} (${(error as Error).message})\n`,
-    );
+    process.stdout.write(`ithildin: not answering on port ${port} (${(error as Error).message})\n`);
+    return 1;
+  }
+  // Something else on the port can answer JSON too.
+  if (typeof report?.ok !== "boolean" || !Array.isArray(report.failures)) {
+    process.stdout.write(`ithildin: port ${port} answered, but not with a self-test\n`);
     return 1;
   }
   process.stdout.write(

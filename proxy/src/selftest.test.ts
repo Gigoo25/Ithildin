@@ -193,7 +193,7 @@ describe("gated handler", () => {
 
   it("refuses model requests until the self-test passes", async () => {
     const handler = createHandler(DEFAULT_ROUTES, refuse, undefined, true);
-    const pending = await handler(new Request("http://127.0.0.1/_ithildin/health"));
+    const pending = await handler(new Request("http://127.0.0.1/health"));
     expect(pending.status).toBe(503);
     expect(((await pending.json()) as { badge: string }).badge).toBe(
       "ITHILDIN DOWN · self-test pending",
@@ -203,11 +203,11 @@ describe("gated handler", () => {
     expect(((await before.json()) as { error: { message: string } }).error.message).toContain(
       "self-test has not run",
     );
-    expect((await handler(new Request("http://127.0.0.1/_ithildin/selftest"))).status).toBe(200);
+    expect((await handler(new Request("http://127.0.0.1/selftest"))).status).toBe(200);
     expect((await handler(post(request))).status).toBe(200);
-    const health = (await (
-      await handler(new Request("http://127.0.0.1/_ithildin/health"))
-    ).json()) as { selftest: { ok: boolean } };
+    const health = (await (await handler(new Request("http://127.0.0.1/health"))).json()) as {
+      selftest: { ok: boolean };
+    };
     expect(health.selftest.ok).toBe(true);
   });
 
@@ -219,7 +219,7 @@ describe("gated handler", () => {
     });
     try {
       const handler = createHandler(DEFAULT_ROUTES, refuse, undefined, true);
-      expect((await handler(new Request("http://127.0.0.1/_ithildin/selftest"))).status).toBe(200);
+      expect((await handler(new Request("http://127.0.0.1/selftest"))).status).toBe(200);
     } finally {
       write.mockRestore();
     }
@@ -230,13 +230,13 @@ describe("gated handler", () => {
 
   it("stays closed, and reads as down, after a failed self-test", async () => {
     const handler = createHandler(DEFAULT_ROUTES, refuse, leaking, true);
-    expect((await handler(new Request("http://127.0.0.1/_ithildin/selftest"))).status).toBe(503);
+    expect((await handler(new Request("http://127.0.0.1/selftest"))).status).toBe(503);
     const refused = await handler(post(request));
     expect(refused.status).toBe(503);
     expect(((await refused.json()) as { error: { message: string } }).error.message).toContain(
       "reached the provider",
     );
-    const down = await handler(new Request("http://127.0.0.1/_ithildin/health"));
+    const down = await handler(new Request("http://127.0.0.1/health"));
     expect(down.status).toBe(503);
     expect(((await down.json()) as { badge: string }).badge).toMatch(
       /^ITHILDIN DOWN · self-test: anthropic: email got no stand-in \(\+\d+\)$/,
@@ -279,6 +279,13 @@ describe("selftest command", () => {
       }) as unknown as typeof fetch;
       expect(await selfTestCli(1, down)).toBe(1);
       expect(out.pop()).toContain("not answering on port 1");
+      const stranger = (async () => Response.json({ hello: "world" })) as unknown as typeof fetch;
+      expect(await selfTestCli(1, stranger)).toBe(1);
+      expect(out.pop()).toBe("ithildin: port 1 answered, but not with a self-test\n");
+      // A second proxy on a taken port says so.
+      expect(() => start({ port: server.port!, routesFile: undefined }, refuse)).toThrow(
+        `ithildin: port ${server.port} is in use`,
+      );
     } finally {
       write.mockRestore();
       await drain();

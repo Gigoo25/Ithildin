@@ -8,6 +8,7 @@ import { initEngine } from "./redact.ts";
 import {
   createHandler,
   DEFAULT_ROUTES,
+  fetchHeaders,
   formatForPath,
   JSON_DEPTH_MAX,
   jsonDepth,
@@ -294,9 +295,7 @@ describe("replies the proxy refuses", () => {
 describe("health and routing", () => {
   it("reports health with the route names", async () => {
     const handler = createHandler(DEFAULT_ROUTES, upstream(() => Response.json({})).fetch);
-    const body = (await (
-      await handler(new Request("http://127.0.0.1/_ithildin/health"))
-    ).json()) as {
+    const body = (await (await handler(new Request("http://127.0.0.1/health"))).json()) as {
       ok: boolean;
       routes: string[];
       badge: string;
@@ -346,6 +345,138 @@ describe("health and routing", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+});
+
+describe("the proxy's own endpoints", () => {
+  const handler = () => createHandler(DEFAULT_ROUTES, upstream(() => Response.json({})).fetch);
+  const error = async (response: Response) =>
+    ((await response.json()) as { error: { type: string; message: string } }).error;
+
+  it("forgives one trailing slash", async () => {
+    expect((await handler()(new Request("http://127.0.0.1/health/"))).status).toBe(200);
+    expect((await handler()(new Request("http://127.0.0.1/dashboard/"))).status).toBe(200);
+  });
+
+  it("answers only this machine, and not a page on another site", async () => {
+    const away = await handler()(new Request("http://evil.example/health"));
+    expect(away.status).toBe(403);
+    expect(await error(away)).toEqual({ type: "ithildin_error", message: "ithildin: forbidden" });
+    const image = new Request("http://127.0.0.1/selftest", {
+      headers: { "sec-fetch-site": "cross-site", "sec-fetch-mode": "no-cors" },
+    });
+    expect((await handler()(image)).status).toBe(403);
+    // Following a link to the dashboard from elsewhere is fine.
+    const link = new Request("http://127.0.0.1/dashboard", {
+      headers: { "sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate" },
+    });
+    expect((await handler()(link)).status).toBe(200);
+  });
+
+  it("answers only the methods each serves, and says which", async () => {
+    const post = await handler()(new Request("http://127.0.0.1/health", { method: "POST" }));
+    expect(post.status).toBe(405);
+    expect(post.headers.get("allow")).toBe("GET, HEAD");
+    expect((await error(post)).message).toBe("ithildin: POST not allowed");
+    const mcp = await handler()(new Request("http://127.0.0.1/mcp"));
+    expect([mcp.status, mcp.headers.get("allow")]).toEqual([405, "POST"]);
+  });
+
+  it("answers a missing request with the same JSON error", async () => {
+    const gone = await handler()(new Request("http://127.0.0.1/dashboard/request?id=999"));
+    expect(gone.status).toBe(404);
+    expect((await error(gone)).message).toBe("ithildin: no such request");
+  });
+
+  it("runs one self-test at a time, sharing it with whoever asks meanwhile", async () => {
+    let runs = 0;
+    const counting = createHandler(DEFAULT_ROUTES, (async () => {
+      runs++;
+      return Response.json({});
+    }) as unknown as typeof fetch);
+    const ask = () => counting(new Request("http://127.0.0.1/selftest"));
+    const [first, second] = await Promise.all([ask(), ask()]);
+    expect(await first.json()).toEqual(await second.json());
+    const once = runs;
+    await ask();
+    expect(runs).toBe(once * 2);
+  });
+
+  it("answers a bug with its JSON error, not the runtime's bare 500", async () => {
+    // A route handed in directly skips the file's checks, so it can be broken.
+    const broken = createHandler(
+      { anthropic: {} as never },
+      upstream(() => Response.json({})).fetch,
+    );
+    const response = await broken(post("anthropic/v1/messages", '{"messages":[]}'));
+    expect(response.status).toBe(500);
+    expect((await error(response)).message).toMatch(/^ithildin: internal error \(/);
+    expect(response.headers.has("x-ithildin-refused")).toBe(false);
+  });
+});
+
+describe("the upstream's deadline", () => {
+  it("gives up on an upstream that never starts its reply", async () => {
+    const silent = ((_url: string, init: RequestInit) =>
+      new Promise((_resolve, reject) =>
+        init.signal!.addEventListener("abort", () => reject(new Error("aborted"))),
+      )) as unknown as typeof fetch;
+    const late = await fetchHeaders(silent, "https://up.example", new Request("http://x/"), {}, 5);
+    expect("refused" in late && late.refused.status).toBe(504);
+    const down = (async () => {
+      throw new Error("refused");
+    }) as unknown as typeof fetch;
+    const gone = await fetchHeaders(down, "https://up.example", new Request("http://x/"), {});
+    expect("refused" in gone && gone.refused.status).toBe(502);
+    const fine = await fetchHeaders(
+      upstream(() => new Response("ok")).fetch,
+      "https://up.example",
+      new Request("http://x/"),
+      {},
+    );
+    expect("upstream" in fine && (await fine.upstream.text())).toBe("ok");
+  });
+});
+
+describe("a routes file", () => {
+  const withFile = (content: string, check: (file: string) => void) => {
+    const dir = mkdtempSync(join(tmpdir(), "ithildin-routes-"));
+    try {
+      const file = join(dir, "routes.json");
+      writeFileSync(file, content);
+      check(file);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+  const fails = (content: unknown, why: RegExp) =>
+    withFile(typeof content === "string" ? content : JSON.stringify(content), (file) =>
+      expect(() => loadRoutes(file)).toThrow(why),
+    );
+
+  it("stops startup with its path and the reason, not a stack", () => {
+    fails("{ broken", /^ithildin: routes file .*routes\.json: /);
+    fails(null, /expected an object of routes by name/);
+    fails([1], /expected an object of routes by name/);
+    fails({ x: null }, /route "x" is not an object/);
+    fails({ x: 3 }, /route "x" is not an object/);
+  });
+
+  it("refuses a route that could never work", () => {
+    fails({ lan: { via: "http://127.0.0.1:1" } }, /route "lan": upstream must be an http/);
+    fails({ x: "ftp://up.example" }, /upstream must be an http/);
+    fails({ x: "not a url" }, /upstream must be an http/);
+    fails({ anthropic: { via: "nope" } }, /via must be an http/);
+    fails({ x: { upstream: "https://up.example", rewrite: [] } }, /rewrite must map/);
+    fails({ x: { upstream: "https://up.example", rewrite: { "/a": 1 } } }, /rewrite must map/);
+    fails({ health: "https://up.example" }, /"health" is one of the proxy's own paths/);
+  });
+
+  it("keeps a via over a built-in route, with its rewrite", () =>
+    withFile(JSON.stringify({ anthropic: { via: "http://127.0.0.1:8787" } }), (file) => {
+      const routes = loadRoutes(file);
+      expect(routes.anthropic!.via).toBe("http://127.0.0.1:8787");
+      expect(routes.anthropic!.upstream).toBe(DEFAULT_ROUTES.anthropic!.upstream);
+    }));
 });
 
 describe("jsonDepth", () => {
@@ -460,9 +591,9 @@ describe("startup", () => {
       upstream(() => Response.json({})).fetch,
     );
     try {
-      const body = (await (
-        await fetch(`http://127.0.0.1:${server.port}/_ithildin/health`)
-      ).json()) as { ok: boolean };
+      const body = (await (await fetch(`http://127.0.0.1:${server.port}/health`)).json()) as {
+        ok: boolean;
+      };
       expect(body.ok).toBe(true);
     } finally {
       await drain();
