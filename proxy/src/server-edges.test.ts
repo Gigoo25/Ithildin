@@ -357,6 +357,15 @@ describe("the proxy's own endpoints", () => {
     expect((await handler()(new Request("http://127.0.0.1/dashboard/"))).status).toBe(200);
   });
 
+  it("answers the dashboard on ithildin.localhost, which only this machine reaches", async () => {
+    expect((await handler()(new Request("http://ithildin.localhost:18733/dashboard"))).status).toBe(
+      200,
+    );
+    expect((await handler()(new Request("http://ithildin.evil.example/dashboard"))).status).toBe(
+      403,
+    );
+  });
+
   it("answers only this machine, and not a page on another site", async () => {
     const away = await handler()(new Request("http://evil.example/health"));
     expect(away.status).toBe(403);

@@ -249,8 +249,10 @@ in `config.json`, or list it in `reviewedTools` once you've checked it.
 ## The dashboard
 
 The footer says that the proxy is on the path. The dashboard shows what it did.
-Open `http://127.0.0.1:18733/dashboard` (your port) in a browser on the same
-machine. The page fits the window.
+Open `http://ithildin.localhost:18733/dashboard` (your port) in a browser on
+the same machine; `http://127.0.0.1:18733/dashboard` is the same page. Browsers
+send any `*.localhost` name to this machine themselves, so the name needs no
+`/etc/hosts` entry or DNS. The page fits the window.
 
 The bar on top answers first: `No leaks` with how many values are watched,
 `N leaks found` in red with the time of the latest, or `Nothing watched` when

@@ -260,8 +260,12 @@ const OWN_PATH = /^\/(?:(selftest|health|mcp)|(dashboard)(?:\/(activity|requests
 // dashboard. It never reaches the client.
 const REFUSED_HEADER = "x-ithildin-refused";
 // The dashboard answers only to a local name: a page on another site that
-// points its own name at 127.0.0.1 (DNS rebinding) is turned away.
-const LOCAL_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
+// points its own name at 127.0.0.1 (DNS rebinding) is turned away. Browsers
+// resolve every *.localhost name to this machine themselves and never ask
+// DNS (RFC 6761), so a page cannot be steered there by DNS rebinding.
+const LOCAL_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]", "ithildin.localhost"]);
+// The name the dashboard's address is printed with: it needs no setup.
+export const DASHBOARD_HOST = "ithildin.localhost";
 
 const HOP_HEADERS = [
   "host",
@@ -1271,7 +1275,7 @@ export function start(
   }, IDENTITY_REFRESH_MS);
   refreshing.unref();
   log(`listening on http://127.0.0.1:${server.port} (routes: ${Object.keys(routes).join(", ")})`);
-  log(`dashboard on http://127.0.0.1:${server.port}${DASHBOARD_PATH}`);
+  log(`dashboard on http://${DASHBOARD_HOST}:${server.port}${DASHBOARD_PATH}`);
   // Requests are refused until this passes; agents retry refused requests.
   const proven = handler(selfTestRequest()).then(() => undefined);
   // A rules edit restarts the proxy. Stop taking requests but let streaming
