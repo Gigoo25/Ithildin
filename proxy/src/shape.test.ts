@@ -264,6 +264,71 @@ function weighed(size: number, after: number): Array<Record<string, unknown>> {
   return list;
 }
 
+describe("superseded harness notes", () => {
+  // A conversation whose big old result makes a step pay, with a harness note
+  // on every typed turn: a tokens-left count, and an instruction given once.
+  const noted = (): Array<Record<string, unknown>> => {
+    const list = pairs(20);
+    list.splice(2, 0, {
+      role: "assistant",
+      content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "cat log" } }],
+    });
+    list.splice(3, 0, {
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: "t1", content: big() }],
+    });
+    list.forEach((entry, index) => {
+      if (entry.role !== "user" || index === 3) return;
+      (entry.content as unknown[]).push({
+        type: "text",
+        text: `<total_tokens>${1000 - index} tokens left</total_tokens>`,
+      });
+    });
+    (list[0]!.content as unknown[]).push({
+      type: "text",
+      text: "<system-reminder>\nAlways answer in French.\n</system-reminder>",
+    });
+    return list;
+  };
+  const notes = (list: unknown[], kind: string) =>
+    list.flatMap((entry, index) =>
+      ((entry as { content: unknown }).content as Array<{ text?: string }>)
+        .filter((block) => block.text?.includes(kind))
+        .map(() => index),
+    );
+
+  it("drops old notes a newer one of their kind replaces, and keeps the newest", () => {
+    const list = noted();
+    const shaped = shapeRequest("anthropic", { messages: list })!;
+    const before = notes(list, "tokens left");
+    const after = notes(shaped.body.messages as unknown[], "tokens left");
+    // The old part keeps its newest count; every recent one stays.
+    expect(after.length).toBeLessThan(before.length);
+    expect(after.length).toBeGreaterThan(1);
+    expect(before.slice(-10).every((index) => after.includes(index))).toBe(true);
+    // An instruction given once has nothing newer, so it stays.
+    expect(notes(shaped.body.messages as unknown[], "French")).toEqual([0]);
+    // Each turn keeps its typed text.
+    for (const entry of shaped.body.messages as Array<{ content: unknown[] }>)
+      expect(entry.content.length).toBeGreaterThan(0);
+  });
+
+  it("never empties a turn that is nothing but notes", () => {
+    const list = noted();
+    list[4] = { role: "user", content: [{ type: "text", text: "<total_tokens>9</total_tokens>" }] };
+    const shaped = shapeRequest("anthropic", { messages: list })!;
+    expect((shaped.body.messages as Array<{ content: unknown[] }>)[4]!.content).toHaveLength(1);
+  });
+
+  it("is pure, and leaves a short conversation alone", () => {
+    const list = noted();
+    expect(JSON.stringify(shapeRequest("anthropic", { messages: list }))).toBe(
+      JSON.stringify(shapeRequest("anthropic", { messages: noted() })),
+    );
+    expect(shapeRequest("anthropic", { messages: list.slice(0, 6) })).toBeUndefined();
+  });
+});
+
 describe("the cost of a step", () => {
   const hour = [{ type: "text", text: "sys", cache_control: { type: "ephemeral", ttl: "1h" } }];
 
@@ -495,6 +560,21 @@ describe("old call inputs", () => {
     });
     expect(JSON.stringify(at(out, out.length - 2))).toContain("const x = 1;");
     expect(INPUT_MIN_CHARS).toBeGreaterThan(0);
+  });
+
+  it("notes an old shell command from 400 characters, and keeps a short one", () => {
+    const long = `for f in src/*.ts; do ${"echo $f; ".repeat(45)}done`;
+    const early = [
+      call("c1", "Bash", { command: long }),
+      result("c1", "ok"),
+      call("c2", "Bash", { command: "ls src" }),
+      result("c2", "ok"),
+    ];
+    const body = JSON.stringify(shapeRequest("anthropic", { messages: around(early, []) })?.body);
+    expect(long.length).toBeGreaterThanOrEqual(400);
+    expect(long.length).toBeLessThan(1_000);
+    expect(body).not.toContain(long);
+    expect(body).toContain('"command":"ls src"');
   });
 
   it("reaches a list of edits inside an input", () => {

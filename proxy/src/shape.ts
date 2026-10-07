@@ -455,10 +455,11 @@ export function shapeRequest(
   if (!list) return;
   const walk: Walk = { calls: new Map(), outputs: new Map(), retrieval };
   const cutoff = cutoffFor(format, body, list, walk);
+  const kept = latestNotes(format, list, cutoff);
   const totals: Counts = { masked: 0, compacted: 0, deduped: 0 };
   let turn = 0;
   let savedChars = 0;
-  const out = list.map((item) => {
+  const out = list.map((item, at) => {
     remember(format, item, walk);
     if (isAssistant(format, item)) turn++;
     // A result answers the call above it, so it shares that call's turn: the
@@ -466,7 +467,9 @@ export function shapeRequest(
     // is a conversation too short to shape, so nothing in it is old, not even
     // its first turn.
     const old = cutoff > 0 && turn <= cutoff;
-    const replaced = shapeEntry(format, item, walk, old);
+    const replaced = withNotes(item, old ? dropNotes(item, at, kept) : undefined, (entry) =>
+      shapeEntry(format, entry, walk, old),
+    );
     if (!replaced) return item;
     for (const kind of Object.keys(totals) as Kind[]) totals[kind] += replaced.counts[kind];
     savedChars += replaced.saved;
@@ -504,7 +507,9 @@ function shapeEntry(
 // ran with the full text and that a new one needs it, because a model that
 // reads its own history as having written placeholders will write them.
 
-export const INPUT_MIN_CHARS = 1_000;
+// The note is about 170 characters; from 400 a long shell command is worth
+// one too, and old commands were a seventh of what was left after shaping.
+export const INPUT_MIN_CHARS = 400;
 // Deep enough for an edit list inside an input, no deeper.
 const INPUT_DEPTH_MAX = 4;
 
@@ -616,4 +621,83 @@ function shapeChatCalls(entry: Record_): Replacement | undefined {
         saved,
         counts: { masked, compacted: 0, deduped: 0 },
       };
+}
+
+// ── superseded harness notes ────────────────────────────────────────────────
+//
+// A harness puts notes of its own in user turns, each a text block that is one
+// tag: a reminder of the instructions or the skills on offer, the tokens left,
+// a background task's news. Each is re-sent on every turn after it, and a newer
+// one of the same kind says the same or supersedes it. In the old part of the
+// conversation, a note with a newer one of its kind also in the old part is
+// dropped. Only the old part is read, which is fixed between steps, so this
+// changes bytes only when the cutoff steps anyway; the newest note of each
+// kind stays, so an instruction given once is never lost.
+
+const NOTE = /^\s*<([a-z][\w-]*)>([\s\S]*)<\/\1>\s*$/;
+
+// A note's kind: its tag and first line, numbers aside, so the tokens-left
+// count from turn 3 and turn 30 are one kind.
+function noteKind(block: unknown): string | undefined {
+  const typed = record(block);
+  if (typed?.type !== "text" || typeof typed.text !== "string") return;
+  const match = NOTE.exec(typed.text);
+  if (!match) return;
+  const first = match[2]!.trim().split("\n")[0]!;
+  return `${match[1]}:${first.replace(/\d+/g, "#").slice(0, 120)}`;
+}
+
+function userBlocks(item: unknown): unknown[] | undefined {
+  const entry = record(item);
+  return entry?.role === "user" && Array.isArray(entry.content) ? entry.content : undefined;
+}
+
+// Where the newest note of each kind sits in the old part, as "item:block".
+// Anthropic only: it is where harnesses put notes as blocks of their own.
+function latestNotes(format: Format, list: unknown[], cutoff: number): Set<string> | undefined {
+  if (format !== "anthropic" || cutoff === 0) return;
+  const latest = new Map<string, string>();
+  let turn = 0;
+  list.forEach((item, at) => {
+    if (isAssistant(format, item)) turn++;
+    if (turn > cutoff) return;
+    userBlocks(item)?.forEach((block, index) => {
+      const kind = noteKind(block);
+      if (kind) latest.set(kind, `${at}:${index}`);
+    });
+  });
+  return new Set(latest.values());
+}
+
+// The item without its superseded notes, or undefined when it had none. A turn
+// keeps one block at least, since an empty one is refused.
+function dropNotes(item: unknown, at: number, kept: Set<string> | undefined) {
+  const blocks = userBlocks(item);
+  if (!kept || !blocks) return;
+  let saved = 0;
+  let dropped = 0;
+  const content = blocks.filter((block, index) => {
+    if (noteKind(block) === undefined || kept.has(`${at}:${index}`)) return true;
+    if (dropped === blocks.length - 1) return true;
+    saved += JSON.stringify(block).length;
+    dropped++;
+    return false;
+  });
+  return dropped === 0 ? undefined : { entry: { ...(item as Record_), content }, saved, dropped };
+}
+
+// The rest of shaping run on what dropping notes left, with both counted.
+function withNotes(
+  item: unknown,
+  notes: ReturnType<typeof dropNotes>,
+  rest: (item: unknown) => Replacement | undefined,
+): Replacement | undefined {
+  const next = rest(notes ? notes.entry : item);
+  if (!notes) return next;
+  const counts = next?.counts ?? { masked: 0, compacted: 0, deduped: 0 };
+  return {
+    entry: next?.entry ?? notes.entry,
+    saved: notes.saved + (next?.saved ?? 0),
+    counts: { ...counts, masked: counts.masked + notes.dropped },
+  };
 }

@@ -392,8 +392,11 @@ restarts. It needs a client that names its session, and the footer shows
 
 Old tool results are masked before the request leaves: past the cutoff, a
 result over 400 characters, or one holding images, becomes a one-line stub
-naming the call that made it. Long strings in an old call's input, the file a
-`Write` wrote or both sides of an `Edit`, become a note too. An old Anthropic
+naming the call that made it. Strings over 400 characters in an old call's
+input, a long shell command, the file a `Write` wrote or both sides of an
+`Edit`, become a note too. So does an old note from the harness (a reminder,
+the tokens left) that a newer one of its kind replaces; the newest of each kind
+stays. An old Anthropic
 turn's thinking is dropped whole, since a signed block cannot be cut; that is
 often the biggest part of a long conversation. Newer results are
 compacted where they can be: escape codes, repeated lines, log timestamps,

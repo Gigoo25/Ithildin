@@ -9,7 +9,7 @@ The README is the user-facing spec; this file is what the README does not tell y
 Run from the repo root unless noted.
 
 ```sh
-bun test                                    # everything: 847 tests
+bun test                                    # everything: 854 tests
 bun test proxy/src/requests.test.ts         # one file
 bun test proxy/src/requests.test.ts -t "name"   # one test
 bun x tsc --noEmit                          # typecheck (needs a typescript; see below)
