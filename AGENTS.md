@@ -87,6 +87,8 @@ Check it before you finish, not after.
 - State is in memory only; a restart clears it. `SentRequests` caps a body at
   `BODY_BYTES_MAX` (8 MiB) and **clamps a longer one so it still parses**, which
   is what keeps the conversation view working on very large bodies.
+- Shaping and Anthropic's prompt cache: `proxy/CACHING.md` has the design, the
+  open question (why some shaping steps miss the cache) and how to measure it.
 - `EventLog.scan` is bounded by per-rule deadlines and windows
   (`SCAN_WINDOW_CHARS` in `engine/lib/rules.ts`); a completed window is cached
   by content digest. `MAX_SCAN_BYTES` skips regex scanning on very large strings.
