@@ -53,6 +53,7 @@ import { PrefixWatch } from "./prefix.ts";
 import { answerMcp, offeredTool, Originals, outputId } from "./retrieve.ts";
 import { merge, type Usage, usageOf, usageOfEvent, usageText } from "./usage.ts";
 import { findWatched, knownValues, watchPolicy } from "./watch.ts";
+import { Diagnoses, diagnosingOn, type Heard, heardIn } from "./diagnose.ts";
 import { errorReply, readCapped } from "./reply.ts";
 import { type SelfTest, selfTest } from "./selftest.ts";
 import { createRewriter, formatSse, parseSseBlock, swapResponseBody } from "./streams.ts";
@@ -340,6 +341,7 @@ function rewriteSse(
   tags: Set<string>,
   done: (swapped: number, usage: Usage | undefined) => void,
   tap: (event: ActivityEvent) => unknown,
+  listen: (value: unknown) => void = () => {},
 ): ReadableStream<Uint8Array> {
   const rewriter = createRewriter(format, tags);
   let usage: Usage | undefined;
@@ -354,6 +356,8 @@ function rewriteSse(
     }
     const part = usageOfEvent(format, event.data);
     if (part) usage = merge(usage, part);
+    if (event.data.includes('"diagnostics"') || event.data.includes('"message_start"'))
+      listen(parsedOr(event.data));
     const outs = observeActivity(tap, () => rewriter.push(event));
     for (const out of outs) controller.enqueue(encoder.encode(formatSse(out)));
   };
@@ -419,6 +423,7 @@ export type Forwarded = {
   compacted: number;
   deduped: number;
   savedChars: number;
+  step?: { from: number; to: number };
 };
 
 function unscanned(): Scanned {
@@ -611,6 +616,7 @@ interface Stores {
   names: SessionNames;
   prefixes: PrefixWatch;
   originals: Originals;
+  diagnoses: Diagnoses;
   turns: number;
 }
 
@@ -660,12 +666,8 @@ async function forward(
   const renamed = nameSession(names, session, scanned);
   const ask = session ? titleAsk(scanned.object) : undefined;
 
-  const reached = await fetchHeaders(fetchUpstream, target, request, {
-    method: request.method,
-    headers,
-    body: shaped.body,
-    redirect: "manual",
-  });
+  const asking = { stores, session: session?.id, main: isMainRequest(scanned.object), format };
+  const reached = await sendAsking(asking, fetchUpstream, target, request, headers, shaped);
   if ("refused" in reached) return reached.refused;
   const { upstream } = reached;
   if (session && ask && upstream.ok) noteTitle(upstream.clone(), ask, session.id, names, renamed);
@@ -674,7 +676,13 @@ async function forward(
     journalLine(name, sent.rest, upstream.status, scanMs, tags, scanned.hits, shaped) + broke;
   const tap = (event: ActivityEvent) => events.record(context, event);
   const asked = request.method !== "GET" && request.method !== "HEAD";
-  return relayReply(upstream, { format, asked }, tags, line, tap, usageCounter(events, context));
+  const heard: Heard = {};
+  const counted = usageCounter(events, context);
+  const answered = (usage: Usage | undefined) =>
+    counted(usage) +
+    (reached.asked ? stores.diagnoses.answer(session!.id, !!shaped.step, heard) : "");
+  const listen = (value: unknown) => Object.assign(heard, heardIn(value));
+  return relayReply(upstream, { format, asked }, tags, line, tap, answered, listen);
 }
 
 // How long an upstream has to start its reply. A long non-streamed answer
@@ -705,6 +713,57 @@ export async function fetchHeaders(
   } finally {
     clearTimeout(timer);
   }
+}
+
+// A stream event's data as JSON, or undefined when it is not.
+function parsedOr(data: string): unknown {
+  try {
+    return JSON.parse(data);
+  } catch {
+    return undefined;
+  }
+}
+
+// Sends a request upstream, asking Anthropic why a main Claude request missed
+// the cache (diagnose.ts) when it is one; when Anthropic refuses the question,
+// the proxy stops asking and sends the request again as it was.
+async function sendAsking(
+  asking: {
+    stores: Stores;
+    session: string | undefined;
+    main: boolean;
+    format: Format | undefined;
+  },
+  fetchUpstream: typeof fetch,
+  target: string,
+  request: Request,
+  headers: Headers,
+  shaped: Forwarded,
+): Promise<({ upstream: Response } | { refused: Response }) & { asked: boolean }> {
+  const { diagnoses } = asking.stores;
+  const plain = () =>
+    fetchHeaders(fetchUpstream, target, request, {
+      method: request.method,
+      headers,
+      body: shaped.body,
+      redirect: "manual",
+    });
+  const firstParty = new URL(target).hostname === "api.anthropic.com";
+  const eligible = asking.format === "anthropic" && asking.session && asking.main && firstParty;
+  const askHeaders = new Headers(headers);
+  const body =
+    eligible && shaped.body !== undefined && diagnosingOn()
+      ? diagnoses.ask(asking.session!, !!shaped.step, shaped.body, askHeaders)
+      : undefined;
+  if (body === undefined) return { ...(await plain()), asked: false };
+  const init = { method: request.method, headers: askHeaders, body, redirect: "manual" as const };
+  const reached = await fetchHeaders(fetchUpstream, target, request, init);
+  if ("refused" in reached) return { ...reached, asked: true };
+  const text = reached.upstream.status === 400 ? await reached.upstream.clone().text() : "";
+  if (!diagnoses.refused(reached.upstream.status, text)) return { ...reached, asked: true };
+  log(`cache diagnostics refused upstream, no longer asked: ${text.slice(0, 200)}`);
+  await reached.upstream.body?.cancel();
+  return { ...(await plain()), asked: false };
 }
 
 // What a reply says it cost, counted for the dashboard and named in the
@@ -772,6 +831,7 @@ export function shapeOutgoing(
       compacted: result.compacted,
       deduped: result.deduped,
       savedChars: result.savedChars,
+      ...(result.step ? { step: result.step } : {}),
     };
   } catch {
     // Shaping is an optimization. A request it cannot handle is forwarded as
@@ -796,6 +856,7 @@ export function createHandler(
     names: new SessionNames(),
     prefixes: new PrefixWatch(),
     originals: new Originals(),
+    diagnoses: new Diagnoses(),
     turns: 0,
   };
   const { book, events, kept, names } = stores;
@@ -881,7 +942,10 @@ export function journalLine(
     shaped && (shaped.masked > 0 || shaped.compacted > 0 || shaped.deduped > 0)
       ? ` shaped=${shaped.masked}m${shaped.compacted}c${repeats} saved=${shaped.savedChars}`
       : "";
-  return `${route}${rest} ${status} scan=${scanMs}ms${allowed} redacted=${hits}${work}`;
+  // A step moves the cutoff, in turns; named from the body, so the journal
+  // knows a step after a restart, when the proxy has no request to compare.
+  const step = shaped?.step ? ` step=${shaped.step.from}>${shaped.step.to}` : "";
+  return `${route}${rest} ${status} scan=${scanMs}ms${allowed} redacted=${hits}${work}${step}`;
 }
 
 // The oldest Bun the engine's per-rule scan deadlines work on. Before this they
@@ -1147,6 +1211,7 @@ async function relayReply(
   line: string,
   tap: (event: ActivityEvent) => unknown,
   counted: (usage: Usage | undefined) => string = () => "",
+  listen: (value: unknown) => void = () => {},
 ): Promise<Response> {
   // A client following a redirect resends its original, unredacted body to
   // the new URL, around the proxy: refuse it, and never pass its Location.
@@ -1166,12 +1231,14 @@ async function relayReply(
       tags,
       (swapped, usage) => log(`${line} swapped=${swapped}${counted(usage)} (stream)`),
       tap,
+      listen,
     );
     return new Response(stream, init);
   }
   if (format && contentType.includes("json") && upstream.ok) {
     const parsed = await swapJsonReply(upstream, format, tags, tap);
     if (parsed instanceof Response) return parsed;
+    listen(parsed.body);
     log(`${line} swapped=${parsed.swapped}${counted(usageOf(format, parsed.body))}`);
     // Always re-serialized: a blocked call changes arguments without a swap.
     return new Response(JSON.stringify(parsed.body), init);

@@ -71,6 +71,9 @@ export interface Shaped {
   compacted: number;
   deduped: number;
   savedChars: number;
+  // The turns old before this request and after it, when they differ: a step,
+  // read from the body alone, so the journal can name it after a restart.
+  step?: { from: number; to: number };
 }
 
 type Record_ = Record<string, unknown>;
@@ -501,7 +504,8 @@ export function shapeRequest(
   const ats = [previous > 0 ? boundary : -1, cutoff > 0 ? current : -1].filter((at) => at >= 0);
   const shaped = { ...body, [keyOf(format)]: out };
   const marked = format === "anthropic" ? markBoundaries(shaped, out, ats) : shaped;
-  return { body: marked, ...totals, savedChars };
+  const step = cutoff > previous ? { step: { from: previous, to: cutoff } } : {};
+  return { body: marked, ...totals, savedChars, ...step };
 }
 
 function keyOf(format: Format): "messages" | "input" {

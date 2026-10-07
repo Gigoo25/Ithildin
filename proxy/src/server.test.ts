@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -25,6 +25,7 @@ import {
   upstreamUrl,
 } from "./server.ts";
 import { looksLikeAlias } from "../engine/lib/aliases.ts";
+import { DIAGNOSE_BETA } from "./diagnose.ts";
 
 const EMAIL = "jane.doe@acme-corp.com";
 let standIn = "";
@@ -1500,6 +1501,130 @@ describe("routes", () => {
     expect(journalLine("anthropic", "/v1/messages", 200, 7, new Set(["pii", "all"]), 0)).toBe(
       "anthropic/v1/messages 200 scan=7ms allow=all,pii redacted=0",
     );
+  });
+
+  // What a request seen upstream asked about the cache, if anything.
+  const asked = (seen: Seen) => (seen.body as { diagnostics?: unknown }).diagnostics;
+
+  it("names a shaping step in the journal, read from the body alone", () => {
+    const shaped = { body: "", on: true, masked: 4, compacted: 0, deduped: 0, savedChars: 90 };
+    expect(
+      journalLine("anthropic", "/v1/messages", 200, 7, new Set(), 0, {
+        ...shaped,
+        step: { from: 10, to: 20 },
+      }),
+    ).toBe("anthropic/v1/messages 200 scan=7ms redacted=0 shaped=4m0c saved=90 step=10>20");
+    expect(journalLine("anthropic", "/v1/messages", 200, 7, new Set(), 0, shaped)).toBe(
+      "anthropic/v1/messages 200 scan=7ms redacted=0 shaped=4m0c saved=90",
+    );
+  });
+
+  it("asks Anthropic why a main Claude request missed the cache, and names the miss", async () => {
+    const lines: string[] = [];
+    const spy = spyOn(process.stderr, "write").mockImplementation(
+      ((line: string) => lines.push(line) > 0) as never,
+    );
+    try {
+      let reply = 0;
+      const up = fakeUpstream(() =>
+        Response.json({
+          id: `msg_${++reply}`,
+          content: [],
+          diagnostics: reply === 2 ? { cache_miss_reason: { type: "messages_changed" } } : null,
+        }),
+      );
+      const handler = createHandler(DEFAULT_ROUTES, up.fetch);
+      const main = {
+        model: "m",
+        tools: [{ name: "Bash" }],
+        messages: [{ role: "user", content: "hi" }],
+      };
+      const session = { "x-claude-code-session-id": "sess-diag" };
+      await (await handler(post("anthropic/v1/messages", main, session))).text();
+      await (await handler(post("anthropic/v1/messages", main, session))).text();
+      expect(asked(up.seen[0]!)).toEqual({ previous_message_id: null });
+      expect(up.seen[0]!.headers.get("anthropic-beta")).toContain(DIAGNOSE_BETA);
+      // The id goes up as it came down, untouched by redaction.
+      expect(asked(up.seen[1]!)).toEqual({ previous_message_id: "msg_1" });
+      expect(lines.some((line) => line.includes(" cachemiss=messages_changed"))).toBe(true);
+      // A side request, and a request with no session, are not asked about.
+      await (
+        await handler(post("anthropic/v1/messages", { model: "m", messages: [] }, session))
+      ).text();
+      await (await handler(post("anthropic/v1/messages", main))).text();
+      expect(asked(up.seen[2]!)).toBeUndefined();
+      expect(asked(up.seen[3]!)).toBeUndefined();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("reads the id and the miss from a streamed reply", async () => {
+    const lines: string[] = [];
+    const spy = spyOn(process.stderr, "write").mockImplementation(
+      ((line: string) => lines.push(line) > 0) as never,
+    );
+    try {
+      const up = fakeUpstream(() =>
+        sse([
+          {
+            event: "message_start",
+            data: {
+              type: "message_start",
+              message: {
+                id: "msg_s1",
+                usage: { input_tokens: 1 },
+                diagnostics: { cache_miss_reason: { type: "previous_message_not_found" } },
+              },
+            },
+          },
+          { event: "message_stop", data: { type: "message_stop" } },
+          { data: 'not json, with "diagnostics" in it' },
+        ]),
+      );
+      const handler = createHandler(DEFAULT_ROUTES, up.fetch);
+      const main = {
+        model: "m",
+        tools: [{ name: "Bash" }],
+        messages: [{ role: "user", content: "hi" }],
+      };
+      const session = { "x-claude-code-session-id": "sess-stream" };
+      await (await handler(post("anthropic/v1/messages", main, session))).text();
+      await (await handler(post("anthropic/v1/messages", main, session))).text();
+      expect(lines.some((line) => line.includes(" cachemiss=previous_message_not_found"))).toBe(
+        true,
+      );
+      expect(asked(up.seen[1]!)).toEqual({ previous_message_id: "msg_s1" });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("stops asking, and asks again plainly, when Anthropic refuses the question", async () => {
+    const spy = spyOn(process.stderr, "write").mockImplementation((() => true) as never);
+    try {
+      const up = fakeUpstream((seen) =>
+        (seen.body as { diagnostics?: unknown }).diagnostics
+          ? Response.json({ error: { message: "diagnostics: unknown field" } }, { status: 400 })
+          : Response.json({ id: "msg_ok", content: [] }),
+      );
+      const handler = createHandler(DEFAULT_ROUTES, up.fetch);
+      const main = {
+        model: "m",
+        tools: [{ name: "Bash" }],
+        messages: [{ role: "user", content: "hi" }],
+      };
+      const session = { "x-claude-code-session-id": "sess-refused" };
+      const first = await handler(post("anthropic/v1/messages", main, session));
+      expect(first.status).toBe(200);
+      expect(up.seen).toHaveLength(2);
+      expect(up.seen[1]!.headers.get("anthropic-beta") ?? "").not.toContain(DIAGNOSE_BETA);
+      await (await handler(post("anthropic/v1/messages", main, session))).text();
+      expect(up.seen).toHaveLength(3);
+      expect(asked(up.seen[2]!)).toBeUndefined();
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("refuses to run on a Bun whose scan deadlines do not fire", () => {
