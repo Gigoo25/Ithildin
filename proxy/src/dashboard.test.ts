@@ -732,6 +732,24 @@ describe("dashboard", () => {
     expect(paired.map((item) => item.id)).toEqual(["t1", "t1"]);
   });
 
+  it("labels a harness block by who it came from, headed by what it holds", () => {
+    const grab = (name: string) =>
+      new RegExp(`function ${name}[\\s\\S]*?\\n\\}`).exec(DASHBOARD_HTML)![0];
+    const { speaker, wrapped } = new Function(
+      `${grab("oneLine")}; ${grab("speaker")}; ${grab("wrapped")}; return { speaker, wrapped };`,
+    )() as { speaker: (tag: string) => string; wrapped: (tag: string, text: string) => string };
+    expect(["bash-input", "command-name", "bash-stdout", "system-reminder"].map(speaker)).toEqual([
+      "you",
+      "you",
+      "shell",
+      "harness",
+    ]);
+    expect(wrapped("bash-input", "<bash-input> bun seed.ts</bash-input>")).toBe(
+      "bash-input  bun seed.ts",
+    );
+    expect(wrapped("bash-stderr", "<bash-stderr></bash-stderr>")).toBe("bash-stderr");
+  });
+
   it("cuts a guard notice to its first sentence for the page", () => {
     const source = /function firstSentence[\s\S]*?\n\}/.exec(DASHBOARD_HTML)![0];
     const firstSentence = new Function(`${source}; return firstSentence;`)() as (

@@ -274,13 +274,16 @@ export const DASHBOARD_HTML = `<!doctype html>
     font: 12px/1.45 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere;
   }
   /* The conversation, set like an agent's terminal. */
-  #viewer:not(.raw) { font: 12.5px/1.5 var(--mono); }
+  #viewer:not(.raw) { font: 12.5px/1.5 var(--mono); --label: 60px; }
   .step { display: flex; gap: 8px; margin: 0 0 8px; }
   details.step, .step.call { display: block; }
+  /* A folded block says who it came from in the same column as a message. */
+  details.step:not(.out) > summary { display: flex; gap: 8px; }
+  details.step:not(.out) > .body { margin-left: calc(var(--label) + 8px); }
   /* Who said it, as a word in its own column: an arrow there read as
      something to click. */
   .glyph {
-    flex: none; width: 5ch; color: var(--dim); font-size: 10.5px; line-height: 1.8;
+    flex: none; width: var(--label); color: var(--dim); font-size: 10.5px; line-height: 1.8;
     text-transform: uppercase; letter-spacing: .08em; user-select: none;
   }
   .said, .body { white-space: pre-wrap; overflow-wrap: anywhere; min-width: 0; }
@@ -1044,9 +1047,10 @@ function brief(item) {
 }
 
 // A folded block: one dim line, opened when something in it is marked.
-function fold(className, head, text, wants, needle) {
+function fold(className, head, text, wants, needle, label) {
   const box = byClass('details', 'step ' + className);
   const summary = document.createElement('summary');
+  if (label !== undefined) summary.appendChild(byClass('span', 'glyph', label));
   summary.appendChild(byClass('span', 'gist', head));
   const body = byClass('div', 'body');
   const matches = markInto(body, text, wants, needle);
@@ -1072,6 +1076,21 @@ function remember(box, key) {
     if (box.open === usual) folds.delete(key);
     else folds.set(key, box.open);
   });
+}
+
+// Who a block the harness wrapped in a tag came from: what the reader ran
+// with "!" or a slash command is theirs, its output the shell's, and the
+// rest (reminders, notices) the harness's own.
+function speaker(tag) {
+  if (/^(bash-input|command-)/.test(tag)) return 'you';
+  if (/(stdout|stderr)$/.test(tag)) return 'shell';
+  return 'harness';
+}
+
+// A wrapped block's head: its tag, then the first line inside it.
+function wrapped(tag, text) {
+  const inner = text.replace(/<\\/?[a-z][\\w-]*[^>]*>/g, ' ').trim();
+  return inner ? tag + '  ' + oneLine(inner, 100) : tag;
 }
 
 function said(className, glyph, text, wants, needle) {
@@ -1150,18 +1169,20 @@ function conversation(items, marks, needle, leaks) {
       start('Turn ' + ++count, item.text);
     }
     if (item.kind === 'tools') {
-      put(item, fold('meta', item.name + ' tools offered', item.text, plain, needle));
+      put(item, fold('meta', item.name + ' tools offered', item.text, plain, needle, 'system'));
     } else if (item.kind === 'system') {
       const size = item.text.length + ' characters';
-      put(item, fold('meta', 'System prompt \\u00b7 ' + size, item.text, plain, needle));
+      const head = 'System prompt \\u00b7 ' + size;
+      put(item, fold('meta', head, item.text, plain, needle, 'system'));
     } else if (item.kind === 'user') {
       const tag = WRAPPED.exec(item.text);
-      if (tag) put(item, fold('meta', '\\u2699 ' + tag[1], item.text, plain, needle));
+      if (tag) put(item, fold('meta', wrapped(tag[1], item.text), item.text, plain, needle,
+        speaker(tag[1])));
       else put(item, said('prompt', 'you', item.text, plain, needle));
     } else if (item.kind === 'assistant') {
       put(item, said('reply', 'agent', item.text, model, needle));
     } else if (item.kind === 'thinking') {
-      put(item, fold('meta', '\\u273b Thinking', item.text, plain, needle));
+      put(item, fold('meta', 'Thinking', item.text, plain, needle, 'agent'));
     } else if (item.kind === 'tool_call') {
       const result = item.id ? results.get(item.id) : undefined;
       if (result) paired.add(result);
@@ -1187,7 +1208,7 @@ function conversation(items, marks, needle, leaks) {
     } else if (item.kind === 'media') {
       put(item, said('media', '', item.text, plain, needle));
     } else {
-      put(item, fold('meta', item.who + ' \\u00b7 ' + item.kind, item.text, plain, needle));
+      put(item, fold('meta', item.kind, item.text, plain, needle, item.who));
     }
   }
   nodes.forEach((node, index) => {
