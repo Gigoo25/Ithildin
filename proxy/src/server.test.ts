@@ -189,11 +189,11 @@ describe("requests", () => {
         ],
       }),
     );
-    expect((await health()).badge).toBe("ITHILDIN ON · 1m (+1) · 1 req");
+    expect((await health()).badge).toBe("ITHILDIN ON · 1 masked (+1)");
     await handler(
       post("anthropic/v1/messages", { messages: [{ role: "user", content: "title this" }] }),
     );
-    expect((await health()).badge).toBe("ITHILDIN ON · 1m (+1) · 1 req");
+    expect((await health()).badge).toBe("ITHILDIN ON · 1 masked (+1)");
   });
 
   it("shows the latest prompt's allow tags on the badge, and upstream as typed", async () => {
@@ -216,7 +216,7 @@ describe("requests", () => {
         NAMED,
       ),
     );
-    expect(await badge()).toBe("ITHILDIN ON · 0 · 1 req · +protected");
+    expect(await badge()).toBe("ITHILDIN ON · nothing masked · 1 req · +protected");
     expect(JSON.stringify(up.seen[0]!.body)).toContain("[allow-protected] commit");
     await handler(
       post(
@@ -225,7 +225,7 @@ describe("requests", () => {
         NAMED,
       ),
     );
-    expect(await badge()).toBe("ITHILDIN ON · 0 · 2 req");
+    expect(await badge()).toBe("ITHILDIN ON · nothing masked · 2 req");
   });
 
   it("keeps one badge per session and never forwards the proxy's session header", async () => {
@@ -258,8 +258,8 @@ describe("requests", () => {
       { role: "user", content: "hi" },
       { role: "assistant", content: "hello" },
     ]);
-    expect(await badge("pi-1")).toBe("ITHILDIN ON · 1m (+1) · 1 req");
-    expect(await badge("claude-1")).toBe("ITHILDIN ON · 0 · 1 req");
+    expect(await badge("pi-1")).toBe("ITHILDIN ON · 1 masked (+1)");
+    expect(await badge("claude-1")).toBe("ITHILDIN ON · nothing masked · 1 req");
     expect(up.seen[0]!.headers.get("x-ithildin-session")).toBeNull();
     // A tool result in the same turn adds to the turn; a new prompt starts
     // the count again.
@@ -269,13 +269,13 @@ describe("requests", () => {
       ...call("t2", "from user-a0ea33@acme-corp.com"),
     ];
     await send({ "x-ithildin-session": "pi-1" }, second);
-    expect(await badge("pi-1")).toBe("ITHILDIN ON · 2m (+2) · 2 req");
+    expect(await badge("pi-1")).toBe("ITHILDIN ON · 2 masked (+2)");
     await send({ "x-ithildin-session": "pi-1" }, [
       ...second,
       { role: "assistant", content: "done" },
       { role: "user", content: "thanks" },
     ]);
-    expect(await badge("pi-1")).toBe("ITHILDIN ON · 2m · 3 req");
+    expect(await badge("pi-1")).toBe("ITHILDIN ON · 2 masked");
     expect(up.seen.at(-1)!.headers.get("x-ithildin-session")).toBeNull();
   });
 

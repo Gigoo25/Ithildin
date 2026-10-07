@@ -238,7 +238,7 @@ describe("one-call approvals", () => {
       1,
       new Set([`once:${id}`]),
     );
-    expect(book.lookup("o", undefined)?.badge).toBe("ITHILDIN ON · 0 · 1 req · +once");
+    expect(book.lookup("o", undefined)?.badge).toBe("ITHILDIN ON · nothing masked · 1 req · +once");
   });
 });
 
@@ -290,19 +290,19 @@ describe("the badge", () => {
 
   it("says when the conversation is untrusted, and shows +send", () => {
     expect(badgeText(counts, 0, 3, [], { untrusted: true })).toBe(
-      "ITHILDIN ON · 0 · 3 req · untrusted",
+      "ITHILDIN ON · nothing masked · 3 req · \u26a0 untrusted",
     );
     const book = createStatusBook();
     book.record("s", "anthropic", counts, 1, new Set(["send"]), { untrusted: true, unguarded: 2 });
     expect(book.lookup("s", undefined)?.badge).toBe(
-      "ITHILDIN ON · 0 · 1 req · untrusted · ?2t · +send",
+      "ITHILDIN ON · nothing masked · 1 req · \u26a0 untrusted · \u26a0 2 unguarded tools · +send",
     );
-    expect(badgeText(counts, 0, 1)).toBe("ITHILDIN ON · 0 · 1 req");
+    expect(badgeText(counts, 0, 1)).toBe("ITHILDIN ON · nothing masked · 1 req");
   });
 
   it("says when the conversation is private", () => {
     expect(badgeText(counts, 0, 1, [], { private: true })).toBe(
-      "ITHILDIN ON · 0 · 1 req · private",
+      "ITHILDIN ON · nothing masked · 1 req · \u26a0 private",
     );
     const book = createStatusBook();
     book.record("p", "anthropic", counts, 1, new Set(), { private: true });

@@ -83,15 +83,15 @@ describe("the session switch", () => {
   });
 });
 
-describe("the badge says which layer is on", () => {
-  it("names shaping only once it has an answer", () => {
-    expect(badgeText(counts, 0, 1, [], {}, true)).toContain("· SHAPE");
-    expect(badgeText(counts, 0, 1, [], {}, false)).toContain("· SHAPE OFF");
-    expect(badgeText(counts, 0, 1)).not.toContain("SHAPE");
+describe("the badge says when shaping is off", () => {
+  it("names shaping only when an answer turned it off", () => {
+    expect(badgeText(counts, 0, 1, [], {}, true)).not.toContain("shaping");
+    expect(badgeText(counts, 0, 1, [], {}, false)).toContain("· shaping off");
+    expect(badgeText(counts, 0, 1)).not.toContain("shaping");
   });
 
   it("keeps the marker last, so a narrow status line still shows it", () => {
-    expect(badgeText(counts, 3, 12, ["pii"], {}, false).endsWith("· SHAPE OFF")).toBe(true);
+    expect(badgeText(counts, 3, 12, ["pii"], {}, false).endsWith("· shaping off")).toBe(true);
   });
 
   it("records what the last request in a conversation did", () => {
@@ -100,14 +100,14 @@ describe("the badge says which layer is on", () => {
     expect(book.lookup("s", undefined)?.shaping).toBe(true);
     book.record("s", "anthropic", counts, 2, new Set(), {}, false);
     expect(book.lookup("s", undefined)?.shaping).toBe(false);
-    expect(book.lookup("s", undefined)?.badge).toContain("SHAPE OFF");
+    expect(book.lookup("s", undefined)?.badge).toContain("shaping off");
   });
 
   it("leaves a conversation with no request yet unmentioned", () => {
     const book = createStatusBook();
     book.record("s", "anthropic", counts, 1);
     expect(book.lookup("s", undefined)?.shaping).toBeUndefined();
-    expect(book.lookup("s", undefined)?.badge).not.toContain("SHAPE");
+    expect(book.lookup("s", undefined)?.badge).not.toContain("shaping");
   });
 });
 

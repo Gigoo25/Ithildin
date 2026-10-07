@@ -1,27 +1,31 @@
 // What the proxy did for each conversation, for the agents' status badges.
 // Claude's status line and Pi's footer render the same text, built here, so
-// the two cannot drift:
+// the two cannot drift. It is read at a glance, so it is words, not codes,
+// and it says only what the reader would act on:
 //
-//   ITHILDIN ON · 12m 1f 3l 2i (+2)
+//   ITHILDIN ON · 41 masked (+6) · 4 withheld · \u26a0 untrusted · \u26a0 1 unguarded tool · +pii
 //
-//   m  distinct values masked: swapped for stand-ins or generalized
-//   f  tool results withheld: the call read a protected file
-//   l  search lines withheld: they came from a protected file
-//   i  inline images withheld
-//   +N added since the user's latest prompt (all kinds)
-//   N req  requests scanned in this conversation: it ticks every turn, so
-//          a badge reading "0" still shows the proxy is in the path
-//   untrusted  the conversation has read content from outside the machine,
-//          so commands that send data off it are blocked (trust.ts)
-//   private    the model has seen a secret file, or a command copied one:
-//          sends are blocked the same way
-//   ?Nt    tools the agent offers that act but that no guard reads
-//   +pii   allow tags the user's latest prompt carries (+pii, +secrets,
-//          +all, +protected, +send, +once), and +images while the session's
-//          image switch is on. This is how the user sees one landed.
+//   masked     distinct values swapped for stand-ins or generalized
+//   withheld   tool results that read a protected file, search lines that
+//              came from one, and inline images; the dashboard has the split
+//   (+N)       added since the user's latest prompt (all kinds)
+//   \u26a0 untrusted  the conversation has read content from outside the
+//              machine, so commands that send data off it are blocked (trust.ts)
+//   \u26a0 private    the model has seen a secret file, or a command copied
+//              one: sends are blocked the same way
+//   \u26a0 N unguarded tools  tools the agent offers that act but that no
+//              guard reads
+//   +pii       allow tags the user's latest prompt carries (+pii, +secrets,
+//              +all, +protected, +send, +once), and +images while the
+//              session's image switch is on. This is how the user sees one
+//              landed.
+//   shaping off  the session opted out of context shaping; on says nothing
 //
 // Counts cover the whole conversation, since every request carries all of
-// it. Zero kinds are left out; nothing hidden reads "ITHILDIN ON · 0".
+// it. Zero kinds are left out. With nothing hidden it reads
+// "ITHILDIN ON · nothing masked · 3 req": the request count ticks every turn,
+// so a quiet badge still shows the proxy is in the path. Once something is
+// masked the moving counts show that, and the request count is left out.
 //
 // Conversations are keyed by the agent's session id: Claude sends
 // X-Claude-Code-Session-Id, Pi's footer adds x-ithildin-session (stripped before
@@ -91,21 +95,21 @@ export function badgeText(
   trust: Trust = {},
   shaping?: boolean,
 ): string {
-  const scanned =
-    (requests > 0 ? ` · ${requests} req` : "") +
-    (trust.untrusted ? " · untrusted" : "") +
-    (trust.private ? " · private" : "") +
-    (trust.unguarded ? ` · ?${trust.unguarded}t` : "") +
-    (allowed.length > 0 ? ` · ${allowed.map((tag) => `+${tag}`).join(" ")}` : "") +
-    (shaping === false ? " · SHAPE OFF" : shaping === true ? " · SHAPE" : "");
+  const withheld = counts.files + counts.lines + counts.images;
+  const added = turn > 0 ? ` (+${turn})` : "";
   const parts = [
-    counts.masked && `${counts.masked}m`,
-    counts.files && `${counts.files}f`,
-    counts.lines && `${counts.lines}l`,
-    counts.images && `${counts.images}i`,
-  ].filter(Boolean);
-  if (parts.length === 0) return `ITHILDIN ON · 0${scanned}`;
-  return `ITHILDIN ON · ${parts.join(" ")}${turn > 0 ? ` (+${turn})` : ""}${scanned}`;
+    counts.masked > 0 && `${counts.masked} masked${added}`,
+    withheld > 0 && `${withheld} withheld${counts.masked > 0 ? "" : added}`,
+  ].filter((part) => part !== false);
+  if (parts.length === 0)
+    parts.push("nothing masked", ...(requests > 0 ? [`${requests} req`] : []));
+  const tools = trust.unguarded ?? 0;
+  if (trust.untrusted) parts.push("\u26a0 untrusted");
+  if (trust.private) parts.push("\u26a0 private");
+  if (tools > 0) parts.push(`\u26a0 ${tools} unguarded tool${tools === 1 ? "" : "s"}`);
+  if (allowed.length > 0) parts.push(allowed.map((tag) => `+${tag}`).join(" "));
+  if (shaping === false) parts.push("shaping off");
+  return ["ITHILDIN ON", ...parts].join(" · ");
 }
 
 export function createStatusBook() {

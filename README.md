@@ -213,29 +213,28 @@ Claude Code's status line and Pi's footer both show the same badge, which
 the proxy builds:
 
 ```
-ITHILDIN ON · 12m 1f 3l 2i (+2) · 40 req · untrusted · private · ?1t · +pii
+ITHILDIN ON · 41 masked (+6) · 4 withheld · ⚠ untrusted · ⚠ 1 unguarded tool · +pii
 ```
 
-| Part        | Meaning                                                     |
-|-------------|-------------------------------------------------------------|
-| `12m`       | distinct values masked (stand-ins or generalized wording)   |
-| `1f`        | tool results withheld because they read a protected file    |
-| `3l`        | search lines withheld because they came from one            |
-| `2i`        | inline images withheld                                      |
-| `(+2)`      | how many of those arrived since your latest prompt          |
-| `40 req`    | requests scanned in this conversation                       |
-| `untrusted` | the conversation read outside content, so sends are blocked |
-| `private`   | a secret file was seen or copied, so sends are blocked      |
-| `?1t`       | tools the agent offers that act but no guard reads          |
-| `+pii`      | allow tags your latest prompt carries                       |
-| `SHAPE`     | context shaping is on (`SHAPE OFF` when the session opted out) |
+| Part                   | Meaning                                                      |
+|------------------------|--------------------------------------------------------------|
+| `41 masked`            | distinct values masked (stand-ins or generalized wording)    |
+| `4 withheld`           | tool results that read a protected file, search lines that came from one, and inline images; the dashboard has the split |
+| `(+6)`                 | how many of those arrived since your latest prompt           |
+| `⚠ untrusted`          | the conversation read outside content, so sends are blocked  |
+| `⚠ private`            | a secret file was seen or copied, so sends are blocked       |
+| `⚠ 1 unguarded tool`   | tools the agent offers that act but no guard reads           |
+| `+pii`                 | allow tags your latest prompt carries                        |
+| `shaping off`          | the session opted out of context shaping                     |
 
 Counts cover the whole conversation, and kinds at zero are left out. With
-nothing hidden, the badge reads `ITHILDIN ON · 0 · N req`. The request count
-ticks on every request once the conversation has a second message, so a quiet
-badge still proves the proxy is in the path. A lone first message is not
-counted: it looks the same as the agent's side requests (titles, quota checks).
-Its values show in the counts from the next request on.
+nothing hidden, the badge reads `ITHILDIN ON · nothing masked · N req`. The
+request count ticks on every request once the conversation has a second
+message, so a quiet badge still proves the proxy is in the path; once
+something is masked, the counts do that and the request count is left out. A
+lone first message is not counted: it looks the same as the agent's side
+requests (titles, quota checks). Its values show in the counts from the next
+request on.
 
 `ITHILDIN DOWN` means requests are being refused: the proxy isn't running,
 or its self-test hasn't passed. For a failed self-test the badge names the
@@ -442,8 +441,8 @@ Three ways to turn it off, each independent:
 `[raw]` and `[shape]` are session switches rather than allow tags: they hold
 for the rest of the session however many prompts follow, because the proxy
 remembers them and the prompt that set one may be compacted out of the
-history. The badge reads `· SHAPE` or `· SHAPE OFF` once a request in the
-conversation has an answer, and says nothing before that.
+history. The badge reads `· shaping off` once a request in the conversation
+has turned it off, and says nothing while it is on.
 
 A tag opens every call of its kind. `[allow-once:<id>]` opens only the call
 whose refusal gave that id: the same command sent again runs, and anything
