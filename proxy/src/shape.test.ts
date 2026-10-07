@@ -649,6 +649,56 @@ describe("old thinking", () => {
   });
 });
 
+describe("old chat reasoning", () => {
+  const reasoning = "r".repeat(2_000);
+  // A big old chat result, so the step pays.
+  const carried = [
+    { role: "assistant", tool_calls: [{ id: "c0", function: { name: "cat", arguments: "{}" } }] },
+    { role: "tool", tool_call_id: "c0", content: big() },
+  ];
+  const reasoned = (extra: Record<string, unknown>) => ({
+    role: "assistant",
+    content: "done",
+    reasoning_content: reasoning,
+    ...extra,
+  });
+
+  it("drops an old turn's reasoning in every field, and keeps a recent turn's", () => {
+    const details = [{ type: "reasoning.encrypted", data: "e".repeat(500) }];
+    const early = [reasoned({ reasoning: "", reasoning_details: details })];
+    const late = [reasoned({})];
+    const shaped = shapeRequest("chat", { messages: around([...carried, ...early], late) });
+    const out = shaped!.body.messages as Array<Record<string, unknown>>;
+    // An empty field is left as it came; only the two with something in them count.
+    expect(at(out, 6)).toEqual({ role: "assistant", content: "done", reasoning: "" });
+    expect(out.at(-1)).toEqual(late[0]!);
+    expect(shaped!.masked).toBe(3);
+    expect(shaped!.savedChars).toBeGreaterThan(2_500);
+  });
+
+  it("keeps the reasoning of a turn that says and calls nothing", () => {
+    const early = [{ role: "assistant", content: null, reasoning_content: reasoning }];
+    const out = shapeRequest("chat", { messages: around([...carried, ...early], []) })!.body
+      .messages;
+    expect(at(out, 6).reasoning_content).toBe(reasoning);
+  });
+
+  it("drops it beside a call, and shapes the same body the same way twice", () => {
+    const early = [
+      reasoned({
+        content: null,
+        tool_calls: [{ id: "c1", function: { name: "ls", arguments: "{}" } }],
+      }),
+      { role: "tool", tool_call_id: "c1", content: "a.ts" },
+    ];
+    const body = { messages: around([...carried, ...early], []) };
+    const first = JSON.stringify(shapeRequest("chat", body)?.body);
+    expect(first).not.toContain(reasoning);
+    expect(first).toContain('"name":"ls"');
+    expect(JSON.stringify(shapeRequest("chat", body)?.body)).toBe(first);
+  });
+});
+
 describe("small old results", () => {
   it("masks one from MASK_MIN_CHARS, with a stub shorter than it", () => {
     // A stub quotes at most 80 characters of the command, however long.

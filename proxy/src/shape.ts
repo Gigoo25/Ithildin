@@ -601,26 +601,47 @@ function shapeBlocks(entry: Record_): Replacement | undefined {
     : { entry: { ...entry, content }, saved, counts: { masked, compacted: 0, deduped: 0 } };
 }
 
+// A chat turn's reasoning, by the field each provider sends it back in:
+// DeepSeek and opencode Go's reasoning_content, OpenRouter's reasoning and
+// reasoning_details. Unlike Anthropic's thinking nothing checks it, and it is
+// billed as input on every turn that re-sends it (a fifth of the prompt tokens
+// on an opencode Go session), so an old turn's is dropped the same way.
+const REASONING = ["reasoning_content", "reasoning", "reasoning_details"];
+
+// Whether a chat turn says or calls something: one that does not keeps its
+// reasoning, since an empty turn is refused.
+function hasOutput(entry: Record_): boolean {
+  const { content, tool_calls: calls } = entry;
+  if (Array.isArray(calls) && calls.length > 0) return true;
+  return (typeof content === "string" || Array.isArray(content)) && content.length > 0;
+}
+
 function shapeChatCalls(entry: Record_): Replacement | undefined {
-  if (entry.role !== "assistant" || !Array.isArray(entry.tool_calls)) return;
+  if (entry.role !== "assistant") return;
   let saved = 0;
   let masked = 0;
-  const calls = (entry.tool_calls as unknown[]).map((call) => {
-    const typed = record(call);
-    const fn = record(typed?.function);
-    const next = fn ? maskedArguments(fn.arguments) : undefined;
-    if (!next) return call;
-    saved += next.saved;
-    masked++;
-    return { ...typed, function: { ...fn, arguments: next.value } };
-  });
+  const out: Record_ = { ...entry };
+  if (Array.isArray(entry.tool_calls))
+    out.tool_calls = (entry.tool_calls as unknown[]).map((call) => {
+      const typed = record(call);
+      const fn = record(typed?.function);
+      const next = fn ? maskedArguments(fn.arguments) : undefined;
+      if (!next) return call;
+      saved += next.saved;
+      masked++;
+      return { ...typed, function: { ...fn, arguments: next.value } };
+    });
+  if (hasOutput(entry))
+    for (const field of REASONING) {
+      const value = entry[field];
+      if (value === undefined || value === null || value === "") continue;
+      saved += JSON.stringify(value).length;
+      masked++;
+      delete out[field];
+    }
   return masked === 0
     ? undefined
-    : {
-        entry: { ...entry, tool_calls: calls },
-        saved,
-        counts: { masked, compacted: 0, deduped: 0 },
-      };
+    : { entry: out, saved, counts: { masked, compacted: 0, deduped: 0 } };
 }
 
 // ── superseded harness notes ────────────────────────────────────────────────
