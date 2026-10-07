@@ -758,7 +758,10 @@ export function shapeOutgoing(
     // guard with the shaping itself: a body that throws leaves shaping
     // unanswered, which the badge reads as "no answer", not as "off".
     const state = shapingSwitch(format, object, session);
-    if (!shapingOn() || state.on === false) return { ...off, on: state.on };
+    // Off for the whole proxy is off for every session, whatever its own switch
+    // says, and the badge says so.
+    if (!shapingOn()) return { ...off, on: false };
+    if (state.on === false) return { ...off, on: false };
     const result = shapeRequest(format, object, retrievalFor(object, originals));
     if (!result) return { ...off, on: state.on };
     return {

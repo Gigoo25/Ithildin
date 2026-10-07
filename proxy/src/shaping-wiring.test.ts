@@ -176,6 +176,32 @@ describe("the request path shapes what it forwards", () => {
     expect(forwarded.compacted).toBe(0);
   });
 
+  it("says shaping is off when the proxy turns it off, for any session", () => {
+    const body = conversation();
+    const scanned: Scanned = {
+      body: JSON.stringify(body),
+      object: body,
+      tags: new Set<string>(),
+      hits: 0,
+      counts: noCounts,
+      prompts: 1,
+      scanMs: 1,
+      label: { untrusted: false, private: false },
+      unguarded: [],
+      activity: [],
+    };
+    const saved = process.env.ITHILDIN_SHAPE;
+    process.env.ITHILDIN_SHAPE = "off";
+    try {
+      const forwarded = shapeOutgoing(scanned, "anthropic", "w10");
+      expect(forwarded.on).toBe(false);
+      expect(forwarded.body).toBe(scanned.body);
+    } finally {
+      if (saved === undefined) delete process.env.ITHILDIN_SHAPE;
+      else process.env.ITHILDIN_SHAPE = saved;
+    }
+  });
+
   it("does not touch the counts redaction reported", async () => {
     const { seen, fetchUpstream } = recording();
     const handler = createHandler(DEFAULT_ROUTES, fetchUpstream as never);
