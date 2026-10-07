@@ -839,6 +839,38 @@ describe("dashboard", () => {
     );
   });
 
+  it("counts stand-ins outside the messages, and past the cap, without marking them", () => {
+    const pick = (name: string) =>
+      new RegExp(`function ${name}[\\s\\S]*?\\n\\}`).exec(DASHBOARD_HTML)![0];
+    const constant = (name: string) =>
+      new RegExp(`const ${name} = [^;]*;`).exec(DASHBOARD_HTML)![0];
+    const source = [
+      constant("MARKS_MAX"),
+      constant("PREFIX_CHARS"),
+      "const wantIndexes = new WeakMap();",
+      constant("SHOWN_FIELDS"),
+      "let unmarked = {};",
+      ...["wantIndex", "standInsIn", "outside", "markInto"].map(pick),
+    ].join("\n");
+    const page = new Function(
+      "document",
+      `${source}; return { outside, markInto, unmarked: () => unmarked };`,
+    );
+    const node = { append() {}, appendChild() {} };
+    const document = { createElement: () => ({ dataset: {} }) };
+    const { outside, markInto, unmarked } = page(document);
+    const wants = [{ text: "Qzxv", type: "masked" }];
+    const body = {
+      messages: [{ role: "user", content: "Qzxv" }],
+      system: "Qzxv",
+      safeguards: [{ context: "Qzxv and Qzxv" }],
+    };
+    expect(outside(body, wants)).toEqual([{ count: 2, field: "safeguards" }]);
+    expect(outside(undefined, wants)).toEqual([]);
+    markInto(node, "Qzxv ".repeat(1005), wants, "");
+    expect(unmarked()).toEqual({ masked: 5 });
+  });
+
   it("says a session's shaping and cache in a line", () => {
     const pick = (name: string) =>
       new RegExp(`function ${name}[\\s\\S]*?\\n\\}`).exec(DASHBOARD_HTML)![0];

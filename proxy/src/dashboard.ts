@@ -502,6 +502,9 @@ let view = 'chat';
 let tallies = {};
 // The kind of mark the conversation is narrowed to, by its key in the legend.
 let only;
+// Stand-ins past MARKS_MAX in a text, counted by kind but not marked, so the
+// legend tells the whole number.
+let unmarked = {};
 
 function byId(id) {
   return document.getElementById(id);
@@ -1052,7 +1055,7 @@ function wantIndex(wants) {
 function standInsIn(text, wants) {
   const index = wantIndex(wants);
   const found = [];
-  for (let at = 0; at < text.length && found.length < MARKS_MAX; at++) {
+  for (let at = 0; at < text.length; at++) {
     let hit = (index.byPrefix.get(text.slice(at, at + PREFIX_CHARS)) || [])
       .find((want) => text.startsWith(want.text, at));
     for (const want of index.short)
@@ -1076,13 +1079,21 @@ function markInto(node, text, wants, needle) {
     const what = needle.toLowerCase();
     for (let at = lower.indexOf(what); at >= 0; at = lower.indexOf(what, at + what.length)) {
       matches++;
-      if (found.length < MARKS_MAX) found.push({ at, end: at + what.length, type: 'found' });
+      if (matches <= MARKS_MAX) found.push({ at, end: at + what.length, type: 'found' });
     }
   }
   found.sort((a, b) => a.at - b.at || b.end - a.end);
   let from = 0;
+  let shown = 0;
   for (const hit of found) {
     if (hit.at < from) continue;
+    // Past the cap a mark is counted, not drawn: thousands of marks make the
+    // page slow to lay out, and the reader wants the number, not each one.
+    if (shown++ >= MARKS_MAX) {
+      unmarked[hit.type] = (unmarked[hit.type] || 0) + 1;
+      if (hit.back) unmarked.back = (unmarked.back || 0) + 1;
+      continue;
+    }
     node.append(text.slice(from, hit.at));
     const mark = document.createElement('mark');
     mark.textContent = text.slice(hit.at, hit.end);
@@ -1429,7 +1440,7 @@ const MARK_KINDS = [
 // A key to the marks, with counts. In the conversation a click narrows it to
 // the messages holding that kind and a second click shows all again; in the
 // raw text, which has no messages, it goes to the next of that kind.
-function renderLegend(raw) {
+function renderLegend(raw, beyond = []) {
   const viewer = byId('viewer');
   if (raw || !MARK_KINDS.some(([type, selector]) =>
     type === only && viewer.querySelector(selector))) only = undefined;
@@ -1437,7 +1448,9 @@ function renderLegend(raw) {
     const marks = [...viewer.querySelectorAll(selector)];
     if (marks.length === 0) return [];
     const key = byClass('button', 'key ' + type + (type === only ? ' on' : ''));
-    key.append(byClass('mark', '', String(marks.length)), ' ' + words);
+    const over = unmarked[type] || 0;
+    key.append(byClass('mark', '', String(marks.length + over)), ' ' + words +
+      (over ? ' (first ' + marks.length + ' marked)' : ''));
     key.dataset.type = type;
     key.title = raw ? 'Go to the next' : 'Show only the messages with these';
     let next = 0;
@@ -1460,8 +1473,24 @@ function renderLegend(raw) {
     });
     return [key];
   });
-  byId('legend').replaceChildren(...keys);
+  const notes = beyond.map(({ count, field }) =>
+    byClass('span', 'count', '+' + count + ' in ' + field + ', outside the messages'));
+  byId('legend').replaceChildren(...keys, ...notes);
   narrow(viewer);
+}
+
+// Stand-ins in the parts of a request the conversation does not show, such as
+// the metadata an agent sends for the provider's own checks: the raw view
+// marks them, so without a note its count and the conversation's disagree.
+const SHOWN_FIELDS = ['system', 'instructions', 'messages', 'input'];
+
+function outside(body, wants) {
+  if (!body || typeof body !== 'object') return [];
+  return Object.keys(body).flatMap((field) => {
+    if (SHOWN_FIELDS.includes(field)) return [];
+    const count = standInsIn(JSON.stringify(body[field]) || '', wants).length;
+    return count ? [{ count, field }] : [];
+  });
 }
 
 // The conversation narrowed to the legend's kind: a message without one is
@@ -1506,6 +1535,7 @@ function showText(place) {
   const below = viewer.scrollHeight - viewer.scrollTop;
   viewer.classList.toggle('raw', raw);
   viewer.replaceChildren();
+  unmarked = {};
   let matches = 0;
   if (raw) {
     matches = markInto(viewer, text, marks.plain, needle);
@@ -1515,7 +1545,7 @@ function showText(place) {
     matches = shown.matches;
   }
   byId('detail_count').textContent = needle ? plural(matches, 'match') : '';
-  renderLegend(raw);
+  renderLegend(raw, raw ? [] : outside(body, marks.plain));
   const first = needle ? viewer.querySelector('mark[data-type=found]') : null;
   if (first && place === 'find') {
     first.classList.add('at');
