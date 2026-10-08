@@ -1881,6 +1881,18 @@ const MAX_CONSECUTIVE_TRIPS = 5;
 // is worse than slow poison handling (poison is rare, minified JS is not).
 const MIN_RULE_BUDGET_MS = 500;
 
+// The floor grows with a raised budget, never shrinks with a lowered one. The
+// cap is wall-clock, so a slow or busy host (an N100 running other work) runs
+// a legitimate rule past 500ms and omits text it would have finished. Raising
+// ITHILDIN_SCAN_BUDGET_MS is the one knob such a host turns; without this it
+// only lengthened the envelope while the per-rule floor kept tripping.
+export function ruleBudgetFloorMs(): number {
+  return Math.max(
+    MIN_RULE_BUDGET_MS,
+    Math.floor((MIN_RULE_BUDGET_MS * activeScanBudgetMs) / DEFAULT_SCAN_BUDGET_MS),
+  );
+}
+
 // ── Window cache ────────────────────────────────────────────
 // A window's findings are pure over (slice text, category filter, rule set).
 // The envelope is not part of that key: a slice that completed before the
@@ -2221,7 +2233,7 @@ export function scanWindows(
     }
     const rules = activeRules();
     const ruleShare = left / (slices.length - i) / Math.max(rules.length, 1);
-    const ruleCap = Math.max(MIN_RULE_BUDGET_MS, ruleShare * 2);
+    const ruleCap = Math.max(ruleBudgetFloorMs(), ruleShare * 2);
     const scanned = scanSlice(sliceText, categories, rules, ruleCap, remaining);
     pushShifted(findings, scanned.findings, slice.start);
     if (scanned.spent) {

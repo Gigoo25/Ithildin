@@ -13,7 +13,29 @@ import {
   currentScanBudgetMs,
   setScanBudgetMs,
   DEFAULT_SCAN_BUDGET_MS,
+  ruleBudgetFloorMs,
 } from "./rules.ts";
+
+describe("per-rule budget floor", () => {
+  it("grows with a raised scan budget so a slow host can stop tripping", () => {
+    try {
+      setScanBudgetMs(DEFAULT_SCAN_BUDGET_MS * 3);
+      expect(ruleBudgetFloorMs()).toBe(1_500);
+    } finally {
+      setScanBudgetMs(null);
+    }
+  });
+
+  it("never drops below 500ms when the budget is lowered", () => {
+    try {
+      expect(ruleBudgetFloorMs()).toBe(500);
+      setScanBudgetMs(1_000);
+      expect(ruleBudgetFloorMs()).toBe(500);
+    } finally {
+      setScanBudgetMs(null);
+    }
+  });
+});
 
 describe("upstream detector parity", () => {
   it("loads every detector block from the pinned upstream config", async () => {
