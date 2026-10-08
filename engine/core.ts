@@ -105,6 +105,12 @@ function cachedScan(text: string): {
   return found;
 }
 
+// Whether a text would be answered from the memo, so a caller that scans
+// ahead on another thread can skip it.
+export function scanCached(text: string): boolean {
+  return SCAN_CACHE.has(text);
+}
+
 const SYNTHETIC_VALUES = new Map<string, string>();
 const SYNTHETIC_OUTPUTS = new Set<string>();
 const SYNTHETIC_VALUES_MAX_BYTES = 8_000_000;

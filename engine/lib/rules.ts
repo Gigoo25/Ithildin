@@ -2053,6 +2053,16 @@ export interface WindowCacheSnapshot {
   entries: Array<{ digest: string; size: number; findings: WindowRangeRecord[] }>;
 }
 
+function rangeRecords(findings: LocatedFinding[]): WindowRangeRecord[] {
+  return findings.map((finding) => ({
+    ruleId: finding.ruleId,
+    category: finding.category,
+    start: finding.start,
+    end: finding.end,
+    score: finding.score ?? 0.4,
+  }));
+}
+
 // Value-free view for persistence: rule ids, categories, offsets, scores.
 // Never secretValue or matchRedacted.
 export function exportWindowCache(): WindowCacheSnapshot {
@@ -2060,22 +2070,34 @@ export function exportWindowCache(): WindowCacheSnapshot {
   const seen = new Set<string>();
   for (const [digest, entry] of WINDOW_CACHE) {
     seen.add(digest);
-    entries.push({
-      digest,
-      size: entry.size,
-      findings: entry.findings.map((finding) => ({
-        ruleId: finding.ruleId,
-        category: finding.category,
-        start: finding.start,
-        end: finding.end,
-        score: finding.score ?? 0.4,
-      })),
-    });
+    entries.push({ digest, size: entry.size, findings: rangeRecords(entry.findings) });
   }
   for (const [digest, entry] of IMPORTED_WINDOWS) {
     if (seen.has(digest)) continue;
     entries.push({ digest, size: entry.size, findings: entry.findings });
   }
+  return { version: WINDOW_CACHE_VERSION, fingerprint: activeRulesFingerprint(), entries };
+}
+
+// The windows of each text, scanned here, in the snapshot form another
+// thread imports. A scan thread does the regex work so the thread that
+// serves requests does not: importWindowCache drops the whole answer unless
+// both hold the same rules, and a window that tripped or was evicted is left
+// out, so the importer scans that one itself. Nothing here decides a
+// redaction; it only fills a cache of a pure function.
+export function scanToSnapshot(texts: readonly string[]): WindowCacheSnapshot {
+  const entries: WindowCacheSnapshot["entries"] = [];
+  withScanBudget(() => {
+    for (const text of texts) {
+      if (text.length === 0) continue;
+      scanWindows(text);
+      for (const slice of windowSlices(text.length)) {
+        const digest = windowDigest(text.slice(slice.start, slice.end), ALL_CATEGORIES);
+        const hit = WINDOW_CACHE.get(digest);
+        if (hit) entries.push({ digest, size: hit.size, findings: rangeRecords(hit.findings) });
+      }
+    }
+  });
   return { version: WINDOW_CACHE_VERSION, fingerprint: activeRulesFingerprint(), entries };
 }
 
@@ -2112,6 +2134,12 @@ export function importWindowCache(snapshot: unknown): number {
     if (!Number.isInteger(size) || (size as number) < 0) continue;
     if (!Array.isArray(findings)) continue;
     if (!findings.every((f) => isWindowRangeRecord(f) && f.end <= (size as number))) continue;
+    // A scan thread imports on every request, not once at startup: the bound
+    // holds across calls, oldest out first.
+    if (IMPORTED_WINDOWS.size >= IMPORTED_WINDOWS_MAX && !IMPORTED_WINDOWS.has(digest)) {
+      const oldest = IMPORTED_WINDOWS.keys().next().value;
+      if (oldest !== undefined) IMPORTED_WINDOWS.delete(oldest);
+    }
     IMPORTED_WINDOWS.set(digest, {
       size: size as number,
       findings: findings as WindowRangeRecord[],

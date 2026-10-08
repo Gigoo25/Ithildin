@@ -151,6 +151,11 @@ export function mergeIdentity(
   return joined;
 }
 
+// The installed identity entries, for scan threads to run the same rules.
+export function identityEntries(): InventoryEntry[] {
+  return [...knownIdentity.values()];
+}
+
 // Collects again (a new network, a new clone) and installs the rules when
 // anything joined. Unchanged, the rules and every scan cache stay as they are.
 export function refreshIdentity(collect: () => InventoryEntry[] = collectIdentity): boolean {

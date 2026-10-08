@@ -21,6 +21,7 @@ import path from "node:path";
 import {
   type Counts,
   type Format,
+  identityEntries,
   initEngine,
   redactHeaders,
   redactPath,
@@ -31,6 +32,7 @@ import {
   shapingSwitch,
   typedPromptCount,
 } from "./redact.ts";
+import { ScanPool, scanThreadCount, warmTexts } from "./scan-pool.ts";
 import { type Retrieval, shapeRequest, shapingOn } from "./shape.ts";
 import { configHome, NAME } from "../engine/lib/names.ts";
 import { aliasStyle } from "../engine/lib/rules.ts";
@@ -387,12 +389,20 @@ export type Redactors = {
   query: typeof redactQuery;
   path: typeof redactPath;
   headers: typeof redactHeaders;
+  // Scans a body's long strings on other threads before `request` runs
+  // (scan-pool.ts). Optional: without it `request` scans everything itself.
+  warm?: (body: Record<string, unknown>) => Promise<void>;
 };
+// Started by start(); tests that build a handler run without threads.
+let scanPool: ScanPool | undefined;
 const REDACTORS: Redactors = {
   request: redactRequest,
   query: redactQuery,
   path: redactPath,
   headers: redactHeaders,
+  warm: async (body) => {
+    if (scanPool !== undefined && scanPool.size > 0) await scanPool.warm(warmTexts(body));
+  },
 };
 
 // What scanning a request body gave: the body to forward and what it found.
@@ -462,6 +472,7 @@ async function scanRequest(
   if (type.includes("json") || (format !== undefined && raw.trimStart().startsWith("{"))) {
     const parsed = parseRequestObject(raw);
     if (parsed instanceof Response) return parsed;
+    await redact.warm?.(parsed);
     return redactBody(parsed, format ?? "chat", redact, session);
   }
   if (raw.length > 0)
@@ -1363,6 +1374,9 @@ export function start(
 ): { server: ReturnType<typeof Bun.serve>; drain: () => Promise<void>; proven: Promise<void> } {
   const routes = loadRoutes(options.routesFile);
   initEngine();
+  scanPool?.close();
+  scanPool = new ScanPool(scanThreadCount(), identityEntries(), log);
+  if (scanPool.size > 0) log(`scanning on ${scanPool.size} threads`);
   if (aliasStyle() === "tokens")
     log("aliases are tokens: nothing is swapped back, tools run with the tokens the model wrote");
   const handler = createHandler(routes, fetchUpstream, REDACTORS, true);
@@ -1372,7 +1386,10 @@ export function start(
   saving.unref();
   const selfTestRequest = () => new Request("http://127.0.0.1/selftest");
   const refreshing = setInterval(() => {
-    if (refreshIdentity()) log("identity inventory grew");
+    if (refreshIdentity()) {
+      log("identity inventory grew");
+      scanPool?.setInventory(identityEntries());
+    }
     void handler(selfTestRequest());
   }, IDENTITY_REFRESH_MS);
   refreshing.unref();
@@ -1389,6 +1406,7 @@ export function start(
     saveScanCache();
     log("draining in-flight requests");
     await server.stop(false);
+    scanPool?.close();
   };
   return { server, drain, proven };
 }
