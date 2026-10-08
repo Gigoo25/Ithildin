@@ -41,6 +41,53 @@ export function firstDifference(a: string, b: string): number {
   return at;
 }
 
+// A request's cached prompt as Anthropic orders it: tools, system, then each
+// message's blocks, named `tools[i]`, `system[i]`, `m<i>[j]`. A marker is left
+// out: moving one does not change the prefix.
+function promptBlocks(body: string): Array<{ at: string; text: string }> | undefined {
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(body) as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
+  const list = (value: unknown): unknown[] =>
+    Array.isArray(value) ? value : typeof value === "string" ? [value] : [];
+  const unmarked = (block: unknown) => {
+    if (typeof block !== "object" || block === null) return JSON.stringify(block);
+    const { cache_control: _marker, ...rest } = block as Record<string, unknown>;
+    return JSON.stringify(rest);
+  };
+  const blocks: Array<{ at: string; text: string }> = [];
+  for (const key of ["tools", "system"])
+    list(parsed[key]).forEach((block, i) =>
+      blocks.push({ at: `${key}[${i}]`, text: unmarked(block) }),
+    );
+  list(parsed.messages).forEach((message, m) => {
+    const content = (message as { content?: unknown } | null)?.content;
+    list(content).forEach((block, j) => blocks.push({ at: `m${m}[${j}]`, text: unmarked(block) }));
+  });
+  return blocks;
+}
+
+// The first prompt block the two requests do not share, with the start of
+// each side: where the cache stopped matching. `divergesAt` alone usually
+// lands in a top-level field such as `safeguards`, which is not cached.
+export function firstChangedBlock(previous: string, missed: string): unknown {
+  const before = promptBlocks(previous);
+  const after = promptBlocks(missed);
+  if (!before || !after) return undefined;
+  let at = before.findIndex((block, i) => block.text !== after[i]?.text);
+  // All shared: the same prompt, or only blocks added at the end.
+  if (at < 0) {
+    if (before.length === after.length) return null;
+    at = before.length;
+  }
+  const start = (block?: { at: string; text: string }) =>
+    block && { at: block.at, start: block.text.slice(0, 200) };
+  return { index: at, previous: start(before[at]), missed: start(after[at]) };
+}
+
 // What the miss is filed as, and enough of both bodies around the divergence
 // to see it without opening them.
 export function missMeta(miss: Miss, now: Date): Record<string, unknown> {
@@ -51,6 +98,7 @@ export function missMeta(miss: Miss, now: Date): Record<string, unknown> {
     session: miss.session,
     step: miss.step,
     reason: miss.reason,
+    firstChangedBlock: firstChangedBlock(miss.previous, miss.missed),
     divergesAt: at,
     sizes: { previous: miss.previous.length, missed: miss.missed.length },
     previousAround: around(miss.previous),

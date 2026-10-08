@@ -11,6 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
+  firstChangedBlock,
   firstDifference,
   MISS_AGE_MAX_MS,
   type Miss,
@@ -47,6 +48,45 @@ describe("firstDifference", () => {
     expect(firstDifference("abc", "abc")).toBe(3);
     expect(firstDifference("ab", "abc")).toBe(2);
     expect(firstDifference("", "x")).toBe(0);
+  });
+});
+
+describe("firstChangedBlock", () => {
+  const body = (messages: unknown[], extra: Record<string, unknown> = {}) =>
+    JSON.stringify({
+      safeguards: [{ n: Math.random() }],
+      tools: [{ name: "Bash" }],
+      system: [{ type: "text", text: "you are", cache_control: { type: "ephemeral" } }],
+      messages,
+      ...extra,
+    });
+  const first = [{ role: "user", content: [{ type: "text", text: "note" }, "hi"] }];
+
+  it("names the first block that changed, past uncached fields and moved markers", () => {
+    const previous = body(first);
+    const missed = body([{ role: "user", content: ["hi"] }], {
+      system: [{ type: "text", text: "you are" }],
+    });
+    expect(firstChangedBlock(previous, missed)).toEqual({
+      index: 2,
+      previous: { at: "m0[0]", start: '{"type":"text","text":"note"}' },
+      missed: { at: "m0[0]", start: '"hi"' },
+    });
+  });
+
+  it("says null when the prompt is the same, and names what was added at the end", () => {
+    expect(firstChangedBlock(body(first), body(first))).toBeNull();
+    const longer = [...first, { role: "assistant", content: "ok" }];
+    expect(firstChangedBlock(body(first), body(longer))).toEqual({
+      index: 4,
+      previous: undefined,
+      missed: { at: "m1[0]", start: '"ok"' },
+    });
+  });
+
+  it("gives up on a body that is not JSON", () => {
+    expect(firstChangedBlock("not json", body(first))).toBeUndefined();
+    expect(firstChangedBlock(body([null]), body([null]))).toBeNull();
   });
 });
 
