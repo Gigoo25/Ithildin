@@ -215,6 +215,17 @@ writes came to 0.73M, 2% of the cost, so fixing note dropping recovers part
 of that, not a step change. Since the 14:05 restart, a shorter sample with
 more steps, the saving was 13%.
 
+### Idea: step only when the cache is cold (not built)
+
+A step changes bytes already cached, so it always costs some hit rate. A
+request that writes the whole prompt anyway costs none: a session's first
+after more than the TTL (1h) idle, the first after a restart, the first after
+the agent compacts. Stepping only there would shape at no cost to the hit
+rate, but a long busy session would seldom be shaped, so most of the saving
+above would go. Middle ground: step mid-session only when the saving is
+large, otherwise wait for a cold request. Worth building as a setting and
+comparing on real sessions once the note-dropping fix has a few days of data.
+
 ## Instruments now in the proxy
 
 Both go into the journal (`journalctl --user -u ithildin`), which survives
