@@ -320,6 +320,60 @@ describe("superseded harness notes", () => {
     expect((shaped.body.messages as Array<{ content: unknown[] }>)[4]!.content).toHaveLength(1);
   });
 
+  // A tool loop with a tokens-left note on every result, and one reminder
+  // given at turn 0 and again at turn 25: what a harness re-sends when its
+  // instructions change. Each step opens on a big result, so masking it pays
+  // for the rewrite and the steps are taken.
+  const loop = (turns: number): Array<Record<string, unknown>> => {
+    const list: Array<Record<string, unknown>> = [];
+    for (let i = 0; i < turns; i++) {
+      const output = i % MASK_STEP_TURNS === 1 ? big(2000) : "ok";
+      const content: unknown[] =
+        i === 0
+          ? [{ type: "text", text: "do the thing" }]
+          : [{ type: "tool_result", tool_use_id: `t${i - 1}`, content: output }];
+      content.push({ type: "text", text: `<total_tokens>${9000 - i} left</total_tokens>` });
+      if (i === 0 || i === 25)
+        content.push({
+          type: "text",
+          text: `<system-reminder>\nAttribution: v${i}\n</system-reminder>`,
+        });
+      list.push({ role: "user", content });
+      list.push({
+        role: "assistant",
+        content: [{ type: "tool_use", id: `t${i}`, name: "Bash", input: { command: `ls ${i}` } }],
+      });
+    }
+    // A request ends on the user's turn.
+    list.pop();
+    return list;
+  };
+
+  it("never changes a message before the previous cutoff on a step", () => {
+    // Every length from short to long, as the conversation grows; each step
+    // must leave the turns the request before it had masked byte for byte.
+    let before: { messages: unknown[]; cutoff: number } | undefined;
+    let steps = 0;
+    for (let turns = 15; turns <= 52; turns++) {
+      const shaped = shapeRequest("anthropic", { messages: loop(turns) });
+      const messages = (shaped?.body.messages ?? loop(turns)) as unknown[];
+      const cutoff = shaped?.step?.to ?? before?.cutoff ?? 0;
+      if (shaped?.step && before && before.cutoff > 0) {
+        steps++;
+        expect(shaped.step.from).toBe(before.cutoff);
+        let turn = 0;
+        for (let at = 0; at < before.messages.length; at++) {
+          if ((messages[at] as { role: string }).role === "assistant") turn++;
+          if (turn > before.cutoff) break;
+          expect(JSON.stringify(messages[at])).toBe(JSON.stringify(before.messages[at]));
+        }
+      }
+      before = { messages, cutoff };
+    }
+    // The reminder at turn 25 entered the old part on one of these.
+    expect(steps).toBeGreaterThanOrEqual(3);
+  });
+
   it("is pure, and leaves a short conversation alone", () => {
     const list = noted();
     expect(JSON.stringify(shapeRequest("anthropic", { messages: list }))).toBe(

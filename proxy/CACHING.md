@@ -3,7 +3,8 @@
 For an agent picking up the cache work. `AGENTS.md` covers the repo; this
 covers how context shaping (`shape.ts`) interacts with Anthropic's prompt
 cache, what has been tried, what is known, and how to find out the rest.
-Status as of 2026-10-07.
+Status as of 2026-10-08: the open question below is mostly answered (see
+[Saved misses on 2026-10-08](#saved-misses-on-2026-10-08)).
 
 ## The problem
 
@@ -89,7 +90,9 @@ Ruled out for the two misses:
 Still open: why a step sometimes finds the entry the previous step wrote and
 sometimes does not. The leading guess is Anthropic's side (best-effort cache,
 eviction or routing), but that is unconfirmed. Two misses and one hit is too
-small a sample to say how often it happens.
+small a sample to say how often it happens. (Answered on 2026-10-08, below:
+mostly the proxy's own note dropping, plus entries that expire between steps
+an hour or more apart.)
 
 ## Diagnostics on the first evening (2026-10-07, 21:08–22:51)
 
@@ -146,6 +149,70 @@ learning event lined up with a non-step miss, so the cost was small.
 A fix would hold a value back from messages older than the turn it was
 learned in, at the price of leaving those messages unmasked. Not built.
 
+## Saved misses on 2026-10-08
+
+The first day with kept misses (`misses.ts`). Ten were saved between the
+14:05 restart and 17:00; four were steps with an earlier step to compare
+against. Compared block by block, markers aside (`firstChangedBlock`):
+
+| Time | Step | Read | Written | First changed block | Cause |
+|---|---|---|---|---|---|
+| 15:04 | 10>50 | 11K | 39K | `m0[2]`, a harness note removed | **note dropping** |
+| 16:17 | 110>180 | 60K | 29K | `m327[0]`, thinking removed, just past the m325 marker | none: a hit at the marker |
+| 16:40 | 80>120 | 11K | 84K | `m241[0]`, thinking removed | **entry expired** |
+| 16:52 | 120>150 | 11K | 100K | `m0[2]`, a harness note removed | **note dropping** |
+
+**Note dropping (fixed).** The "superseded harness notes" pass (`674ccc0`,
+2026-10-07 10:56) dropped a note in the old part when a newer note of the
+same kind was also in the old part. A step that brought a newer note in
+removed the older one wherever it was, as far back as the first message:
+here a commit-attribution `<system-reminder>` at turn 0, superseded by one at
+turn 30 (15:04) or 124 (16:52). Everything after the first message then
+missed. That fits the earlier evidence: the intermittent misses all came
+after `674ccc0`, a step missed only when a new note kind came into the old
+part, and the first evening's misses all read only ~13K. The fix keeps the
+newest note of each kind **per step chunk** (`MASK_STEP_TURNS` turns), so a
+chunk's bytes depend only on that chunk and never change once it is in the
+old part. `shape.test.ts` asserts that a step leaves every message before
+the previous cutoff byte-identical; it fails on the old code.
+
+**Entries expire between steps.** The entry at the previous cutoff is written
+by one step and read back by the next. Requests in between read longer
+entries at the tail, which likely do not refresh it, so it lasts the 1h TTL
+from the step that wrote it. At 16:40 the previous step of that session was
+over four hours earlier. Any step more than an hour after the last one
+should be expected to read only the system prompt. Not fixed; the gate
+(`pays`) already prices every step as a whole rewrite, so it does not
+over-approve them.
+
+**A hit can still say `messages_changed`.** At 16:17 Anthropic reported
+`messages_changed` while the request read 60K, everything up to the
+previous-cutoff marker. Messages past the marker did change: that is a step.
+Read the count, not the reason.
+
+The other six misses: three `system_changed` (the agent, or 0 missed
+tokens), one `model_changed`, one `0>30` (a session's first step), one
+`previous_message_not_found`.
+
+### What shaping costs and saves
+
+From the journal since 2026-09-24 (2108 Anthropic requests, 1388 shaped, 15
+steps), against an estimate of the same requests unshaped (masked bytes read
+from cache at four characters a token; a step's write beyond an ordinary
+turn's read instead), in input-token units at 1h prices:
+
+| | With shaping | Unshaped estimate |
+|---|---|---|
+| Share of input read from cache | 94.0% | 96.5% |
+| Input tokens sent | 174M | 299M |
+| Cost | 37.1M | 48.7M (shaping −24%) |
+
+Shaping lowers the hit rate a little and the cost a lot: a stub that is never
+sent costs nothing, where a cached one still costs a tenth. Steps' extra
+writes came to 0.73M, 2% of the cost, so fixing note dropping recovers part
+of that, not a step change. Since the 14:05 restart, a shorter sample with
+more steps, the saving was 13%.
+
 ## Instruments now in the proxy
 
 Both go into the journal (`journalctl --user -u ithildin`), which survives
@@ -167,8 +234,11 @@ restarts; the dashboard and the proxy's memory do not.
   (`messages_changed`, `system_changed`, …) the proxy writes the request that
   missed and the one it was compared with, byte for byte as sent, to
   `~/.local/state/ithildin/cachemiss/<time>-<session>/`: `previous.json`,
-  `missed.json`, and `meta.json` with the reason, the offset where the two
-  first differ (`divergesAt`) and 300 characters of each side of it. The
+  `missed.json`, and `meta.json` with the reason, `firstChangedBlock` (the
+  first tools, system or message block the two do not share, markers aside,
+  with the start of each side), the offset where the raw bodies first differ
+  (`divergesAt`, usually in `safeguards`, which is not cached) and 300
+  characters of each side of it. The
   journal says `cache miss kept: <dir>`. Bodies are kept in memory for the
   newest 16 sessions only, so a miss right after a restart, or in an older
   session, is not kept. On disk the oldest go first past any of three limits:
@@ -194,10 +264,14 @@ little; a miss reads ~11K (the system prompt) and writes the rest.
 
 ## How to read the answers
 
-- **A divergence reason on a miss** (something in model, system, tools or
-  messages changed against the previous step): the miss is in our bytes.
-  Compare the two bodies around where it says, starting with what the proxy
-  adds (markers, `diagnostics` itself) and what shaping changes.
+- **First, the read count.** A step that read up to the previous-cutoff
+  marker hit, whatever the reason says: its messages past the marker changed,
+  so Anthropic still reports `messages_changed`.
+- **A divergence reason on a step that read only the system prompt:** the
+  miss is in our bytes, or the entry expired (previous step over an hour
+  ago). `firstChangedBlock` in the kept miss's `meta.json` names the block;
+  one before the previous cutoff is the proxy's (markers, `diagnostics`,
+  shaping, learned values).
 - **No reason, or only `previous_message_not_found`, on a miss whose previous
   step was answered:** nothing in the request explains it. Treat misses as
   Anthropic's, and stop chasing.

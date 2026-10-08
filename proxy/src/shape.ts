@@ -678,10 +678,22 @@ function shapeChatCalls(entry: Record_): Replacement | undefined {
 // tag: a reminder of the instructions or the skills on offer, the tokens left,
 // a background task's news. Each is re-sent on every turn after it, and a newer
 // one of the same kind says the same or supersedes it. In the old part of the
-// conversation, a note with a newer one of its kind also in the old part is
-// dropped. Only the old part is read, which is fixed between steps, so this
-// changes bytes only when the cutoff steps anyway; the newest note of each
-// kind stays, so an instruction given once is never lost.
+// conversation, a note with a newer one of its kind in the same step (the
+// MASK_STEP_TURNS turns a cutoff moves by) is dropped, and the newest of each
+// kind in a step stays, so an instruction given once is never lost.
+//
+// Within one step, not across the whole old part: a step must change nothing
+// before the previous cutoff, or the marker there (mark.ts) cannot be read
+// back. Across the old part, a newer note stepping in dropped an older one
+// anywhere above it, down to the first message, and the step rewrote the whole
+// conversation (CACHING.md). A step's notes depend only on that step, so once
+// it is old its bytes never change again.
+
+// The step a turn's items fall in: turns 0 to 10 are old at a cutoff of 10,
+// 11 to 20 at 20, and so on.
+function stepOf(turn: number): number {
+  return turn === 0 ? 0 : Math.ceil(turn / MASK_STEP_TURNS) - 1;
+}
 
 const NOTE = /^\s*<([a-z][\w-]*)>([\s\S]*)<\/\1>\s*$/;
 
@@ -701,7 +713,8 @@ function userBlocks(item: unknown): unknown[] | undefined {
   return entry?.role === "user" && Array.isArray(entry.content) ? entry.content : undefined;
 }
 
-// Where the newest note of each kind sits in the old part, as "item:block".
+// Where the newest note of each kind sits in each step of the old part, as
+// "item:block".
 // Anthropic only: it is where harnesses put notes as blocks of their own.
 function latestNotes(format: Format, list: unknown[], cutoff: number): Set<string> | undefined {
   if (format !== "anthropic" || cutoff === 0) return;
@@ -712,7 +725,7 @@ function latestNotes(format: Format, list: unknown[], cutoff: number): Set<strin
     if (turn > cutoff) return;
     userBlocks(item)?.forEach((block, index) => {
       const kind = noteKind(block);
-      if (kind) latest.set(kind, `${at}:${index}`);
+      if (kind) latest.set(`${stepOf(turn)}\0${kind}`, `${at}:${index}`);
     });
   });
   return new Set(latest.values());
