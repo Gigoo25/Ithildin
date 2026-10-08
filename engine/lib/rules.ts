@@ -1325,10 +1325,12 @@ const LOCAL_RULES: Rule[] = [
     // which the lookbehind already excludes: `go install …/cmd/tool@latest`,
     // `uses: actions/checkout@main`, `image@sha256:…`. An `org/name@` is a
     // package or action, never a login. Reserved example domains, as in
-    // pii-email: test fixtures, whose usernames would be learned.
+    // pii-email: test fixtures, whose usernames would be learned. A hex
+    // address is a symbol's location (Ghidra's `table@0x836a824`), and the
+    // learned "username" then masked a plain word in every later message.
     regex: new RegExp(
       String.raw`(?<![A-Za-z0-9_.-]\/)(?<![A-Za-z0-9_.-])([a-z_][a-z0-9_.-]{0,30}[a-z0-9_-]?)@` +
-        String.raw`(?![Vv]?\d+(\.\d+)*\b)` +
+        String.raw`(?![Vv]?\d+(\.\d+)*\b)(?!0x[0-9a-f]+\b)` +
         String.raw`(?!(?:latest|stable|next|nightly|beta|alpha|canary)\b)(?!sha\d+:)` +
         String.raw`(?!example\.(?:com|net|org|edu)\b)` +
         String.raw`(?![A-Za-z0-9.-]{0,255}\.(?:test|invalid|example|localhost)\b)` +

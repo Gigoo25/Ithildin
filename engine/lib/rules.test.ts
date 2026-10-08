@@ -260,6 +260,13 @@ describe("local rule additions", () => {
     }
   });
 
+  it("does not mistake a symbol at a hex address for user@host", () => {
+    for (const text of ["loads lookup@0x836a824[chunkIdx]", "read mode@0X0803DEAE here"]) {
+      expect(scan(text).some((f) => f.ruleId === "pii-user-at-host")).toBe(false);
+    }
+    expect(scan("ssh zqxops@0xbox").some((f) => f.ruleId === "pii-user-at-host")).toBe(true);
+  });
+
   it("detects device identity and network credentials", () => {
     for (const [text, id, secretValue] of [
       ["dev AA:BB:CC:DD:EE:FF up", "pii-mac", "AA:BB:CC:DD:EE:FF"],
