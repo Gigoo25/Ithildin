@@ -91,6 +91,61 @@ sometimes does not. The leading guess is Anthropic's side (best-effort cache,
 eviction or routing), but that is unconfirmed. Two misses and one hit is too
 small a sample to say how often it happens.
 
+## Diagnostics on the first evening (2026-10-07, 21:08–22:51)
+
+Shaping was on for this whole process (no `ITHILDIN_SHAPE` in its
+environment), with diagnostics on every main Claude request. All five
+Anthropic steps missed:
+
+| Time | Step | Read | Written | `cache_missed_input_tokens` |
+|---|---|---|---|---|
+| 21:58:42 | 10>20 | 23K | 16K | 33120 |
+| 21:58:57 | 0>20 | 13K | 26K | 33120 |
+| 22:04:02 | 20>50 | 13K | 41K | 33120 |
+| 22:17:00 | 0>10 | 13K | 32K | 24173 |
+| 22:48:28 | 0>20 | 13K | 26K | 21898 |
+
+- Every one says **`messages_changed`**, which by the guide below puts the
+  miss in our bytes, not Anthropic's. None said `previous_message_not_found`.
+- The three in one session report the **same** 33120 missed tokens, yet read
+  only ~13K (the system prompt). The diverging message is the same each time,
+  and nothing past the system prompt was read back. That points at the entry
+  the previous step should have written at its new cutoff (`mark.ts`), or at
+  the bytes before it, not at eviction.
+- Steps `0>N` come from a session's first shaped request: there was no
+  earlier step to read from, so those misses were expected.
+- The kept bodies were lost to a restart before anyone compared them. Next
+  time: save `/dashboard/request?id=` for a step **and** the session's
+  previous step as soon as the miss is logged, re-shape both, and diff the
+  messages up to the reported divergence.
+
+Other misses that evening: 8 `messages_changed`, 7 `model_changed`,
+3 `system_changed`, 11 `unavailable`. `unavailable` came on requests that
+broke at an early message, mostly side requests.
+
+### Learned values re-mask old messages
+
+Not the cause of the misses above, but it breaks the cache the same way, and
+the journal blames it on the agent.
+
+Every request redacts the whole conversation again with what the engine
+knows *now* (`redact.ts`), and learned values (`rememberSwapped`, the rules'
+learned usernames) are shared by every session in the process. Once a value
+is learned, the next request masks it in old messages that earlier requests
+sent in the clear: the old bytes change, and the cache breaks from the first
+occurrence on. The journal reports that as `cachebreak=messageN(agent)`, so
+part of the "agent editing its own recent messages" share above may be the
+proxy's.
+
+It is worst when a common word is learned: a false positive in
+`pii-user-at-host` (`fb3da02`) took two ordinary words for usernames from a
+symbol at a hex address (`name@0x836a824`) and masked them in every later
+message, in every session, until a restart. On this evening's timeline no
+learning event lined up with a non-step miss, so the cost was small.
+
+A fix would hold a value back from messages older than the turn it was
+learned in, at the price of leaving those messages unmasked. Not built.
+
 ## Instruments now in the proxy
 
 Both go into the journal (`journalctl --user -u ithildin`), which survives
@@ -152,9 +207,10 @@ little; a miss reads ~11K (the system prompt) and writes the rest.
   pointed at a local script that forwards to ithildin and reuses the headers
   of the first request in memory. Each test costs a little of the user's
   usage; ask first.
-- **`ITHILDIN_SHAPE`** is read from the service environment. On
+- **`ITHILDIN_SHAPE`** is read from the service environment. Earlier on
   2026-10-07 the user turned shaping off with
   `systemctl --user set-environment ITHILDIN_SHAPE=off`, which outlives a
   nix switch. Turn it back on with
   `systemctl --user unset-environment ITHILDIN_SHAPE && systemctl --user restart ithildin`.
   Check with `tr '\0' '\n' < /proc/$(systemctl --user show ithildin -p MainPID --value)/environ | grep ITHILDIN`.
+  By 21:08 the same day it was back on.
