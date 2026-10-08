@@ -91,8 +91,8 @@ Still open: why a step sometimes finds the entry the previous step wrote and
 sometimes does not. The leading guess is Anthropic's side (best-effort cache,
 eviction or routing), but that is unconfirmed. Two misses and one hit is too
 small a sample to say how often it happens. (Answered on 2026-10-08, below:
-mostly the proxy's own note dropping, plus entries that expire between steps
-an hour or more apart.)
+two of four step misses were the proxy's own note dropping; one is still
+unexplained.)
 
 ## Diagnostics on the first evening (2026-10-07, 21:08–22:51)
 
@@ -159,7 +159,7 @@ against. Compared block by block, markers aside (`firstChangedBlock`):
 |---|---|---|---|---|---|
 | 15:04 | 10>50 | 11K | 39K | `m0[2]`, a harness note removed | **note dropping** |
 | 16:17 | 110>180 | 60K | 29K | `m327[0]`, thinking removed, just past the m325 marker | none: a hit at the marker |
-| 16:40 | 80>120 | 11K | 84K | `m241[0]`, thinking removed | **entry expired** |
+| 16:40 | 80>120 | 11K | 84K | `m241[0]`, thinking removed, past the m239 marker | **unexplained** |
 | 16:52 | 120>150 | 11K | 100K | `m0[2]`, a harness note removed | **note dropping** |
 
 **Note dropping (fixed).** The "superseded harness notes" pass (`674ccc0`,
@@ -176,14 +176,16 @@ chunk's bytes depend only on that chunk and never change once it is in the
 old part. `shape.test.ts` asserts that a step leaves every message before
 the previous cutoff byte-identical; it fails on the old code.
 
-**Entries expire between steps.** The entry at the previous cutoff is written
-by one step and read back by the next. Requests in between read longer
-entries at the tail, which likely do not refresh it, so it lasts the 1h TTL
-from the step that wrote it. At 16:40 the previous step of that session was
-over four hours earlier. Any step more than an hour after the last one
-should be expected to read only the system prompt. Not fixed; the gate
-(`pays`) already prices every step as a whole rewrite, so it does not
-over-approve them.
+**16:40 is unexplained.** It first looked like expiry: the session's
+previous step (to 80) was four hours earlier, and the entry at the previous
+cutoff is written only by a step. But the session had resumed at 16:39:26
+with a cold request (read 0, wrote 119K), 43 seconds before the step, which
+should have written that entry again; the two requests after it read
+everything. Both kept bodies carry the previous-cutoff marker on the same
+message (`m239`), two messages before the first change (`m241`), the same
+shape as the 16:17 hit. The cold request itself was not kept, so whether it
+carried that marker is unconfirmed. Open; the next kept step miss of this
+shape is the place to look.
 
 **A hit can still say `messages_changed`.** At 16:17 Anthropic reported
 `messages_changed` while the request read 60K, everything up to the
@@ -268,10 +270,9 @@ little; a miss reads ~11K (the system prompt) and writes the rest.
   marker hit, whatever the reason says: its messages past the marker changed,
   so Anthropic still reports `messages_changed`.
 - **A divergence reason on a step that read only the system prompt:** the
-  miss is in our bytes, or the entry expired (previous step over an hour
-  ago). `firstChangedBlock` in the kept miss's `meta.json` names the block;
-  one before the previous cutoff is the proxy's (markers, `diagnostics`,
-  shaping, learned values).
+  miss is in our bytes, or the entry is gone. `firstChangedBlock` in the
+  kept miss's `meta.json` names the block; one before the previous cutoff
+  is the proxy's (markers, `diagnostics`, shaping, learned values).
 - **No reason, or only `previous_message_not_found`, on a miss whose previous
   step was answered:** nothing in the request explains it. Treat misses as
   Anthropic's, and stop chasing.
