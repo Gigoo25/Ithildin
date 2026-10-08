@@ -163,6 +163,21 @@ restarts; the dashboard and the proxy's memory do not.
   `diagnostics.cache_miss_reason.type` (and any other fields, short) is
   logged. `previous_message_not_found` means the proxy's id was unknown
   upstream: after a restart, or more than the server keeps.
+- **Kept misses** (`misses.ts`). On a miss whose reason names a change
+  (`messages_changed`, `system_changed`, …) the proxy writes the request that
+  missed and the one it was compared with, byte for byte as sent, to
+  `~/.local/state/ithildin/cachemiss/<time>-<session>/`: `previous.json`,
+  `missed.json`, and `meta.json` with the reason, the offset where the two
+  first differ (`divergesAt`) and 300 characters of each side of it. The
+  journal says `cache miss kept: <dir>`. Bodies are kept in memory for the
+  newest 16 sessions only, so a miss right after a restart, or in an older
+  session, is not kept. On disk the oldest go first past any of three limits:
+  20 misses (`ITHILDIN_CACHEMISS_KEEP`; 0 turns saving off and deletes what
+  was kept), 14 days, or 200 MB in all. The limits are applied after each save
+  and when the proxy starts, so a lowered count takes effect on restart; the
+  journal says `cache misses dropped: N` then. Files other than the miss
+  directories are left alone. This is the pair the first evening lost to a
+  restart; start with `meta.json`.
 - `ITHILDIN_DIAGNOSE=off` turns diagnostics off. The first 400 that mentions
   diagnostics turns them off for the life of the process, logs once, and
   resends that request without them.

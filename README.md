@@ -526,6 +526,7 @@ Settings are environment variables:
 | `ITHILDIN_SCAN_BUDGET_MS`    | per-request scan time limit (default 30000); raising it also raises each rule's time limit, for slow or busy hosts |
 | `ITHILDIN_KEEP_REQUESTS`     | requests the dashboard keeps (default 20, 0 is off) |
 | `ITHILDIN_SHAPE`             | `off` disables context shaping on every route    |
+| `ITHILDIN_CACHEMISS_KEEP`    | cache misses kept on disk, as redacted bodies (default 20, at most 14 days and 200 MB; 0 is off and deletes them) |
 | `ITHILDIN_GENERALIZE`        | generalize list file (default beside the config) |
 | `ITHILDIN_ALIASES`           | `stand-ins` or `tokens`; wins over the config    |
 | `ITHILDIN_ALIAS_KEY_SCOPE`   | `session` or `shared`; wins over the config      |

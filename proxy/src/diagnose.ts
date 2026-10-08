@@ -12,6 +12,7 @@
 // good the first time Anthropic refuses it.
 
 import { setting } from "../engine/lib/names.ts";
+import type { Miss } from "./misses.ts";
 
 export const DIAGNOSE_BETA = "cache-diagnosis-2026-04-07";
 // Sessions remembered, newest kept: a restart forgets them, which costs only
@@ -65,13 +66,22 @@ export function diagnosingOn(env: Record<string, string | undefined> = process.e
   return value !== "off" && value !== "false" && value !== "0";
 }
 
+// Sessions whose last bodies are kept, newest kept: a body can run to
+// megabytes, so far fewer than the ids.
+export const BODIES_MAX = 16;
+
+// A miss to keep: the request that missed, and the one it was compared with.
+export type MissSaver = (miss: Miss) => void;
+
 // The last response id per session, and per session the last step's.
 export class Diagnoses {
   private last = new Map<string, { id?: string; step?: string | undefined }>();
+  // The bodies those ids answered, sent as they went upstream.
+  private bodies = new Map<string, { last?: string; step?: string | undefined }>();
   // Set for good when Anthropic refuses the field or the header.
   off = false;
 
-  constructor() {}
+  constructor(private readonly save?: MissSaver) {}
 
   // The body to send instead, asking about the cache against the session's
   // last request (its last step, on a step), with the beta header added; or
@@ -86,14 +96,30 @@ export class Diagnoses {
   }
 
   // Remembers what a reply said, and returns the journal's words for a miss.
-  answer(session: string, step: boolean, heard: Heard): string {
+  // `body` is the request as sent: on a miss where Anthropic names what
+  // changed, it is saved beside the body it was compared with (misses.ts).
+  answer(session: string, step: boolean, heard: Heard, body?: string): string {
+    if (heard.reason?.includes("_changed") && body !== undefined) {
+      const kept = this.bodies.get(session);
+      const previous = (step ? kept?.step : undefined) ?? kept?.last;
+      if (previous !== undefined)
+        this.save?.({ session, step, reason: heard.reason, previous, missed: body });
+    }
     if (heard.id) {
       const seen = this.last.get(session) ?? {};
       this.last.delete(session);
       this.last.set(session, { id: heard.id, step: step ? heard.id : seen.step });
       while (this.last.size > DIAGNOSED_MAX) this.last.delete(this.last.keys().next().value!);
+      if (body !== undefined) this.keepBody(session, step, body);
     }
     return heard.reason ? ` cachemiss=${heard.reason}` : "";
+  }
+
+  private keepBody(session: string, step: boolean, body: string): void {
+    const seen = this.bodies.get(session) ?? {};
+    this.bodies.delete(session);
+    this.bodies.set(session, { last: body, step: step ? body : seen.step });
+    while (this.bodies.size > BODIES_MAX) this.bodies.delete(this.bodies.keys().next().value!);
   }
 
   // Whether a refused reply was about the field or the header: then the proxy

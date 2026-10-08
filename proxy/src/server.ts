@@ -55,7 +55,8 @@ import { PrefixWatch } from "./prefix.ts";
 import { answerMcp, offeredTool, Originals, outputId } from "./retrieve.ts";
 import { merge, type Usage, usageOf, usageOfEvent, usageText } from "./usage.ts";
 import { findWatched, knownValues, watchPolicy } from "./watch.ts";
-import { Diagnoses, diagnosingOn, type Heard, heardIn } from "./diagnose.ts";
+import { Diagnoses, diagnosingOn, type Heard, heardIn, type MissSaver } from "./diagnose.ts";
+import { type Miss, pruneMisses, saveMiss } from "./misses.ts";
 import { errorReply, readCapped } from "./reply.ts";
 import { type SelfTest, selfTest } from "./selftest.ts";
 import { createRewriter, formatSse, parseSseBlock, swapResponseBody } from "./streams.ts";
@@ -395,6 +396,30 @@ export type Redactors = {
 };
 // Started by start(); tests that build a handler run without threads.
 let scanPool: ScanPool | undefined;
+// Set by start(), so only the running proxy writes misses to disk.
+let missKeeper: MissSaver | undefined;
+
+// Keeps a miss on disk and names it in the journal; a failure to write costs
+// only the copy, never the request.
+export function keepMiss(miss: Miss, save = saveMiss): void {
+  try {
+    const at = save(miss);
+    if (at) log(`cache miss kept: ${at}`);
+  } catch (error) {
+    log(`cache miss not kept: ${(error as Error).message}`);
+  }
+}
+
+// At start: kept misses past the limits go, so a lowered limit or a long
+// stop does not wait for the next miss.
+export function tidyMisses(prune = () => pruneMisses()): void {
+  try {
+    const dropped = prune();
+    if (dropped > 0) log(`cache misses dropped: ${dropped}`);
+  } catch (error) {
+    log(`cache misses not tidied: ${(error as Error).message}`);
+  }
+}
 const REDACTORS: Redactors = {
   request: redactRequest,
   query: redactQuery,
@@ -691,7 +716,7 @@ async function forward(
   const counted = usageCounter(events, context);
   const answered = (usage: Usage | undefined) =>
     counted(usage) +
-    (reached.asked ? stores.diagnoses.answer(session!.id, !!shaped.step, heard) : "");
+    (reached.asked ? stores.diagnoses.answer(session!.id, !!shaped.step, heard, shaped.body) : "");
   const listen = (value: unknown) => Object.assign(heard, heardIn(value));
   return relayReply(upstream, { format, asked }, tags, line, tap, answered, listen);
 }
@@ -867,7 +892,7 @@ export function createHandler(
     names: new SessionNames(),
     prefixes: new PrefixWatch(),
     originals: new Originals(),
-    diagnoses: new Diagnoses(),
+    diagnoses: new Diagnoses((miss) => missKeeper?.(miss)),
     turns: 0,
   };
   const { book, events, kept, names } = stores;
@@ -1374,6 +1399,8 @@ export function start(
 ): { server: ReturnType<typeof Bun.serve>; drain: () => Promise<void>; proven: Promise<void> } {
   const routes = loadRoutes(options.routesFile);
   initEngine();
+  missKeeper = (miss) => keepMiss(miss);
+  tidyMisses();
   scanPool?.close();
   scanPool = new ScanPool(scanThreadCount(), identityEntries(), log);
   if (scanPool.size > 0) log(`scanning on ${scanPool.size} threads`);

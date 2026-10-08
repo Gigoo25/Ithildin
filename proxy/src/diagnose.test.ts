@@ -1,6 +1,14 @@
 import { describe, expect, it } from "bun:test";
 
-import { DIAGNOSE_BETA, DIAGNOSED_MAX, Diagnoses, diagnosingOn, heardIn } from "./diagnose.ts";
+import {
+  BODIES_MAX,
+  DIAGNOSE_BETA,
+  DIAGNOSED_MAX,
+  Diagnoses,
+  diagnosingOn,
+  heardIn,
+} from "./diagnose.ts";
+import type { Miss } from "./misses.ts";
 
 describe("cache diagnostics", () => {
   it("asks against the session's last reply, and its last step's on a step", () => {
@@ -62,6 +70,41 @@ describe("cache diagnostics", () => {
     expect(diagnoses.ask("s", false, '{"a":1}', new Headers())).toBeDefined();
     expect(diagnoses.refused(400, '{"message":"diagnostics: unknown field"}')).toBe(true);
     expect(diagnoses.ask("s", false, '{"a":1}', new Headers())).toBeUndefined();
+  });
+
+  it("keeps a miss with the body it was compared with: the last step's, on a step", () => {
+    const kept: Miss[] = [];
+    const diagnoses = new Diagnoses((miss) => kept.push(miss));
+    // Nothing to compare with yet: nothing kept.
+    diagnoses.answer("s", false, { id: "msg_1", reason: "messages_changed" }, "turn1");
+    expect(kept).toEqual([]);
+    diagnoses.answer("s", true, { id: "msg_2" }, "step1");
+    diagnoses.answer("s", false, { id: "msg_3" }, "turn2");
+    diagnoses.answer("s", true, { id: "msg_4", reason: "messages_changed" }, "step2");
+    diagnoses.answer("s", false, { reason: 'system_changed{"at":1}' }, "turn3");
+    // Not a divergence, or no body: nothing kept.
+    diagnoses.answer("s", false, { reason: "previous_message_not_found" }, "turn4");
+    diagnoses.answer("s", false, { reason: "messages_changed" });
+    expect(kept).toEqual([
+      { session: "s", step: true, reason: "messages_changed", previous: "step1", missed: "step2" },
+      {
+        session: "s",
+        step: false,
+        reason: 'system_changed{"at":1}',
+        previous: "step2",
+        missed: "turn3",
+      },
+    ]);
+  });
+
+  it("keeps bodies for only so many sessions", () => {
+    const kept: Miss[] = [];
+    const diagnoses = new Diagnoses((miss) => kept.push(miss));
+    for (let at = 0; at <= BODIES_MAX; at++)
+      diagnoses.answer(`s${at}`, false, { id: `msg_${at}` }, `body${at}`);
+    diagnoses.answer("s0", false, { reason: "messages_changed" }, "later");
+    diagnoses.answer(`s${BODIES_MAX}`, false, { reason: "messages_changed" }, "later");
+    expect(kept.map((miss) => miss.previous)).toEqual([`body${BODIES_MAX}`]);
   });
 
   it("is on unless ITHILDIN_DIAGNOSE turns it off", () => {
