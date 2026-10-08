@@ -524,6 +524,7 @@ Settings are environment variables:
 | `ITHILDIN_REPO_ROOTS`        | colon-separated roots for git remote discovery   |
 | `ITHILDIN_INFRA_INVENTORY`   | `off` skips SSH, repo, network and Tailscale     |
 | `ITHILDIN_SCAN_BUDGET_MS`    | per-request scan time limit (default 30000); raising it also raises each rule's time limit, for slow or busy hosts |
+| `ITHILDIN_SCAN_THREADS`      | threads that scan large bodies off the serving thread (default 2, or cores less one if fewer; at most 8; 0 is off) |
 | `ITHILDIN_KEEP_REQUESTS`     | requests the dashboard keeps (default 20, 0 is off) |
 | `ITHILDIN_SHAPE`             | `off` disables context shaping on every route    |
 | `ITHILDIN_CACHEMISS_KEEP`    | cache misses kept on disk, as redacted bodies (default 20, at most 14 days and 200 MB; 0 is off and deletes them) |
