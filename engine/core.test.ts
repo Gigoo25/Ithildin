@@ -168,6 +168,24 @@ describe("redactValue", () => {
     });
   });
 
+  it("passes an inline image's media type through a starved budget", () => {
+    const anthropic = { type: "base64", media_type: "image/png", data: "iVBORw0KGgo=" };
+    const gemini = { inlineData: { mimeType: "image/jpeg", data: "/9j/4AAQ" } };
+    const result = withScanBudget(
+      () => redactValue({ anthropic, gemini }, NONE, undefined, undefined, [], true),
+      -1,
+    );
+    expect(result.value).toEqual({ anthropic, gemini });
+  });
+
+  it("scans a media type that is not one, or has no inline bytes beside it", () => {
+    const odd = { type: "base64", media_type: `image/png ${TOKEN}`, data: "iVBORw0KGgo=" };
+    const bare = { media_type: TOKEN.slice(0, 4) + "/" + TOKEN.slice(4) };
+    const result = redactValue({ odd, bare }, NONE, undefined, undefined, [], true);
+    expect(JSON.stringify(result.value)).not.toContain(TOKEN.slice(4));
+    expect(result.hits).toBe(2);
+  });
+
   it("scans control-named keys that hold content, or sit in a tool's payload", () => {
     const body = {
       summary: TOKEN,

@@ -20,3 +20,21 @@ export function isImagePayload(
     (parent.type === "base64" || (mime.startsWith("image/") && typeof parent.mimeType === "string"))
   );
 }
+
+// The media type beside those bytes is a wire enum the provider checks. A
+// starved scan budget omits every string it has not vouched for, and an
+// omitted "image/png" is a 400 on every request that carries the image
+// (Claude Code then drops images one at a time, missing the cache on each
+// retry). Only a value shaped like a MIME type passes; free text still scans.
+export function isPayloadMediaType(
+  value: string,
+  key: string | undefined,
+  parent?: Record<string, unknown>,
+): boolean {
+  if ((key !== "media_type" && key !== "mimeType") || !parent) return false;
+  return (
+    /^[\w.+-]+\/[\w.+-]+$/.test(value) &&
+    typeof parent.data === "string" &&
+    isImagePayload(parent.data, "data", parent)
+  );
+}

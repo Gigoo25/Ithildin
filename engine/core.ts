@@ -61,7 +61,7 @@ import {
   userTypedText,
 } from "./lib/inspector.ts";
 import { commandSendsCookies, redactCookieHeaders, redactCookieValue } from "./lib/cookies.ts";
-import { isImagePayload } from "./lib/image-payload.ts";
+import { isImagePayload, isPayloadMediaType } from "./lib/image-payload.ts";
 import { isSecretFile } from "./lib/secret-files.ts";
 
 // Larger strings skip regex scanning and are synthesized in full.
@@ -746,7 +746,8 @@ function redactString(
   key: string | undefined,
   parent: Record<string, unknown> | undefined,
 ): { value: unknown; hits: number } {
-  if (isImagePayload(value, key, parent)) return { value, hits: 0 };
+  if (isImagePayload(value, key, parent) || isPayloadMediaType(value, key, parent))
+    return { value, hits: 0 };
   if (value.length > MAX_SCAN_BYTES) {
     return { value: syntheticValue(value), hits: 1 };
   }

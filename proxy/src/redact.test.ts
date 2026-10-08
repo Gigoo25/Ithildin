@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import path from "node:path";
-import { type InventoryEntry, scan } from "../engine/lib/rules.ts";
+import { type InventoryEntry, scan, withScanBudget } from "../engine/lib/rules.ts";
 import {
   IDENTITY_ENTRIES_MAX,
   initEngine,
@@ -59,6 +59,27 @@ describe("Anthropic shapes the redactor does not expect", () => {
     const odd = { role: "user", content: 42 };
     expect(redactRequest("anthropic", { messages: [odd] }).body.messages).toEqual([odd]);
     expect(redactRequest("anthropic", { messages: "none" }).body.messages).toBe("none");
+  });
+
+  // A starved budget once turned an allowed image's media_type into an
+  // omission notice, and Anthropic refused every request carrying it.
+  it("keeps an allowed image valid when the scan budget runs out", () => {
+    const source = { type: "base64", media_type: "image/png", data: "iVBORw0KGgo=" };
+    const body = {
+      messages: [
+        { role: "user", content: [{ type: "text", text: "[allow-images] look" }] },
+        { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "Read", input: {} }] },
+        {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: "t1", content: [{ type: "image", source }] },
+          ],
+        },
+      ],
+    };
+    const out = withScanBudget(() => redactRequest("anthropic", body).body, -1);
+    const result = (out.messages as Array<{ content: Array<{ content: unknown }> }>)[2]!;
+    expect(result.content[0]!.content).toEqual([{ type: "image", source }]);
   });
 });
 
