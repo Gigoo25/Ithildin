@@ -321,6 +321,17 @@ journal only started naming TTLs today, and kept misses never recorded them.
 The next few days of `markers=` will say. A step miss with the same TTL on
 both sides would still be open.
 
+### A read is not a tenth on every model
+
+`pays()` priced a cache read at 0.1x input. Opus 5.5 reads at $0.20 against
+$4 of input, 0.05x, so on it the gate counted each masked token as saving
+twice what it does, and took steps whose rewrite cost more than they gave
+back. Steps were 22% of the day's cache writes on 2026-10-09 (1.66M of 7.4M
+tokens). The read price is now looked up by the request's `model`
+(`CACHE_READ_BY_MODEL` in `shape.ts`), with 0.1x for any model not listed.
+Reading the model is safe where reading the TTL was not: a cache belongs to
+one model, so switching it rewrites everything whatever the cutoff does.
+
 ## Instruments now in the proxy
 
 Both go into the journal (`journalctl --user -u ithildin`), which survives
