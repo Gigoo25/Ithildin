@@ -331,6 +331,13 @@ tokens). The read price is now looked up by the request's `model`
 (`prices.ts`). A model not in the table gets the lowest price in it and is
 logged once, so a new release makes steps rarer rather than wasteful until
 it is added; `"cacheReadPrices"` in `config.json` adds or overrides one.
+
+A price change rewrites each long session once. Every past step is decided
+again on each request, so a new price can undo steps already taken: on the
+first turn after this shipped (2026-10-09 15:58), the session's cutoff went
+back from message 802 to 711, nothing had written an entry ending at 711,
+and the turn read 13.5K and wrote 220K. The next turn read 234K. The same
+happens when a `cacheReadPrices` entry changes a model's price.
 Reading the model is safe where reading the TTL was not: a cache belongs to
 one model, so switching it rewrites everything whatever the cutoff does.
 

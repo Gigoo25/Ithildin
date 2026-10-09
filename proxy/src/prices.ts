@@ -96,7 +96,10 @@ export function cacheReadPrice(model: unknown): number {
   const base = modelBase(model);
   const known = entries.find(([pattern]) => pattern.test(model) || pattern.test(base));
   if (known) return known[1];
-  if (!warned.has(model)) {
+  // Only a Claude name is a release the table missed. Anything else on this
+  // format (the proxy's own self-test, a model behind a gateway) still gets
+  // the cautious price, without a warning nobody can act on.
+  if (/^claude-/.test(model) && !warned.has(model)) {
     warned.add(model);
     process.stderr.write(
       `ithildin: cache read price unknown for ${model}; assuming ${lowest}x, ` +

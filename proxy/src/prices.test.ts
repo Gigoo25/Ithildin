@@ -46,6 +46,9 @@ describe("cache read prices", () => {
       const said = log.mock.calls.map(([text]) => String(text));
       expect(said.filter((text) => text.includes("claude-opus-6"))).toHaveLength(1);
       expect(said[0]).toContain('"cacheReadPrices"');
+      // Not a Claude model: priced the same, but nothing to warn about.
+      expect(cacheReadPrice("selftest")).toBe(0.025);
+      expect(log.mock.calls).toHaveLength(1);
     } finally {
       log.mockRestore();
     }
