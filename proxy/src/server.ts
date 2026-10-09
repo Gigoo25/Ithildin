@@ -54,7 +54,8 @@ import { AGENT, GUESS, SessionNames, USER } from "./sessions.ts";
 import { createStatusBook } from "./status.ts";
 import { PrefixWatch } from "./prefix.ts";
 import { answerMcp, offeredTool, Originals, outputId } from "./retrieve.ts";
-import { merge, type Usage, usageOf, usageOfEvent, usageText } from "./usage.ts";
+import { markerText } from "./mark.ts";
+import { merge, type Usage, usageOf, usageOfEvent, usageText, writtenText } from "./usage.ts";
 import { findWatched, knownValues, watchPolicy } from "./watch.ts";
 import { Diagnoses, diagnosingOn, type Heard, heardIn, type MissSaver } from "./diagnose.ts";
 import { type Miss, pruneMisses, saveMiss } from "./misses.ts";
@@ -732,7 +733,9 @@ async function forward(
   if (session && ask && upstream.ok) noteTitle(upstream.clone(), ask, session.id, names, renamed);
 
   const line =
-    journalLine(name, sent.rest, upstream.status, scanMs, tags, scanned.hits, shaped) + broke;
+    journalLine(name, sent.rest, upstream.status, scanMs, tags, scanned.hits, shaped) +
+    cacheTrail(format, context.session, asking.main, shaped.object ?? scanned.object) +
+    broke;
   const tap = (event: ActivityEvent) => events.record(context, event);
   const asked = request.method !== "GET" && request.method !== "HEAD";
   const heard: Heard = {};
@@ -831,8 +834,23 @@ function usageCounter(events: EventLog, context: Context): (usage: Usage | undef
   return (usage) => {
     if (!usage) return "";
     events.usage(usage, context);
-    return ` usage=${usageText(usage)}`;
+    return ` usage=${usageText(usage)}${writtenText(usage)}`;
   };
+}
+
+// Which session a main Anthropic request belongs to and where its cache
+// markers sit, so a step that misses can be read against the requests before
+// it in the journal alone: the cache entries a step could read are the ones
+// those markers wrote. `sent` is the body as it went upstream, shaped or not.
+function cacheTrail(
+  format: Format | undefined,
+  session: string | undefined,
+  main: boolean,
+  sent: unknown,
+): string {
+  if (format !== "anthropic" || !main || !sent || typeof sent !== "object") return "";
+  const at = session ? ` session=${session.slice(0, 8)}` : "";
+  return `${at} markers=${markerText(sent as Record<string, unknown>) || "none"}`;
 }
 
 // Whether this request broke its conversation's cached prefix, and where:

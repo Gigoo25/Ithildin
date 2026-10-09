@@ -48,6 +48,26 @@ function markers(body: Record_): Array<{ at: number; ttl: unknown }> {
   return found;
 }
 
+// Where each marker sits, as the journal names it: t<i> on a tool, s<i> on a
+// system block, m<i> in a message. The TTL is named only when it is not an
+// hour, which is what every marker asks for when the cache behaves.
+export function markerText(body: Record_): string {
+  const named: string[] = [];
+  const add = (list: unknown, prefix: string) => {
+    if (!Array.isArray(list)) return;
+    list.forEach((item, i) => {
+      for (const { ttl } of markers({ messages: [item] }))
+        named.push(
+          `${prefix}${i}${ttl === "1h" ? "" : `:${typeof ttl === "string" ? ttl : "5m"}`}`,
+        );
+    });
+  };
+  add(body.tools, "t");
+  add(body.system, "s");
+  add(body.messages, "m");
+  return named.join(",");
+}
+
 // The marker to add before message `at`. A longer TTL may not follow a
 // shorter one, so it keeps the TTL of the marker before it, or of the one
 // after when there is none before.

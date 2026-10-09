@@ -29,6 +29,9 @@ export interface Usage {
   cacheRead: number;
   cacheWrite: number;
   output: number;
+  // Anthropic's split of cacheWrite by how long it keeps the entry, when it
+  // gives one. A marker asks for an hour; this is what it was granted.
+  written?: { hour: number; short: number };
 }
 
 type Fields = Record<string, unknown>;
@@ -56,13 +59,21 @@ export function usageOf(format: Format, value: unknown): Usage | undefined {
   const outer = fields(value);
   const usage = outer && usageObject(format, outer);
   if (!usage) return;
-  if (format === "anthropic")
+  if (format === "anthropic") {
+    const creation = fields(usage.cache_creation);
     return {
       input: tokens(usage.input_tokens),
       cacheRead: tokens(usage.cache_read_input_tokens),
       cacheWrite: tokens(usage.cache_creation_input_tokens),
       output: tokens(usage.output_tokens),
+      ...(creation && {
+        written: {
+          hour: tokens(creation.ephemeral_1h_input_tokens),
+          short: tokens(creation.ephemeral_5m_input_tokens),
+        },
+      }),
     };
+  }
   const chat = format === "chat";
   const total = tokens(chat ? usage.prompt_tokens : usage.input_tokens);
   const details = fields(chat ? usage.prompt_tokens_details : usage.input_tokens_details);
@@ -80,11 +91,19 @@ export function usageOf(format: Format, value: unknown): Usage | undefined {
 // them, and a field a part leaves out reads as zero.
 export function merge(into: Usage | undefined, part: Usage): Usage {
   if (!into) return { ...part };
+  const written =
+    into.written && part.written
+      ? {
+          hour: Math.max(into.written.hour, part.written.hour),
+          short: Math.max(into.written.short, part.written.short),
+        }
+      : (into.written ?? part.written);
   return {
     input: Math.max(into.input, part.input),
     cacheRead: Math.max(into.cacheRead, part.cacheRead),
     cacheWrite: Math.max(into.cacheWrite, part.cacheWrite),
     output: Math.max(into.output, part.output),
+    ...(written && { written }),
   };
 }
 
@@ -102,4 +121,12 @@ export function usageOfEvent(format: Format, data: string): Usage | undefined {
 // How the journal names it: in/read/write/out.
 export function usageText(usage: Usage): string {
   return `${usage.input}/${usage.cacheRead}/${usage.cacheWrite}/${usage.output}`;
+}
+
+// What a write was granted, as the journal names it, or "" when nothing was
+// written or the provider did not say.
+export function writtenText(usage: Usage): string {
+  const { written } = usage;
+  if (!written || usage.cacheWrite === 0) return "";
+  return ` written=1h:${written.hour},5m:${written.short}`;
 }

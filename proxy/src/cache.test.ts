@@ -1,7 +1,8 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
+import { markerText } from "./mark.ts";
 import { createHandler, DEFAULT_ROUTES } from "./server.ts";
 import { PrefixWatch } from "./prefix.ts";
-import { merge, usageOf, usageOfEvent, usageText } from "./usage.ts";
+import { merge, usageOf, usageOfEvent, usageText, writtenText } from "./usage.ts";
 
 describe("usage from a reply", () => {
   it("reads Anthropic's split as it is", () => {
@@ -68,6 +69,101 @@ describe("usage from a reply", () => {
     const total = merge(merge(undefined, start), delta);
     expect(total).toEqual({ input: 10, cacheRead: 500, cacheWrite: 0, output: 30 });
     expect(usageText(total)).toBe("10/500/0/30");
+  });
+
+  it("reads how long Anthropic keeps what it wrote, and names it when it wrote", () => {
+    const usage = usageOf("anthropic", {
+      usage: {
+        input_tokens: 2,
+        cache_read_input_tokens: 100,
+        cache_creation_input_tokens: 70,
+        cache_creation: { ephemeral_1h_input_tokens: 50, ephemeral_5m_input_tokens: 20 },
+        output_tokens: 4,
+      },
+    })!;
+    expect(usage.written).toEqual({ hour: 50, short: 20 });
+    expect(writtenText(usage)).toBe(" written=1h:50,5m:20");
+    expect(writtenText({ ...usage, cacheWrite: 0 })).toBe("");
+    expect(writtenText({ input: 1, cacheRead: 0, cacheWrite: 9, output: 1 })).toBe("");
+  });
+
+  it("keeps the split when only one part of a stream carries it", () => {
+    const start = {
+      input: 1,
+      cacheRead: 0,
+      cacheWrite: 9,
+      output: 1,
+      written: { hour: 9, short: 0 },
+    };
+    const delta = { input: 0, cacheRead: 0, cacheWrite: 0, output: 30 };
+    expect(merge(merge(undefined, start), delta).written).toEqual({ hour: 9, short: 0 });
+    expect(merge(delta, start).written).toEqual({ hour: 9, short: 0 });
+    const later = { ...delta, written: { hour: 3, short: 5 } };
+    expect(merge(start, later).written).toEqual({ hour: 9, short: 5 });
+  });
+});
+
+describe("markerText", () => {
+  it("names each marker by where it sits, and its TTL only when it is not an hour", () => {
+    const hour = { type: "ephemeral", ttl: "1h" };
+    const body = {
+      tools: [{ name: "a" }, { name: "b", cache_control: { type: "ephemeral" } }],
+      system: [
+        { type: "text", text: "x", cache_control: hour },
+        { type: "text", text: "y", cache_control: hour },
+      ],
+      messages: [
+        { role: "user", content: "plain" },
+        { role: "user", content: [{ type: "text", text: "z", cache_control: hour }] },
+        {
+          role: "user",
+          content: [{ type: "text", text: "w", cache_control: { ...hour, ttl: "5m" } }],
+        },
+      ],
+    };
+    expect(markerText(body)).toBe("t1:5m,s0,s1,m1,m2:5m");
+    expect(markerText({ system: "plain", messages: [] })).toBe("");
+  });
+});
+
+describe("the journal names a main request's session and markers", () => {
+  it("logs both, and the write split after usage", async () => {
+    const lines: string[] = [];
+    const write = spyOn(process.stderr, "write").mockImplementation((chunk: unknown) => {
+      lines.push(String(chunk));
+      return true;
+    });
+    const usage = {
+      input_tokens: 1,
+      cache_read_input_tokens: 0,
+      cache_creation_input_tokens: 8,
+      cache_creation: { ephemeral_1h_input_tokens: 8, ephemeral_5m_input_tokens: 0 },
+      output_tokens: 1,
+    };
+    const handler = createHandler(DEFAULT_ROUTES, (() =>
+      Promise.resolve(Response.json({ content: [], usage }))) as never);
+    const body = {
+      model: "m",
+      system: [{ type: "text", text: "s", cache_control: { type: "ephemeral", ttl: "1h" } }],
+      tools: [{ name: "Bash", input_schema: { type: "object" } }],
+      messages: [{ role: "user", content: "hello" }],
+    };
+    const sent = new Request("http://127.0.0.1/anthropic/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-claude-code-session-id": "abcdef12-3456-7890",
+      },
+      body: JSON.stringify(body),
+    });
+    try {
+      await (await handler(sent)).text();
+    } finally {
+      write.mockRestore();
+    }
+    const line = lines.find((text) => text.includes("v1/messages 200"))!;
+    expect(line).toContain(" session=abcdef12 markers=s0");
+    expect(line).toContain(" usage=1/0/8/1 written=1h:8,5m:0");
   });
 });
 
