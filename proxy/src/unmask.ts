@@ -27,7 +27,7 @@ export const SPELLED_BLOCKED =
 // agent that saw a value's bytes (od, xxd) wrote them back as printf '\x..',
 // so the value reached the shell and the transcript whole. encoded.ts
 // withholds such copies from output; this stops the ones the model writes.
-export function spellsMasked(args: unknown, values: string[]): boolean {
+export function spellsMasked(args: unknown, values: readonly string[]): boolean {
   if (!values.length) return false;
   const text = typeof args === "string" ? args : JSON.stringify(args ?? null);
   // JSON doubles every backslash; the shell sees one.

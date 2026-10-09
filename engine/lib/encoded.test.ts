@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
 import { redactText } from "../core.ts";
 import { base64Wrapped, hexdumpC, odX, xxd, xxdPlain } from "./encoded-fixtures.ts";
-import { encodedBlocks, redactCopies, rot13, spelledSources, spellsValue } from "./encoded.ts";
+import { encodedBlocks, redactCopies, rot13, spellsValue } from "./encoded.ts";
 import { setRuntimeInventory } from "./rules.ts";
 import { collectRuntimeIdentity } from "./runtime-inventory.ts";
 
@@ -141,8 +141,11 @@ describe("spelled copies of a masked value", () => {
     expect(spellsValue(String.raw`\xc3\xa9t\xc3\xa9`.replace("t", String.raw`\x74`), ["été"])).toBe(
       true,
     );
-    expect(spelledSources("ab😀").some((source) => source.startsWith(String.raw`\\u`))).toBe(false);
-    expect(spelledSources("abc").some((source) => source.startsWith(String.raw`\\u`))).toBe(true);
+    // As \u escapes: a value past the BMP has no four-digit spelling.
+    const u = (units: number[]) =>
+      units.map((n) => String.fromCharCode(92) + "u" + n.toString(16).padStart(4, "0")).join("");
+    expect(spellsValue(u([0x61, 0x62, 0xd83d, 0xde00]), ["ab😀"])).toBe(false);
+    expect(spellsValue(u([0x61, 0x62, 0x63]), ["abc"])).toBe(true);
   });
 
   it("withholds od's decimal bytes of a masked hostname", () => {

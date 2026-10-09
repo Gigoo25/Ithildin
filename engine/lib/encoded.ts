@@ -156,75 +156,215 @@ const MIN_ROT13_LETTERS = 5;
 // three-letter name is specific enough; below that, byte runs are noise.
 const MIN_SPELLED_BYTES = 3;
 
-// A hex digit in either case, as a regex.
-function hexDigits(byte: number): string {
-  return [...byte.toString(16).padStart(2, "0")]
-    .map((d) => (/[a-f]/.test(d) ? `[${d}${d.toUpperCase()}]` : d))
-    .join("");
-}
-
-// Regex sources for a value spelled byte by byte: the forms a shell, od or
+// The forms a value is spelled in byte by byte: the ones a shell, od or
 // an interpreter print or accept. `od -tu1` printed a username as
 // "114 111 98", which no rule matches; an agent then wrote it back as
 // printf '\x72\x6f\x62'. Escapes anchor themselves; a bare run of numbers
 // must stand alone. Unprefixed hex pairs are left to dump blocks above:
 // "68 75 74" is too often just numbers.
-export function spelledSources(value: string): string[] {
-  const bytes = [...Buffer.from(value, "utf8")];
-  if (bytes.length < MIN_SPELLED_BYTES) return [];
-  const hex = bytes.map(hexDigits);
-  const sources = [
-    hex.map((h) => String.raw`\\x${h}`).join(""),
-    hex.map((h) => `%${h}`).join(""),
-    bytes.map((b) => "\\\\0?" + b.toString(8).padStart(3, "0")).join(""),
-    String.raw`(?<![\w.])` + bytes.join(String.raw`[\s,]+`) + String.raw`(?!\w|\.\d)`,
-    hex.map((h) => `0[xX]${h}`).join(String.raw`[\s,]+`) + String.raw`(?!\w)`,
-  ];
-  const points = [...value].map((c) => c.codePointAt(0)!);
-  if (points.every((p) => p <= 0xffff))
-    sources.push(
-      points.map((p) => String.raw`\\u` + hexDigits(p >> 8) + hexDigits(p & 0xff)).join(""),
-    );
-  return sources;
+//
+// Each form is found by its shape alone, in one pass, and each run is read
+// back into bytes and looked up among the values. Matching the values
+// themselves, one regex alternative per value and form, cost time for every
+// value at every position: with 1,600 values masked in a long session a
+// request took over 30 seconds and the rest of it was omitted.
+interface SpelledForm {
+  // A run of the form. Global, so it is stateful: reset before each use.
+  run: RegExp;
+  // One unit inside a run.
+  unit: RegExp;
+  // The byte (or UTF-16 unit, for \u) one unit spells; -1 if no value can
+  // hold it.
+  read: (unit: string) => number;
+  // Whether a value spelled up to `end` may stop there.
+  ends?: (text: string, end: number) => boolean;
+  utf16?: boolean;
 }
 
-function spelledPattern(values: string[]): RegExp | undefined {
-  const sources = values.flatMap(spelledSources);
-  return sources.length ? new RegExp(sources.map((s) => `(?:${s})`).join("|"), "g") : undefined;
+const hexUnit = (unit: string): number => parseInt(unit.slice(-2), 16);
+// A number that stands alone: no word character, and not the integer part
+// of a decimal.
+const standsAlone = (text: string, end: number): boolean =>
+  !/\w/.test(text[end] ?? "") && !(text[end] === "." && /\d/.test(text[end + 1] ?? ""));
+
+const SPELLED_FORMS: SpelledForm[] = [
+  { run: /(?:\\x[0-9a-fA-F]{2})+/g, unit: /\\x[0-9a-fA-F]{2}/g, read: hexUnit },
+  { run: /(?:%[0-9a-fA-F]{2})+/g, unit: /%[0-9a-fA-F]{2}/g, read: hexUnit },
+  // A byte is at most \377, so a fourth digit after \0 belongs to the text.
+  {
+    run: /(?:\\0?[0-3][0-7]{2})+/g,
+    unit: /\\0?[0-3][0-7]{2}/g,
+    read: (unit) => parseInt(unit.slice(-3), 8),
+  },
+  {
+    run: /(?<![\w.])\d+(?:[\s,]+\d+)*/g,
+    unit: /\d+/g,
+    // Written the way od and a byte list print it: no leading zeros.
+    read: (unit) => (/^(?:0|[1-9]\d{0,2})$/.test(unit) && +unit < 256 ? +unit : -1),
+    ends: standsAlone,
+  },
+  {
+    run: /0[xX][0-9a-fA-F]{2}(?:[\s,]+0[xX][0-9a-fA-F]{2})*/g,
+    unit: /0[xX][0-9a-fA-F]{2}/g,
+    read: hexUnit,
+    ends: (text, end) => !/\w/.test(text[end] ?? ""),
+  },
+  {
+    run: /(?:\\u[0-9a-fA-F]{4})+/g,
+    unit: /\\u[0-9a-fA-F]{4}/g,
+    read: (unit) => parseInt(unit.slice(-4), 16),
+    utf16: true,
+  },
+];
+
+// Values by their first three units, longest first. Three is the shortest
+// spelled value, and units are below 2^16, so the key is exact.
+type UnitIndex = Map<number, number[][]>;
+const unitKey = (units: ArrayLike<number>, at: number): number =>
+  (units[at]! * 65536 + units[at + 1]!) * 65536 + units[at + 2]!;
+
+function indexUnits(all: number[][]): UnitIndex {
+  const index: UnitIndex = new Map();
+  for (const units of all) {
+    if (units.length < MIN_SPELLED_BYTES) continue;
+    const key = unitKey(units, 0);
+    const list = index.get(key) ?? [];
+    list.push(units);
+    index.set(key, list);
+  }
+  for (const list of index.values()) list.sort((a, b) => b.length - a.length);
+  return index;
+}
+
+interface CopyIndex {
+  values: readonly string[];
+  bytes: UnitIndex;
+  utf16: UnitIndex;
+  // Rotated values by their leading word; `oddRotated` for the rare one
+  // that starts with punctuation, which has no leading word.
+  rotated: Map<string, string[]>;
+  oddRotated?: RegExp;
+}
+
+const WORD = /[\p{L}\p{N}_]+/gu;
+const WORD_CHAR = /^[\p{L}\p{N}_]/u;
+
+function rotatedTargets(values: readonly string[]): Pick<CopyIndex, "rotated" | "oddRotated"> {
+  const rotated = new Map<string, string[]>();
+  const odd: string[] = [];
+  for (const value of new Set(values)) {
+    if ((value.match(/[A-Za-z]/g)?.length ?? 0) < MIN_ROT13_LETTERS) continue;
+    const target = rot13(value);
+    if (target === value) continue;
+    const lead = /^[\p{L}\p{N}_]*/u.exec(target)![0];
+    if (!lead) odd.push(target);
+    else rotated.set(lead, [...(rotated.get(lead) ?? []), target]);
+  }
+  for (const list of rotated.values()) list.sort((a, b) => b.length - a.length);
+  if (!odd.length) return { rotated };
+  const alternatives = odd.sort((a, b) => b.length - a.length).map(escapeRegExp);
+  const source = `(?<![\\p{L}\\p{N}_])(?:${alternatives.join("|")})(?![\\p{L}\\p{N}_])`;
+  return { rotated, oddRotated: new RegExp(source, "gu") };
+}
+
+// Built once per set of values. AliasBook.values() hands back the same array
+// until a value is added, so the check is one comparison per string.
+let copiesFor: CopyIndex | undefined;
+function copyIndex(values: readonly string[]): CopyIndex {
+  if (copiesFor?.values === values) return copiesFor;
+  const points = (value: string) => [...value].map((c) => c.codePointAt(0)!);
+  copiesFor = {
+    values,
+    bytes: indexUnits(values.map((value) => [...Buffer.from(value, "utf8")])),
+    utf16: indexUnits(values.map(points).filter((p) => p.every((point) => point <= 0xffff))),
+    ...rotatedTargets(values),
+  };
+  return copiesFor;
+}
+
+type Copy = Range & { rot13?: true };
+type Range = { start: number; end: number };
+
+// The longest value spelled at each unit of one run, left to right.
+function valuesInRun(text: string, at: number, run: string, form: SpelledForm, index: UnitIndex) {
+  const found: Range[] = [];
+  const units: number[] = [];
+  const starts: number[] = [];
+  const ends: number[] = [];
+  form.unit.lastIndex = 0;
+  for (const unit of run.matchAll(form.unit)) {
+    units.push(form.read(unit[0]));
+    starts.push(at + unit.index);
+    ends.push(at + unit.index + unit[0].length);
+  }
+  for (let i = 0; i + MIN_SPELLED_BYTES <= units.length; i++) {
+    const candidates = index.get(unitKey(units, i));
+    const hit = candidates?.find(
+      (value) =>
+        i + value.length <= units.length &&
+        value.every((unit, k) => units[i + k] === unit) &&
+        (form.ends?.(text, ends[i + value.length - 1]!) ?? true),
+    );
+    if (!hit) continue;
+    found.push({ start: starts[i]!, end: ends[i + hit.length - 1]! });
+    i += hit.length - 1;
+  }
+  return found;
+}
+
+function spelledCopies(text: string, index: CopyIndex): Copy[] {
+  const found: Copy[] = [];
+  for (const form of SPELLED_FORMS) {
+    const units = form.utf16 ? index.utf16 : index.bytes;
+    if (!units.size) continue;
+    form.run.lastIndex = 0;
+    for (const run of text.matchAll(form.run))
+      found.push(...valuesInRun(text, run.index, run[0], form, units));
+  }
+  return found;
+}
+
+// Whole tokens only: a rotated value is never part of a longer word.
+function rotatedCopies(text: string, index: CopyIndex): Copy[] {
+  const found: Copy[] = [];
+  if (index.rotated.size) {
+    let last = 0;
+    WORD.lastIndex = 0;
+    for (const word of text.matchAll(WORD)) {
+      if (word.index < last) continue;
+      const hit = index.rotated
+        .get(word[0])
+        ?.find(
+          (target) =>
+            text.startsWith(target, word.index) &&
+            !WORD_CHAR.test(text.slice(word.index + target.length, word.index + target.length + 2)),
+        );
+      if (!hit) continue;
+      last = word.index + hit.length;
+      found.push({ start: word.index, end: last, rot13: true });
+    }
+  }
+  if (index.oddRotated) {
+    index.oddRotated.lastIndex = 0;
+    for (const match of text.matchAll(index.oddRotated))
+      found.push({ start: match.index, end: match.index + match[0].length, rot13: true });
+  }
+  return found;
+}
+
+// Leftmost first, the longer of two at one place, and none overlapping.
+function disjoint(copies: Copy[]): Copy[] {
+  const sorted = copies.sort((a, b) => a.start - b.start || b.end - a.end);
+  const out: Copy[] = [];
+  for (const copy of sorted)
+    if (!out.length || copy.start >= out[out.length - 1]!.end) out.push(copy);
+  return out;
 }
 
 // Whether text spells a masked value byte by byte: a shell call that would
 // put the real value back together where no rule sees it.
-export function spellsValue(text: string, values: string[]): boolean {
-  const pattern = spelledPattern(values);
-  return pattern ? pattern.test(text) : false;
-}
-
-// The pattern for one set of values, built once: it holds several
-// alternatives per value, and every string of every request is scanned with
-// it, so rebuilding it per string would cost more than the scan.
-let copiesFor: { key: string; pattern?: RegExp; targets: Set<string> } | undefined;
-function copiesPattern(values: string[]): { pattern?: RegExp; targets: Set<string> } {
-  const key = values.join("\0");
-  if (copiesFor?.key === key) return copiesFor;
-  const targets = new Set<string>();
-  for (const value of values) {
-    if ((value.match(/[A-Za-z]/g)?.length ?? 0) < MIN_ROT13_LETTERS) continue;
-    const rotated = rot13(value);
-    if (rotated !== value) targets.add(rotated);
-  }
-  const alternatives = [...targets]
-    .sort((a, b) => b.length - a.length)
-    .map(escapeRegExp)
-    .join("|");
-  const rotatedSource = alternatives
-    ? `(?<![\\p{L}\\p{N}_])(?:${alternatives})(?![\\p{L}\\p{N}_])`
-    : undefined;
-  const spelled = spelledPattern(values)?.source;
-  const sources = [rotatedSource, spelled].filter((s): s is string => s !== undefined);
-  const pattern = sources.length ? new RegExp(sources.join("|"), "gu") : undefined;
-  copiesFor = { key, ...(pattern ? { pattern } : {}), targets };
-  return copiesFor;
+export function spellsValue(text: string, values: readonly string[]): boolean {
+  return values.length > 0 && spelledCopies(text, copyIndex(values)).length > 0;
 }
 
 // Withholds rot13 and spelled copies of values already masked. Neither has
@@ -233,24 +373,23 @@ function copiesPattern(values: string[]): { pattern?: RegExp; targets: Set<strin
 // One pass, so both share one list of edits.
 export function redactCopies(
   text: string,
-  values: string[],
+  values: readonly string[],
   onEdit: (start: number, end: number, replacementLength: number) => void,
 ): { text: string; hits: number } {
-  const { pattern, targets } = copiesPattern(values);
-  if (!pattern) return { text, hits: 0 };
+  if (!values.length) return { text, hits: 0 };
+  const index = copyIndex(values);
+  const copies = disjoint([...rotatedCopies(text, index), ...spelledCopies(text, index)]);
   let out = "";
   let last = 0;
-  let hits = 0;
-  for (const match of text.matchAll(pattern)) {
-    const kind = targets.has(match[0]) ? "rot13" : "an encoded copy";
-    const marker = `[ithildin: omitted ${match[0].length} chars (${kind} of a masked value)]`;
-    out += text.slice(last, match.index);
-    onEdit(match.index, match.index + match[0].length, marker.length);
+  for (const copy of copies) {
+    const kind = copy.rot13 ? "rot13" : "an encoded copy";
+    const marker = `[ithildin: omitted ${copy.end - copy.start} chars (${kind} of a masked value)]`;
+    out += text.slice(last, copy.start);
+    onEdit(copy.start, copy.end, marker.length);
     out += marker;
-    last = match.index + match[0].length;
-    hits++;
+    last = copy.end;
   }
-  return hits ? { text: out + text.slice(last), hits } : { text, hits: 0 };
+  return copies.length ? { text: out + text.slice(last), hits: copies.length } : { text, hits: 0 };
 }
 
 // Withholds every block whose decoding holds a finding in a category not

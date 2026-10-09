@@ -699,6 +699,9 @@ let NAMES: string[] | undefined;
 export class AliasBook {
   // stand-in -> real value, or null when two values share a stand-in.
   private readonly reverse = new Map<string, Resolved | null>();
+  // values(), kept until `reverse` changes: every string of every request
+  // asks for it, and rebuilding it costs as much as there are values.
+  private valuesMemo: readonly string[] | undefined;
   // Pieces that composite stand-ins are built from, so a stand-in the model
   // composes itself (another host in a known domain, another address in a
   // known /24) can be resolved too.
@@ -1046,6 +1049,7 @@ export class AliasBook {
     const known = this.reverse.get(standIn);
     if (known === undefined) {
       this.reverse.set(standIn, { value, ruleId });
+      this.valuesMemo = undefined;
       this.mangledPattern = undefined;
       this.longest = Math.max(this.longest, standIn.length);
       this.words.add(standIn);
@@ -1057,6 +1061,7 @@ export class AliasBook {
       }
     } else if (known !== null && known.value.toLowerCase() !== value.toLowerCase()) {
       this.reverse.set(standIn, null);
+      this.valuesMemo = undefined;
     }
   }
 
@@ -1196,8 +1201,10 @@ export class AliasBook {
 
   // Real values behind the stand-ins, to catch transformed copies of them
   // (rot13). Used only locally; never sent anywhere.
-  values(): string[] {
-    return [...new Set(this.known().map((known) => known.value))];
+  // The same array until a value is added, so callers can cache on it.
+  values(): readonly string[] {
+    this.valuesMemo ??= [...new Set(this.known().map((known) => known.value))];
+    return this.valuesMemo;
   }
 
   // Real values behind the stand-ins with the rule that found each, to mask
@@ -1238,6 +1245,7 @@ export class AliasBook {
 
   clear(): void {
     this.reverse.clear();
+    this.valuesMemo = undefined;
     this.parts.clear();
     this.prefixes.clear();
     this.minted.clear();
