@@ -3,8 +3,11 @@
 For an agent picking up the cache work. `AGENTS.md` covers the repo; this
 covers how context shaping (`shape.ts`) interacts with Anthropic's prompt
 cache, what has been tried, what is known, and how to find out the rest.
-Status as of 2026-10-08: the open question below is mostly answered (see
-[Saved misses on 2026-10-08](#saved-misses-on-2026-10-08)).
+Status as of 2026-10-09: note dropping is fixed, but most steps still read
+only the system prompt, and five causes have been tested and ruled out (see
+[Step misses after the fix](#step-misses-after-the-fix-2026-10-09)). The
+journal now names each request's session, markers and write TTLs, so the
+next miss can be read without kept bodies.
 
 ## The problem
 
@@ -176,8 +179,9 @@ chunk's bytes depend only on that chunk and never change once it is in the
 old part. `shape.test.ts` asserts that a step leaves every message before
 the previous cutoff byte-identical; it fails on the old code.
 
-**16:40 is unexplained.** It first looked like expiry: the session's
-previous step (to 80) was four hours earlier, and the entry at the previous
+**16:40 is unexplained**, still, after the 2026-10-09 tests below. It first
+looked like expiry: the session's previous step (to 80) was four hours
+earlier, and the entry at the previous
 cutoff is written only by a step. But the session had resumed at 16:39:26
 with a cold request (read 0, wrote 119K), 43 seconds before the step, which
 should have written that entry again; the two requests after it read
@@ -226,6 +230,65 @@ above would go. Middle ground: step mid-session only when the saving is
 large, otherwise wait for a cold request. Worth building as a setting and
 comparing on real sessions once the note-dropping fix has a few days of data.
 
+## Step misses after the fix (2026-10-09)
+
+The note-dropping fix (`81b76c9`) did not stop step misses. Of 22 steps from
+17:11 on 2026-10-08 to the next afternoon, about 15 read only the system
+prompt (11–13K) and wrote the rest. Times here are local (EDT); kept-miss
+directory names are UTC, four hours ahead.
+
+| Time | Step | Read | Written |
+|---|---|---|---|
+| 13:55 | 0>20 | 13.5K | 29K (a first step; expected) |
+| 14:05 | 20>40 | 13.5K | 30K |
+| 15:03 | 110>140 | 13.4K | 80K |
+| 15:03 | 130>160 | 13.5K | 85K |
+
+For 14:05 the kept pair was compared up to the previous-cutoff marker
+(`m60`): tools, thinking settings and `m0..m60` byte-identical, markers
+included. The only difference before the entry was the first system marker,
+which a two-boundary step takes off (`mark.ts`). That was ruled out the same
+hour: the ordinary request right after the step, carrying both system
+markers, read 43,928 tokens, exactly the step's read plus its write. Where the
+system marker sits does not change the prefix Anthropic matches.
+
+**Ruled out, each by a test:**
+
+| Suspect | How it was tested | Result |
+|---|---|---|
+| First system marker taken off at a step | the request after the step read the step's whole prefix | harmless |
+| Anthropic dropping old thinking (`thinking=dropped:N`) | toy steps that drop it read to the old cutoff | not it |
+| Entries expiring after 5 minutes | `cache_creation` shows all writes `ephemeral_1h`; a 20-minute-old step entry was read | not it |
+| Conversation size | a Haiku toy at real scale (`MASK_KEEP_TURNS` 10, step 20, 27 turns, ~200K) stepped 20>40 and read 33.9K, to the old cutoff | not it |
+| Model | the small toys ran on Opus 5.5 (the kept bodies say so) and their steps hit | not it |
+
+**The toy.** A copy of the proxy on another port with `MASK_THRESHOLD_TOKENS`
+lowered, the step sizes set from the environment, and `pays()` forced true
+(without that, a toy never steps: a short conversation never clears the cost
+gate). Driven by `claude -p --resume` with `--settings` pointing
+`ANTHROPIC_BASE_URL` at it, each turn running `seq` for a result of a known
+size. A run tag in each prompt keeps one run from reading another's entries:
+an untagged rerun read 37K from a run 20 minutes older and wrote nothing,
+which is how the expiry test above came about. The scripts were scratch and
+are not in the repo.
+
+**What is left.** In real sessions a step reads nothing past the system prompt
+even though its bytes up to the old cutoff match a body that was sent, the
+markers there are the same, and entries live an hour. Toys reproduce none of
+it, on either model or at real size. So it is something only real sessions
+have; unknown is whether an entry was actually written at the old cutoff by
+any request between steps. The journal's `markers=` (below) answers that
+from now on: find the request that last carried a marker on the old cutoff
+message, and see whether it was answered.
+
+**Two fixes to try once it is known:**
+
+- No request wrote an entry at the old cutoff: put the step's
+  previous-cutoff marker on the message the ordinary requests between steps
+  had marked, since those were read and written many times.
+- Something else changes before the cutoff between steps: `firstChangedBlock`
+  in a kept miss names it, as it did for note dropping.
+
 ## Instruments now in the proxy
 
 Both go into the journal (`journalctl --user -u ithildin`), which survives
@@ -261,6 +324,14 @@ restarts; the dashboard and the proxy's memory do not.
   journal says `cache misses dropped: N` then. Files other than the miss
   directories are left alone. This is the pair the first evening lost to a
   restart; start with `meta.json`.
+- **`session=<first 8> markers=<list>`** on every main Anthropic request:
+  the session it belongs to, and where each `cache_control` marker sits in
+  the body as sent (`t<i>` tool, `s<i>` system block, `m<i>` message), with
+  the TTL after a colon when it is not `1h`. The entries a step can read are
+  the ones earlier requests in its session wrote at these markers.
+- **`written=1h:N,5m:N`** after `usage=` when the reply wrote to the cache:
+  Anthropic's `cache_creation` split, which TTL each written token got. A
+  marker asks for an hour; this is what it was granted.
 - `ITHILDIN_DIAGNOSE=off` turns diagnostics off. The first 400 that mentions
   diagnostics turns them off for the life of the process, logs once, and
   resends that request without them.
@@ -303,6 +374,15 @@ little; a miss reads ~11K (the system prompt) and writes the rest.
   `diagnose.ts`, which was filled in from Anthropic's docs by script.
 - **Kept bodies (`/dashboard/request?id=`) are as they arrived**, before
   shaping. Re-run `shapeRequest` on them to see what was sent.
+- **Toy runs push real kept misses out.** Every toy step is a kept miss, and
+  only 20 are kept, so on 2026-10-09 the toys deleted the 13:55 and 14:05
+  pairs above. Set `ITHILDIN_CACHEMISS_KEEP=0` on the toy's proxy, or copy the
+  real pairs somewhere first.
+- **Do not find markers by searching for the text `cache_control`.** A
+  session about caching mentions it in its own messages, and a text search
+  then finds eight or ten "markers" where Anthropic allows four. Walk the
+  JSON for `cache_control` keys, as `markers()` in `mark.ts` does, or read
+  `markers=` in the journal.
 - **Borrowing the login for live tests:** run `claude -p` with
   `--settings '{"env":{"ANTHROPIC_BASE_URL":"http://127.0.0.1:<port>"}}'`
   pointed at a local script that forwards to ithildin and reuses the headers
