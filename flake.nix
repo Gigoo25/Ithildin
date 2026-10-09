@@ -31,6 +31,15 @@
           package = self.packages.${system}.ithildin;
         };
 
+      # `nix develop` gives the Bun the package runs on, and the Node the
+      # *.node-check.ts gates run under, so local runs match the deployed proxy.
+      devShells.${system}.default = pkgs.mkShell {
+        packages = [
+          pkgs.bun
+          pkgs.nodejs
+        ];
+      };
+
       # nixfmt alone reads stdin; `nix fmt` with no arguments formats the repo.
       formatter.${system} = pkgs.writeShellApplication {
         name = "fmt";
