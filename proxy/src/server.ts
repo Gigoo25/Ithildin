@@ -359,7 +359,11 @@ function rewriteSse(
     }
     const part = usageOfEvent(format, event.data);
     if (part) usage = merge(usage, part);
-    if (event.data.includes('"diagnostics"') || event.data.includes('"message_start"'))
+    if (
+      event.data.includes('"diagnostics"') ||
+      event.data.includes('"message_start"') ||
+      event.data.includes('"input_transformations"')
+    )
       listen(parsedOr(event.data));
     const outs = observeActivity(tap, () => rewriter.push(event));
     for (const out of outs) controller.enqueue(encoder.encode(formatSse(out)));

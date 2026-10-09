@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import {
+  BINDING_BETA,
   BODIES_MAX,
   DIAGNOSE_BETA,
   DIAGNOSED_MAX,
@@ -16,7 +17,11 @@ describe("cache diagnostics", () => {
     const headers = new Headers({ "anthropic-beta": "a-beta, b-beta" });
     const first = diagnoses.ask("s1", false, '{"model":"m"}', headers)!;
     expect(JSON.parse(first)).toEqual({ diagnostics: { previous_message_id: null }, model: "m" });
-    expect(headers.get("anthropic-beta")).toBe(`a-beta,b-beta,${DIAGNOSE_BETA}`);
+    expect(headers.get("anthropic-beta")).toBe(`a-beta,b-beta,${DIAGNOSE_BETA},${BINDING_BETA}`);
+    // One the agent already sent is not sent twice.
+    const own = new Headers({ "anthropic-beta": BINDING_BETA });
+    diagnoses.ask("s1", false, '{"model":"m"}', own);
+    expect(own.get("anthropic-beta")).toBe(`${BINDING_BETA},${DIAGNOSE_BETA}`);
 
     expect(diagnoses.answer("s1", true, { id: "msg_step1" })).toBe("");
     expect(diagnoses.answer("s1", false, { id: "msg_turn2" })).toBe("");
@@ -63,6 +68,48 @@ describe("cache diagnostics", () => {
     expect(heardIn(undefined)).toEqual({});
   });
 
+  it("names the thinking blocks a reply says no longer match their conversation", () => {
+    const allowed = (path: string) => ({
+      type: "thinking_mismatch_allowed",
+      path,
+      reason: "prefix_binding_mismatch",
+    });
+    expect(
+      heardIn({
+        id: "msg_1",
+        input_transformations: [
+          allowed("messages.32.content.1"),
+          allowed("messages.40.content.0"),
+          { type: "thinking_dropped", path: "messages.50.content.0" },
+          { reason: "no type or path" },
+          "not an entry",
+        ],
+      }),
+    ).toEqual({
+      id: "msg_1",
+      thinking:
+        "mismatch_allowed:2@messages.32.content.1,dropped:1@messages.50.content.0,unknown:1@?",
+    });
+    // On a stream, beside usage on the delta event, or inside the delta.
+    expect(heardIn({ type: "message_delta", input_transformations: [allowed("m.1")] })).toEqual({
+      thinking: "mismatch_allowed:1@m.1",
+    });
+    expect(heardIn({ delta: { input_transformations: [allowed("m.2")] } })).toEqual({
+      thinking: "mismatch_allowed:1@m.2",
+    });
+    // Nothing listed is nothing to say.
+    expect(heardIn({ id: "msg_2", input_transformations: [] })).toEqual({ id: "msg_2" });
+    expect(heardIn({ input_transformations: [7] })).toEqual({});
+
+    const diagnoses = new Diagnoses();
+    expect(diagnoses.answer("s", false, { thinking: "mismatch_allowed:1@m.1" })).toBe(
+      " thinking=mismatch_allowed:1@m.1",
+    );
+    expect(
+      diagnoses.answer("s", false, { reason: "messages_changed", thinking: "dropped:1@m.2" }),
+    ).toBe(" cachemiss=messages_changed thinking=dropped:1@m.2");
+  });
+
   it("stops asking for good once Anthropic refuses the question", () => {
     const diagnoses = new Diagnoses();
     expect(diagnoses.refused(400, "max_tokens: too large")).toBe(false);
@@ -70,6 +117,10 @@ describe("cache diagnostics", () => {
     expect(diagnoses.ask("s", false, '{"a":1}', new Headers())).toBeDefined();
     expect(diagnoses.refused(400, '{"message":"diagnostics: unknown field"}')).toBe(true);
     expect(diagnoses.ask("s", false, '{"a":1}', new Headers())).toBeUndefined();
+    // Refusing the thinking-binding beta stops it too.
+    const binding = new Diagnoses();
+    expect(binding.refused(400, `unknown beta: ${BINDING_BETA}`)).toBe(true);
+    expect(binding.ask("s", false, '{"a":1}', new Headers())).toBeUndefined();
   });
 
   it("keeps a miss with the body it was compared with: the last step's, on a step", () => {

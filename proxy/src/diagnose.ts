@@ -10,19 +10,30 @@
 // Only Anthropic's own API knows the header. The proxy adds the field after
 // redaction, so the id goes up as it came down, and drops the whole thing for
 // good the first time Anthropic refuses it.
+//
+// The same requests carry the thinking-binding beta, without its field: a
+// thinking block is bound to the conversation before it, and masking edits
+// that conversation. With the header alone the model still sees every block,
+// and the reply lists each one whose conversation changed under
+// `input_transformations`, which the journal names as thinking=. That is the
+// evidence for whether a step's masking is what makes it miss (CACHING.md).
 
 import { setting } from "../engine/lib/names.ts";
 import type { Miss } from "./misses.ts";
+
+export const BINDING_BETA = "thinking-binding-controls-2026-08-01";
 
 export const DIAGNOSE_BETA = "cache-diagnosis-2026-04-07";
 // Sessions remembered, newest kept: a restart forgets them, which costs only
 // the next request's answer.
 export const DIAGNOSED_MAX = 200;
 
-// What a reply said: its id, and why it missed the cache when it did.
+// What a reply said: its id, why it missed the cache when it did, and which
+// thinking blocks no longer matched their conversation.
 export interface Heard {
   id?: string;
   reason?: string;
+  thinking?: string;
 }
 
 type Fields = Record<string, unknown>;
@@ -46,10 +57,33 @@ export function heardIn(value: unknown): Heard {
     fields(outer.diagnostics) ??
     fields(fields(outer.delta)?.diagnostics);
   const miss = fields(found?.cache_miss_reason);
+  // A sibling of usage: on the message, or on a stream's delta event.
+  const changed =
+    message.input_transformations ??
+    outer.input_transformations ??
+    fields(outer.delta)?.input_transformations;
+  const thinking = Array.isArray(changed) ? thinkingText(changed) : undefined;
   return {
     ...(id ? { id } : {}),
     ...(miss ? { reason: reasonText(miss) } : {}),
+    ...(thinking ? { thinking } : {}),
   };
+}
+
+// How the journal names the thinking blocks a reply listed: per kind, how many
+// and where the first one sits, e.g. mismatch_allowed:3@messages.32.content.1.
+function thinkingText(entries: unknown[]): string | undefined {
+  const kinds = new Map<string, { count: number; first: string }>();
+  for (const entry of entries) {
+    const found = fields(entry);
+    if (!found) continue;
+    const kind = typeof found.type === "string" ? found.type.replace(/^thinking_/, "") : "unknown";
+    const seen = kinds.get(kind);
+    if (seen) seen.count++;
+    else kinds.set(kind, { count: 1, first: typeof found.path === "string" ? found.path : "?" });
+  }
+  const named = [...kinds].map(([kind, { count, first }]) => `${kind}:${count}@${first}`);
+  return named.length > 0 ? named.join(",") : undefined;
 }
 
 // How the journal names a miss: its type, then what else it said, short.
@@ -90,8 +124,11 @@ export class Diagnoses {
     if (this.off || !body.startsWith("{") || body.slice(1).trimStart().startsWith("}")) return;
     const seen = this.last.get(session);
     const previous = (step ? seen?.step : undefined) ?? seen?.id ?? null;
+    // Added to what the agent sent, never in place of it: dropping its own
+    // betas would change how the request is served.
     const betas = (headers.get("anthropic-beta") ?? "").split(",").map((beta) => beta.trim());
-    headers.set("anthropic-beta", [...betas.filter(Boolean), DIAGNOSE_BETA].join(","));
+    const added = [DIAGNOSE_BETA, BINDING_BETA].filter((beta) => !betas.includes(beta));
+    headers.set("anthropic-beta", [...betas.filter(Boolean), ...added].join(","));
     return `{"diagnostics":${JSON.stringify({ previous_message_id: previous })},${body.slice(1)}`;
   }
 
@@ -112,7 +149,8 @@ export class Diagnoses {
       while (this.last.size > DIAGNOSED_MAX) this.last.delete(this.last.keys().next().value!);
       if (body !== undefined) this.keepBody(session, step, body);
     }
-    return heard.reason ? ` cachemiss=${heard.reason}` : "";
+    const thinking = heard.thinking ? ` thinking=${heard.thinking}` : "";
+    return (heard.reason ? ` cachemiss=${heard.reason}` : "") + thinking;
   }
 
   private keepBody(session: string, step: boolean, body: string): void {
@@ -122,10 +160,10 @@ export class Diagnoses {
     while (this.bodies.size > BODIES_MAX) this.bodies.delete(this.bodies.keys().next().value!);
   }
 
-  // Whether a refused reply was about the field or the header: then the proxy
-  // stops asking, and the request goes again without it.
+  // Whether a refused reply was about the field or either header: then the
+  // proxy stops asking, and the request goes again without them.
   refused(status: number, text: string): boolean {
-    if (status !== 400 || !/diagnostics|cache-diagnos/i.test(text)) return false;
+    if (status !== 400 || !/diagnostics|cache-diagnos|thinking-binding/i.test(text)) return false;
     this.off = true;
     return true;
   }
