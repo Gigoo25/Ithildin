@@ -60,11 +60,19 @@ export function titleAsk(body: unknown): TitleAsk | undefined {
 // says which kind. The proxy logs it, so an agent that rewords its prompt stops
 // costing every session its title in silence. The wording of the prompt is never
 // kept: only that this was one.
+// A naming request is a short prompt with nothing to call. An agent's own turn
+// can say "title" and "JSON" anywhere in a long system prompt (on 2026-10-09
+// one did, and every turn of Claude Code and opencode logged this), so a
+// request that offers tools or carries a prompt of that size is not one.
+const NAMING_PROMPT_MAX = 6_000;
+
 export function looksLikeNaming(body: unknown): boolean {
   if (!body || typeof body !== "object") return false;
   if (titleAsk(body)) return false;
-  const system = systemText(body as Record<string, unknown>);
-  return NAMING_HINT.test(system);
+  const record = body as Record<string, unknown>;
+  if (Array.isArray(record.tools) && record.tools.length > 0) return false;
+  const system = systemText(record);
+  return system.length <= NAMING_PROMPT_MAX && NAMING_HINT.test(system);
 }
 
 const NAMING_HINT = new RegExp(

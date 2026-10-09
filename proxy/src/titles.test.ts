@@ -181,6 +181,13 @@ describe("session titles", () => {
     );
     expect(looksLikeNaming({ system: "Summarise, then return JSON with a title." })).toBe(true);
     expect(looksLikeNaming("not a body")).toBe(false);
+    // An agent's own turn: it offers tools, or its prompt is far longer than
+    // any naming prompt, whatever words it happens to contain.
+    const tools = [{ name: "Bash", input_schema: { type: "object" } }];
+    expect(looksLikeNaming({ system: "Return JSON with a title.", tools })).toBe(false);
+    const long = `${"You are an agent. ".repeat(500)}Reply in JSON; the title field is optional.`;
+    expect(looksLikeNaming({ system: long })).toBe(false);
+    expect(looksLikeNaming({ system: "Return JSON with a title.", tools: [] })).toBe(true);
   });
 
   it("names a session from its agent's naming request, with stand-ins only", async () => {
