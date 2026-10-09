@@ -338,6 +338,24 @@ first turn after this shipped (2026-10-09 15:58), the session's cutoff went
 back from message 802 to 711, nothing had written an entry ending at 711,
 and the turn read 13.5K and wrote 220K. The next turn read 234K. The same
 happens when a `cacheReadPrices` entry changes a model's price.
+
+## A remembered common word rewrote every cache (2026-10-09 16:11)
+
+At 16:11 two sessions and a side call read nothing from cache within half a
+minute (`system_changed`, about 430K tokens written between them), and this
+session did the same on its next turn. The system prompt differed at one
+word, and so did every tool description and message: an ordinary English
+word in the agent's instructions had become a masked value.
+
+The path was the swap-back memory (`rememberSwapped` in `engine/core.ts`). A
+value the proxy swaps back into a tool call is remembered and masked in every
+later text, so output that echoes it is caught even where no rule would. One
+swap of a common word put it there, for every session, until a restart:
+every prefix changed at once, and the model read a stand-in in place of one
+of the most common words in its instructions. An ordinary word
+(`isCommonWord`, the list stand-ins already avoid) is no longer remembered.
+The first deploy with the fix rewrites each session once more, as the word
+comes back.
 Reading the model is safe where reading the TTL was not: a cache belongs to
 one model, so switching it rewrites everything whatever the cutoff does.
 

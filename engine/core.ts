@@ -42,6 +42,7 @@ import {
   AliasBook,
   aliasKeyPath,
   isAliasValue,
+  isCommonWord,
   loadAliasKey,
   SESSION_KEY_SUFFIX,
 } from "./lib/aliases.ts";
@@ -1089,8 +1090,12 @@ export function latestAllowTags(messages: Message[]): Set<string> {
 const SWAPPED = new Map<string, string>();
 const SWAPPED_MAX = 2_000;
 
+// An ordinary word is never remembered. Every later text has it, so once in
+// it masked the word in every system prompt, tool description and message
+// of every session: each prefix changed, so every cache was written again,
+// and the model read a stand-in for one of its most common instructions.
 export function rememberSwapped(value: string, ruleId: string): void {
-  if (value.length < 3 || SWAPPED.has(value)) return;
+  if (value.length < 3 || isCommonWord(value) || SWAPPED.has(value)) return;
   if (SWAPPED.size >= SWAPPED_MAX) SWAPPED.delete(SWAPPED.keys().next().value!);
   SWAPPED.set(value, ruleId);
 }
