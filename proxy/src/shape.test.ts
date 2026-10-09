@@ -395,6 +395,21 @@ describe("the cost of a step", () => {
     expect(shapeRequest("anthropic", { messages: weighed(160_000, 10) })?.masked).toBe(1);
   });
 
+  it("counts a read at what the model charges for one", () => {
+    // Worth it where a read is a tenth of input (Sonnet 5.5), not where it is
+    // a twentieth (Opus 5.5): there the masked tokens save half as much.
+    const list = weighed(160_000, 5_000);
+    expect(shapeRequest("anthropic", { model: "claude-sonnet-5-5", messages: list })?.masked).toBe(
+      1,
+    );
+    expect(shapeRequest("anthropic", { model: "claude-opus-5-5", messages: list })).toBeUndefined();
+    // A cheap step is still taken on Opus 5.5.
+    const cheap = weighed(160_000, 10);
+    expect(shapeRequest("anthropic", { model: "claude-opus-5-5", messages: cheap })?.masked).toBe(
+      1,
+    );
+  });
+
   it("decides a step the same whichever cache lifetime the markers ask for", () => {
     // About 80k of reads saved against 57k of turns to rewrite: worth it at
     // 1.25x, not at the hour-long cache's 2x. A session that switches between

@@ -52,9 +52,15 @@ export const MASK_MIN_CHARS = 400;
 export const MASK_THRESHOLD_TOKENS = 30_000;
 // Prices relative to uncached input. Anthropic charges 1.25x for a cache
 // write, 2x when it is asked to keep it an hour; OpenAI's caching writes at the
-// plain price. Both read back at about a tenth.
+// plain price. A read is usually a tenth, but not on every model: Opus 5.5
+// reads at $0.20 against $4 of input, a twentieth, and a step priced at a
+// tenth there counts on twice the saving it gets.
 export const MASK_HORIZON_TURNS = 20;
 const CACHE_READ = 0.1;
+const CACHE_READ_BY_MODEL: Array<[RegExp, number]> = [
+  [/^claude-opus-5-5\b/, 0.05],
+  [/^claude-(?:fable|mythos)-5-1\b/, 0.025],
+];
 const CACHE_WRITE = { hour: 2, openai: 1 };
 
 // ITHILDIN_SHAPE=off (or raw) shapes nothing, on any route.
@@ -200,6 +206,7 @@ function dueAt(turns: number, tokens: number): number {
 // count on.
 interface Price {
   write: number;
+  read: number;
   whole: boolean;
 }
 
@@ -208,10 +215,13 @@ interface Price {
 // the request moves them all: Claude Code switches a session between 1h and 5m
 // markers (on 2026-10-09, one turn at 5m and the next back at 1h), and each
 // switch put the cutoff somewhere else and rewrote the conversation from the
-// system prompt on, twice.
-function writePrice(format: Format): Price {
-  if (format !== "anthropic") return { write: CACHE_WRITE.openai, whole: false };
-  return { write: CACHE_WRITE.hour, whole: true };
+// system prompt on, twice. The model is safe to read: a cache belongs to one
+// model, so a switch rewrites everything whatever the cutoff does.
+function cachePrice(format: Format, model: unknown): Price {
+  if (format !== "anthropic") return { write: CACHE_WRITE.openai, read: CACHE_READ, whole: false };
+  const name = typeof model === "string" ? model : "";
+  const read = CACHE_READ_BY_MODEL.find(([pattern]) => pattern.test(name))?.[1] ?? CACHE_READ;
+  return { write: CACHE_WRITE.hour, read, whole: true };
 }
 
 // What each item is: the turn it belongs to, its size, and how much masking it
@@ -259,10 +269,10 @@ function pays(items: Sized[], step: Step, price: Price): boolean {
     if (changed || price.whole) suffix += Math.max(0, item.tokens - (inStep ? item.gain : 0));
     if (inStep) gain += item.gain;
   }
-  const write = price.write;
+  const { write, read } = price;
   // A step that changes no bytes is free to take.
   const horizon = Math.max(MASK_HORIZON_TURNS, step.turns);
-  return !changed || gain * CACHE_READ * horizon >= suffix * (write - CACHE_READ);
+  return !changed || gain * read * horizon >= suffix * (write - read);
 }
 
 // The cutoff, and the cutoff as the request before this one had it: the one
@@ -271,9 +281,10 @@ function cutoffFor(
   format: Format,
   list: unknown[],
   walk: Walk,
+  model: unknown,
 ): { cutoff: number; previous: number } {
   const items = sizes(format, list, walk.retrieval);
-  const write = writePrice(format);
+  const write = cachePrice(format, model);
   let cutoff = 0;
   let previous = 0;
   let turns = 0;
@@ -475,7 +486,7 @@ export function shapeRequest(
   const list = conversation(format, body);
   if (!list) return;
   const walk: Walk = { calls: new Map(), outputs: new Map(), retrieval };
-  const { cutoff, previous } = cutoffFor(format, list, walk);
+  const { cutoff, previous } = cutoffFor(format, list, walk, body.model);
   const kept = latestNotes(format, list, cutoff);
   const totals: Counts = { masked: 0, compacted: 0, deduped: 0 };
   let turn = 0;
