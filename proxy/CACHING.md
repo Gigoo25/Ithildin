@@ -328,7 +328,9 @@ $4 of input, 0.05x, so on it the gate counted each masked token as saving
 twice what it does, and took steps whose rewrite cost more than they gave
 back. Steps were 22% of the day's cache writes on 2026-10-09 (1.66M of 7.4M
 tokens). The read price is now looked up by the request's `model`
-(`CACHE_READ_BY_MODEL` in `shape.ts`), with 0.1x for any model not listed.
+(`prices.ts`). A model not in the table gets the lowest price in it and is
+logged once, so a new release makes steps rarer rather than wasteful until
+it is added; `"cacheReadPrices"` in `config.json` adds or overrides one.
 Reading the model is safe where reading the TTL was not: a cache belongs to
 one model, so switching it rewrites everything whatever the cutoff does.
 

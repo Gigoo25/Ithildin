@@ -432,6 +432,18 @@ only taken when what it masks, read back over the turns still to come, is
 worth more than that write, at twice the price on the hour-long cache Claude
 Code asks for. Otherwise old results stay as they were and the cache holds.
 
+What a read saves depends on the model: Opus 5.5 reads its cache at a
+twentieth of the input price, most models at a tenth. The proxy knows the
+current models. For one it does not know it assumes the lowest price it
+knows, which only makes steps rarer, and logs `cache read price unknown for`
+the model once. Add the model's price, cache read over input, under
+`"cacheReadPrices"` in `config.json`. Names take `*` and `?`, and an entry
+here wins over the built-in one:
+
+```
+"cacheReadPrices": { "claude-opus-6*": 0.05 }
+```
+
 The conversation the dashboard keeps is the one that **arrived**; only the
 forwarded copy is shaped.
 

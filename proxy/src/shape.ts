@@ -40,6 +40,7 @@ import { setting } from "../engine/lib/names.ts";
 import { compact } from "./compact.ts";
 import { crushJson } from "./crush.ts";
 import { markBoundaries } from "./mark.ts";
+import { cacheReadPrice } from "./prices.ts";
 import type { Format } from "./redact.ts";
 
 // Ported from Pi's output-shaping extension (mask.ts), which could only shape
@@ -52,15 +53,11 @@ export const MASK_MIN_CHARS = 400;
 export const MASK_THRESHOLD_TOKENS = 30_000;
 // Prices relative to uncached input. Anthropic charges 1.25x for a cache
 // write, 2x when it is asked to keep it an hour; OpenAI's caching writes at the
-// plain price. A read is usually a tenth, but not on every model: Opus 5.5
-// reads at $0.20 against $4 of input, a twentieth, and a step priced at a
-// tenth there counts on twice the saving it gets.
+// plain price. A read is about a tenth on OpenAI, and on Anthropic whatever
+// the model charges (prices.ts): Opus 5.5 reads at a twentieth, and a step
+// priced at a tenth there counts on twice the saving it gets.
 export const MASK_HORIZON_TURNS = 20;
 const CACHE_READ = 0.1;
-const CACHE_READ_BY_MODEL: Array<[RegExp, number]> = [
-  [/^claude-opus-5-5\b/, 0.05],
-  [/^claude-(?:fable|mythos)-5-1\b/, 0.025],
-];
 const CACHE_WRITE = { hour: 2, openai: 1 };
 
 // ITHILDIN_SHAPE=off (or raw) shapes nothing, on any route.
@@ -219,9 +216,7 @@ interface Price {
 // model, so a switch rewrites everything whatever the cutoff does.
 function cachePrice(format: Format, model: unknown): Price {
   if (format !== "anthropic") return { write: CACHE_WRITE.openai, read: CACHE_READ, whole: false };
-  const name = typeof model === "string" ? model : "";
-  const read = CACHE_READ_BY_MODEL.find(([pattern]) => pattern.test(name))?.[1] ?? CACHE_READ;
-  return { write: CACHE_WRITE.hour, read, whole: true };
+  return { write: CACHE_WRITE.hour, read: cacheReadPrice(model), whole: true };
 }
 
 // What each item is: the turn it belongs to, its size, and how much masking it
