@@ -55,7 +55,7 @@ export const MASK_THRESHOLD_TOKENS = 30_000;
 // plain price. Both read back at about a tenth.
 export const MASK_HORIZON_TURNS = 20;
 const CACHE_READ = 0.1;
-const CACHE_WRITE = { short: 1.25, hour: 2, openai: 1 };
+const CACHE_WRITE = { hour: 2, openai: 1 };
 
 // ITHILDIN_SHAPE=off (or raw) shapes nothing, on any route.
 export function shapingOn(env: Record<string, string | undefined> = process.env): boolean {
@@ -203,11 +203,15 @@ interface Price {
   whole: boolean;
 }
 
-function writePrice(format: Format, body: Record_): Price {
+// Always the hour's price on Anthropic, whatever this request's markers ask
+// for. Every past step is decided again on each request, so a price read from
+// the request moves them all: Claude Code switches a session between 1h and 5m
+// markers (on 2026-10-09, one turn at 5m and the next back at 1h), and each
+// switch put the cutoff somewhere else and rewrote the conversation from the
+// system prompt on, twice.
+function writePrice(format: Format): Price {
   if (format !== "anthropic") return { write: CACHE_WRITE.openai, whole: false };
-  // Claude Code marks its system prompt; a marker on any block says the same.
-  const marked = JSON.stringify([body.system, body.tools]).includes('"ttl":"1h"');
-  return { write: marked ? CACHE_WRITE.hour : CACHE_WRITE.short, whole: true };
+  return { write: CACHE_WRITE.hour, whole: true };
 }
 
 // What each item is: the turn it belongs to, its size, and how much masking it
@@ -265,12 +269,11 @@ function pays(items: Sized[], step: Step, price: Price): boolean {
 // decided just before the newest assistant turn, where that request ended.
 function cutoffFor(
   format: Format,
-  body: Record_,
   list: unknown[],
   walk: Walk,
 ): { cutoff: number; previous: number } {
   const items = sizes(format, list, walk.retrieval);
-  const write = writePrice(format, body);
+  const write = writePrice(format);
   let cutoff = 0;
   let previous = 0;
   let turns = 0;
@@ -472,7 +475,7 @@ export function shapeRequest(
   const list = conversation(format, body);
   if (!list) return;
   const walk: Walk = { calls: new Map(), outputs: new Map(), retrieval };
-  const { cutoff, previous } = cutoffFor(format, body, list, walk);
+  const { cutoff, previous } = cutoffFor(format, list, walk);
   const kept = latestNotes(format, list, cutoff);
   const totals: Counts = { masked: 0, compacted: 0, deduped: 0 };
   let turn = 0;

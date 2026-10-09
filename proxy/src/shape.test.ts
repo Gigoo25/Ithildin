@@ -322,12 +322,13 @@ describe("superseded harness notes", () => {
 
   // A tool loop with a tokens-left note on every result, and one reminder
   // given at turn 0 and again at turn 25: what a harness re-sends when its
-  // instructions change. Each step opens on a big result, so masking it pays
-  // for the rewrite and the steps are taken.
+  // instructions change. Early results are the biggest, as a session's first
+  // look around usually is, so masking them pays for the rewrite even at the
+  // hour-long cache's price and the steps are taken.
   const loop = (turns: number): Array<Record<string, unknown>> => {
     const list: Array<Record<string, unknown>> = [];
     for (let i = 0; i < turns; i++) {
-      const output = i % MASK_STEP_TURNS === 1 ? big(2000) : "ok";
+      const output = big(Math.max(10, 6000 - i * 150));
       const content: unknown[] =
         i === 0
           ? [{ type: "text", text: "do the thing" }]
@@ -354,7 +355,7 @@ describe("superseded harness notes", () => {
     // must leave the turns the request before it had masked byte for byte.
     let before: { messages: unknown[]; cutoff: number } | undefined;
     let steps = 0;
-    for (let turns = 15; turns <= 52; turns++) {
+    for (let turns = 15; turns <= 60; turns++) {
       const shaped = shapeRequest("anthropic", { messages: loop(turns) });
       const messages = (shaped?.body.messages ?? loop(turns)) as unknown[];
       const cutoff = shaped?.step?.to ?? before?.cutoff ?? 0;
@@ -370,8 +371,9 @@ describe("superseded harness notes", () => {
       }
       before = { messages, cutoff };
     }
-    // The reminder at turn 25 entered the old part on one of these.
-    expect(steps).toBeGreaterThanOrEqual(3);
+    // The step from 10 to 30, the one with a cutoff before it, takes the
+    // reminder at turn 25 into the old part.
+    expect(steps).toBeGreaterThanOrEqual(1);
   });
 
   it("is pure, and leaves a short conversation alone", () => {
@@ -393,12 +395,19 @@ describe("the cost of a step", () => {
     expect(shapeRequest("anthropic", { messages: weighed(160_000, 10) })?.masked).toBe(1);
   });
 
-  it("asks more of a step when the cache write costs more", () => {
+  it("decides a step the same whichever cache lifetime the markers ask for", () => {
     // About 80k of reads saved against 57k of turns to rewrite: worth it at
-    // 1.25x, not at the hour-long cache's 2x.
+    // 1.25x, not at the hour-long cache's 2x. A session that switches between
+    // 1h and 5m must not see its past steps move, so both are priced at 2x.
     const list = weighed(160_000, 12_000);
-    expect(shapeRequest("anthropic", { messages: list })?.masked).toBe(1);
+    const short = [{ type: "text", text: "sys", cache_control: { type: "ephemeral" } }];
     expect(shapeRequest("anthropic", { system: hour, messages: list })).toBeUndefined();
+    expect(shapeRequest("anthropic", { system: short, messages: list })).toBeUndefined();
+    expect(shapeRequest("anthropic", { messages: list })).toBeUndefined();
+    // And a step that pays at 2x is taken in both.
+    const cheap = weighed(160_000, 10);
+    expect(shapeRequest("anthropic", { system: hour, messages: cheap })?.masked).toBe(1);
+    expect(shapeRequest("anthropic", { system: short, messages: cheap })?.masked).toBe(1);
   });
 
   it("keeps a step it took, however much comes after", () => {
