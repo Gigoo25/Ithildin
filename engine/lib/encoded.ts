@@ -152,32 +152,98 @@ export function rot13(text: string): string {
 // Below this, a rotated value turns up inside ordinary words: a three-letter
 // username rotated is a piece of "Notebook".
 const MIN_ROT13_LETTERS = 5;
+// A spelled copy carries its own shape (escapes, a run of byte numbers), so a
+// three-letter name is specific enough; below that, byte runs are noise.
+const MIN_SPELLED_BYTES = 3;
 
-// Withholds rot13 copies of values already masked. rot13 has no shape of its
-// own, so this matches known values exactly, as whole tokens, rather than
-// scanning a decoding with the shape rules, which would fire on gibberish.
-export function redactRot13(
-  text: string,
-  values: string[],
-  onEdit: (start: number, end: number, replacementLength: number) => void,
-): { text: string; hits: number } {
+// A hex digit in either case, as a regex.
+function hexDigits(byte: number): string {
+  return [...byte.toString(16).padStart(2, "0")]
+    .map((d) => (/[a-f]/.test(d) ? `[${d}${d.toUpperCase()}]` : d))
+    .join("");
+}
+
+// Regex sources for a value spelled byte by byte: the forms a shell, od or
+// an interpreter print or accept. `od -tu1` printed a username as
+// "114 111 98", which no rule matches; an agent then wrote it back as
+// printf '\x72\x6f\x62'. Escapes anchor themselves; a bare run of numbers
+// must stand alone. Unprefixed hex pairs are left to dump blocks above:
+// "68 75 74" is too often just numbers.
+export function spelledSources(value: string): string[] {
+  const bytes = [...Buffer.from(value, "utf8")];
+  if (bytes.length < MIN_SPELLED_BYTES) return [];
+  const hex = bytes.map(hexDigits);
+  const sources = [
+    hex.map((h) => String.raw`\\x${h}`).join(""),
+    hex.map((h) => `%${h}`).join(""),
+    bytes.map((b) => "\\\\0?" + b.toString(8).padStart(3, "0")).join(""),
+    String.raw`(?<![\w.])` + bytes.join(String.raw`[\s,]+`) + String.raw`(?!\w|\.\d)`,
+    hex.map((h) => `0[xX]${h}`).join(String.raw`[\s,]+`) + String.raw`(?!\w)`,
+  ];
+  const points = [...value].map((c) => c.codePointAt(0)!);
+  if (points.every((p) => p <= 0xffff))
+    sources.push(
+      points.map((p) => String.raw`\\u` + hexDigits(p >> 8) + hexDigits(p & 0xff)).join(""),
+    );
+  return sources;
+}
+
+function spelledPattern(values: string[]): RegExp | undefined {
+  const sources = values.flatMap(spelledSources);
+  return sources.length ? new RegExp(sources.map((s) => `(?:${s})`).join("|"), "g") : undefined;
+}
+
+// Whether text spells a masked value byte by byte: a shell call that would
+// put the real value back together where no rule sees it.
+export function spellsValue(text: string, values: string[]): boolean {
+  const pattern = spelledPattern(values);
+  return pattern ? pattern.test(text) : false;
+}
+
+// The pattern for one set of values, built once: it holds several
+// alternatives per value, and every string of every request is scanned with
+// it, so rebuilding it per string would cost more than the scan.
+let copiesFor: { key: string; pattern?: RegExp; targets: Set<string> } | undefined;
+function copiesPattern(values: string[]): { pattern?: RegExp; targets: Set<string> } {
+  const key = values.join("\0");
+  if (copiesFor?.key === key) return copiesFor;
   const targets = new Set<string>();
   for (const value of values) {
     if ((value.match(/[A-Za-z]/g)?.length ?? 0) < MIN_ROT13_LETTERS) continue;
     const rotated = rot13(value);
     if (rotated !== value) targets.add(rotated);
   }
-  if (!targets.size) return { text, hits: 0 };
   const alternatives = [...targets]
     .sort((a, b) => b.length - a.length)
     .map(escapeRegExp)
     .join("|");
-  const pattern = new RegExp(`(?<![\\p{L}\\p{N}_])(?:${alternatives})(?![\\p{L}\\p{N}_])`, "gu");
+  const rotatedSource = alternatives
+    ? `(?<![\\p{L}\\p{N}_])(?:${alternatives})(?![\\p{L}\\p{N}_])`
+    : undefined;
+  const spelled = spelledPattern(values)?.source;
+  const sources = [rotatedSource, spelled].filter((s): s is string => s !== undefined);
+  const pattern = sources.length ? new RegExp(sources.join("|"), "gu") : undefined;
+  copiesFor = { key, ...(pattern ? { pattern } : {}), targets };
+  return copiesFor;
+}
+
+// Withholds rot13 and spelled copies of values already masked. Neither has
+// a shape the rules know, so this matches known values exactly rather than
+// scanning a decoding with the shape rules, which would fire on gibberish.
+// One pass, so both share one list of edits.
+export function redactCopies(
+  text: string,
+  values: string[],
+  onEdit: (start: number, end: number, replacementLength: number) => void,
+): { text: string; hits: number } {
+  const { pattern, targets } = copiesPattern(values);
+  if (!pattern) return { text, hits: 0 };
   let out = "";
   let last = 0;
   let hits = 0;
   for (const match of text.matchAll(pattern)) {
-    const marker = `[ithildin: omitted ${match[0].length} chars (rot13 of a masked value)]`;
+    const kind = targets.has(match[0]) ? "rot13" : "an encoded copy";
+    const marker = `[ithildin: omitted ${match[0].length} chars (${kind} of a masked value)]`;
     out += text.slice(last, match.index);
     onEdit(match.index, match.index + match[0].length, marker.length);
     out += marker;

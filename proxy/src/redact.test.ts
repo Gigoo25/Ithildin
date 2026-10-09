@@ -9,6 +9,7 @@ import {
   redactQuery,
   redactRequest,
   refreshIdentity,
+  strayStandIns,
   swapToolArguments,
   swapToolJson,
   WITHHELD_NOTICE,
@@ -315,5 +316,80 @@ describe("query and stream fidelity", () => {
       if (saved === undefined) delete process.env.ITHILDIN_INFRA_INVENTORY;
       else process.env.ITHILDIN_INFRA_INVENTORY = saved;
     }
+  });
+});
+
+describe("stand-ins on disk", () => {
+  const NAME = ["Qe", "lvor ", "Brann", "ick"].join("");
+  const call = (id: string, name: string, input: unknown) => ({
+    role: "assistant",
+    content: [{ type: "tool_use", id, name, input }],
+  });
+  const result = (id: string, content: unknown) => ({
+    role: "user",
+    content: [{ type: "tool_result", tool_use_id: id, content }],
+  });
+
+  it("names a stand-in a file or shell tool returned, with the file read", () => {
+    const standIn = aliases().standIn("pii-gazetteer-name", NAME);
+    const body = {
+      messages: [
+        { role: "user", content: "fix the script" },
+        call("t1", "Read", { file_path: "/tmp/hours.sh" }),
+        result("t1", [{ type: "text", text: `who=${standIn}\nwho=${standIn}` }]),
+      ],
+    };
+    expect(strayStandIns("anthropic", body)).toEqual([
+      { standIn, tool: "Read", file: "/tmp/hours.sh" },
+    ]);
+    expect(redactRequest("anthropic", body).strays).toEqual([
+      { standIn, tool: "Read", file: "/tmp/hours.sh" },
+    ]);
+    // A shell call names no file: its command holds real values.
+    const shell = { messages: [call("t2", "Bash", { command: "cat x" }), result("t2", standIn)] };
+    expect(strayStandIns("anthropic", shell)).toEqual([{ standIn, tool: "Bash" }]);
+  });
+
+  it("reads only the newest results, and only file and shell tools'", () => {
+    const standIn = aliases().standIn("pii-gazetteer-name", NAME);
+    const older = {
+      messages: [
+        call("t1", "Read", { file_path: "/tmp/a" }),
+        result("t1", standIn),
+        call("t2", "Bash", { command: "ls" }),
+        result("t2", "nothing here"),
+      ],
+    };
+    expect(strayStandIns("anthropic", older)).toEqual([]);
+    for (const name of ["Task", "TodoWrite", "mcp__x__y"])
+      expect(
+        strayStandIns("anthropic", { messages: [call("t3", name, {}), result("t3", standIn)] }),
+      ).toEqual([]);
+    // A result with no call to match, and bodies with no list.
+    expect(strayStandIns("anthropic", { messages: [result("t9", standIn)] })).toEqual([]);
+    expect(strayStandIns("anthropic", { messages: "x" })).toEqual([]);
+    expect(strayStandIns("anthropic", { messages: [call("t4", "Bash", {})] })).toEqual([]);
+  });
+
+  it("reads chat and responses shapes", () => {
+    const standIn = aliases().standIn("pii-gazetteer-name", NAME);
+    const chat = {
+      messages: [
+        {
+          role: "assistant",
+          tool_calls: [{ id: "c1", function: { name: "read", arguments: '{"path":"/tmp/b"}' } }],
+        },
+        { role: "tool", tool_call_id: "c1", content: standIn },
+      ],
+    };
+    expect(strayStandIns("chat", chat)).toEqual([{ standIn, tool: "read", file: "/tmp/b" }]);
+    const responses = {
+      input: [
+        { type: "function_call", call_id: "r1", name: "exec_command", arguments: '{"cmd":"x"}' },
+        { type: "function_call_output", call_id: "r1", output: standIn },
+      ],
+    };
+    expect(strayStandIns("responses", responses)).toEqual([{ standIn, tool: "exec_command" }]);
+    expect(strayStandIns("chat", { messages: [null, 3] })).toEqual([]);
   });
 });

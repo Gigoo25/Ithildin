@@ -49,7 +49,7 @@ import { assert } from "./lib/assert.ts";
 import { FIRST_NAMES } from "./lib/first-names.ts";
 import { NAME, sessionFile as sessionPath, setting } from "./lib/names.ts";
 import { planRedaction } from "./lib/redaction-spans.ts";
-import { redactEncoded, redactRot13 } from "./lib/encoded.ts";
+import { redactCopies, redactEncoded } from "./lib/encoded.ts";
 import { reportActivity } from "./lib/activity.ts";
 import { reportRedaction } from "./lib/redaction-audit.ts";
 import { assignmentEdits, inspectDocument } from "./lib/structured-text.ts";
@@ -447,7 +447,7 @@ function redactPrePasses(text: string, allowTags: Set<string>): PrePassed {
     );
     out.text = encoded.text;
     out.hits += encoded.hits;
-    const rotated = redactRot13(out.text, aliases().values(), (start, end, replacementLength) =>
+    const rotated = redactCopies(out.text, aliases().values(), (start, end, replacementLength) =>
       out.rot13.push({ start, end, replacementLength }),
     );
     out.text = rotated.text;

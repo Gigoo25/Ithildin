@@ -12,7 +12,7 @@ import {
   looksLikeAlias,
   registerAliasLabels,
 } from "./aliases.ts";
-import { encodedBlocks, redactEncoded, redactRot13, rot13 } from "./encoded.ts";
+import { encodedBlocks, redactEncoded, redactCopies, rot13 } from "./encoded.ts";
 import {
   aliasLabels,
   aliasStyle,
@@ -103,12 +103,12 @@ it("encoded helpers", () => {
   const second = Buffer.from("hotel india juliet kilo lima mike november").toString("base64");
   expect(encodedBlocks(`${first} ${second}`).length).toBeGreaterThan(0);
   expect(rot13(rot13("hello world"))).toBe("hello world");
-  expect(redactRot13("hello", [], () => {}).hits).toBe(0);
+  expect(redactCopies("hello", [], () => {}).hits).toBe(0);
   // Two targets so the longest-first comparator runs.
   const firstValue = "alphaalpha";
   const secondValue = "betabetabeta";
   const rotated = `${rot13(firstValue)} ${rot13(secondValue)}`;
-  expect(redactRot13(rotated, [firstValue, secondValue], () => {}).hits).toBe(2);
+  expect(redactCopies(rotated, [firstValue, secondValue], () => {}).hits).toBe(2);
   expect(
     redactEncoded(
       "hello",

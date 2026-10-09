@@ -24,6 +24,7 @@ import {
   loadRoutes,
   upstreamUrl,
 } from "./server.ts";
+import { aliases } from "../engine/core.ts";
 import { looksLikeAlias } from "../engine/lib/aliases.ts";
 import { DIAGNOSE_BETA } from "./diagnose.ts";
 
@@ -1554,6 +1555,40 @@ describe("routes", () => {
       await (await handler(post("anthropic/v1/messages", main))).text();
       expect(asked(up.seen[2]!)).toBeUndefined();
       expect(asked(up.seen[3]!)).toBeUndefined();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("logs a stand-in a tool read from disk, once per file", async () => {
+    const lines: string[] = [];
+    const spy = spyOn(process.stderr, "write").mockImplementation(
+      ((line: string) => lines.push(line) > 0) as never,
+    );
+    try {
+      const standIn = aliases().standIn("pii-gazetteer-name", ["Ve", "nna Thor", "quist"].join(""));
+      const up = fakeUpstream(() => Response.json({ id: "msg_s", content: [] }));
+      const handler = createHandler(DEFAULT_ROUTES, up.fetch);
+      const body = (file: string) => ({
+        model: "m",
+        messages: [
+          { role: "user", content: "fix it" },
+          {
+            role: "assistant",
+            content: [{ type: "tool_use", id: "t1", name: "Read", input: { file_path: file } }],
+          },
+          { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: standIn }] },
+        ],
+      });
+      for (const file of ["/tmp/one.sh", "/tmp/one.sh", "/tmp/two.sh"])
+        await (await handler(post("anthropic/v1/messages", body(file)))).text();
+      const logged = lines.filter((line) => line.includes("written to disk in its place"));
+      expect(logged).toHaveLength(2);
+      expect(logged[0]).toContain(`stand-in ${JSON.stringify(standIn)} is in /tmp/one.sh (Read)`);
+      // The model's copy still carries the stand-in, not the notice.
+      expect(JSON.stringify(up.seen.map((request) => request.body))).not.toContain(
+        "written to disk",
+      );
     } finally {
       spy.mockRestore();
     }

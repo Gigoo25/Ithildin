@@ -60,7 +60,7 @@ import {
 import type { InventoryEntry } from "../engine/lib/rules.ts";
 import { planSwapBack, reachesNetwork } from "../engine/lib/swap-back.ts";
 import { protectedBlocked, protectedFinding, shellWrites } from "./protect.ts";
-import { UNMASK_BLOCKED, unmasksText } from "./unmask.ts";
+import { SPELLED_BLOCKED, spellsMasked, UNMASK_BLOCKED, unmasksText } from "./unmask.ts";
 import {
   conversationLabel,
   copiesData,
@@ -600,7 +600,10 @@ export function redactRequest(
   tags: Set<string>;
   label: Label;
   unguarded: string[];
+  strays?: Stray[];
 } {
+  // Before anything is redacted: what the tools really returned.
+  const strays = strayStandIns(format, body);
   const tags = requestAllowTags(format, body, session);
   requestDirs.set(tags, requestCwd(format, body));
   const label = conversationLabel(seenInHistory(format, body, tags), session);
@@ -615,6 +618,7 @@ export function redactRequest(
       ...redactWithCorpus(format, body, tags, session),
       label,
       unguarded: unguardedTools(body.tools),
+      strays,
     };
   } finally {
     aliases().setCorpus(undefined);
@@ -719,10 +723,15 @@ export function mangledBlocked(tokens: string[]): string {
   );
 }
 
+// reachesNetwork is lexical: it knows the command uses the network, not where
+// to, so the notice does not claim a host. A command that both edits files and
+// talks to the network is the usual cause (an edit, then a curl to test it);
+// split, the edit runs on its own.
 export function egressBlocked(tokens: string[]): string {
   return (
-    `Not run: this command would send ${tokens.join(", ")} to a host that is not one of the ` +
-    `user's own machines. Ask the user before sending these values off the machine; ` +
+    `Not run: this command uses the network and names ${tokens.join(", ")}, so nothing ran. ` +
+    `If it also changes files, make that change in a separate command first, then run the ` +
+    `network step on its own. Ask the user before sending these values off the machine; ` +
     `they can include [allow-pii] in their prompt to permit it.`
   );
 }
@@ -1045,6 +1054,75 @@ function seenInHistory(format: Format, body: Record<string, unknown>, tags: Set<
   return seen;
 }
 const NO_TAGS = new Set<string>();
+
+// ── stand-ins on disk ───────────────────────────────────────────────────────
+// A stand-in in what a local tool read is a stand-in on disk. On 09-30 an
+// agent wrote a script and ran curl in the same call; a networked command
+// keeps its stand-ins, so the stand-in went into the file, and the script
+// asked a real server for a name that does not exist. Once there, swap-back
+// turns it into the real value whenever the model names it, so the model can
+// neither see nor fix it. Logged for the user, never told to the model
+// (provider blindness). Only the newest results are read, so each turns up
+// once, and only file and shell tools': subagents and MCP tools are handed
+// stand-ins on purpose and may echo them.
+export interface Stray {
+  standIn: string;
+  tool: string;
+  // The file a file tool read; a shell call's command holds real values.
+  file?: string;
+}
+
+const STRAYS_MAX = 20;
+
+// The last item the model wrote; everything after it came from tools.
+function lastModelItem(list: unknown[]): number {
+  for (let index = list.length - 1; index >= 0; index--) {
+    const record = list[index] as Record<string, unknown> | null;
+    if (!record || typeof record !== "object") continue;
+    if (record.role === "assistant") return index;
+    if (record.type === "function_call" || record.type === "custom_tool_call") return index;
+  }
+  return -1;
+}
+
+function resultText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((block) => (typeof block?.text === "string" ? (block.text as string) : ""))
+    .join("\n");
+}
+
+function readFile(input: unknown): string | undefined {
+  if (!input || typeof input !== "object") return undefined;
+  const record = input as Record<string, unknown>;
+  const file = record.file_path ?? record.path ?? record.notebook_path;
+  return typeof file === "string" ? file : undefined;
+}
+
+export function strayStandIns(format: Format, body: Record<string, unknown>): Stray[] {
+  const list = format === "responses" ? body.input : body.messages;
+  if (!Array.isArray(list)) return [];
+  const tail = list.slice(lastModelItem(list) + 1);
+  if (!tail.length) return [];
+  const calls = new Map(toolCalls(format, list).map((call) => [String(call.id), call]));
+  const strays: Stray[] = [];
+  const seen = new Set<string>();
+  mapToolResults(format, tail, { hits: 0 }, (id, content) => {
+    const call = calls.get(String(id));
+    if (!call || blockedCalls.has(String(id))) return content;
+    if (!LOCAL_TOOLS.has(call.name) && !BASH_TOOLS.has(call.name)) return content;
+    const file = BASH_TOOLS.has(call.name) ? undefined : readFile(call.input);
+    for (const match of aliases().matches(resultText(content))) {
+      const key = `${match.text}\0${file ?? ""}`;
+      if (seen.has(key) || strays.length >= STRAYS_MAX) continue;
+      seen.add(key);
+      strays.push({ standIn: match.text, tool: call.name, ...(file ? { file } : {}) });
+    }
+    return content;
+  });
+  return strays;
+}
 
 // The conversation with every tool result passed through `result`, which
 // counts what it changed in `counter.hits`. Unchanged items stay as they were.
@@ -1474,6 +1552,8 @@ function guardNotice(
   )
     return label.private ? PRIVATE_SEND : UNTRUSTED_SEND;
   if (!tags.has("pii") && !tags.has("all") && unmasksText(args)) return UNMASK_BLOCKED;
+  if (!tags.has("pii") && !tags.has("all") && spellsMasked(args, aliases().values()))
+    return SPELLED_BLOCKED;
   if (tags.has("protected")) return undefined;
   const found =
     protectedFinding(toolName, args, cwd) ??

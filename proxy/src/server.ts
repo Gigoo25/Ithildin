@@ -30,6 +30,7 @@ import {
   refreshIdentity,
   saveScanCache,
   shapingSwitch,
+  type Stray,
   typedPromptCount,
 } from "./redact.ts";
 import { ScanPool, scanThreadCount, warmTexts } from "./scan-pool.ts";
@@ -333,6 +334,23 @@ function noteUnguarded(names: string[]): void {
   }
 }
 
+// Each stand-in found on disk, named once per file (redact.ts, strayStandIns).
+const STRAYS_SEEN_MAX = 1000;
+const straysSeen = new Set<string>();
+
+function noteStrays(strays: Stray[] | undefined): void {
+  for (const stray of strays ?? []) {
+    const key = `${stray.standIn}\0${stray.file ?? stray.tool}`;
+    if (straysSeen.has(key) || straysSeen.size >= STRAYS_SEEN_MAX) continue;
+    straysSeen.add(key);
+    const where = stray.file ? `${stray.file} (${stray.tool})` : `${stray.tool} output`;
+    log(
+      `stand-in ${JSON.stringify(stray.standIn)} is in ${where}: written to disk in its ` +
+        `place; the model cannot see it, so fix it by hand`,
+    );
+  }
+}
+
 function refuse(status: number, message: string): Response {
   log(`refused (${status}): ${message}`);
   return errorReply(status, message, { [REFUSED_HEADER]: message });
@@ -540,6 +558,7 @@ function redactBody(
     );
     const scanMs = Math.round(performance.now() - started);
     noteUnguarded(redacted.unguarded);
+    noteStrays(redacted.strays);
     // Single-message side requests (titles, quota probes) are not the
     // conversation, so they do not set its badge.
     const turns = Array.isArray(parsed.messages) ? parsed.messages : parsed.input;

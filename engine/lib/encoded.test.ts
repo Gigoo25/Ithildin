@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
 import { redactText } from "../core.ts";
 import { base64Wrapped, hexdumpC, odX, xxd, xxdPlain } from "./encoded-fixtures.ts";
-import { encodedBlocks, redactRot13, rot13 } from "./encoded.ts";
+import { encodedBlocks, redactCopies, rot13, spelledSources, spellsValue } from "./encoded.ts";
 import { setRuntimeInventory } from "./rules.ts";
 import { collectRuntimeIdentity } from "./runtime-inventory.ts";
 
@@ -72,20 +72,20 @@ describe("rot13 copies of a masked value", () => {
   });
 
   it("matches whole tokens only, and no short values", () => {
-    expect(redactRot13("open the Notebook tab", ["rob"], () => {}).hits).toBe(0);
+    expect(redactCopies("open the Notebook tab", ["rob"], () => {}).hits).toBe(0);
     const inside = `x${rot13("zqxlab")}y`;
-    expect(redactRot13(inside, ["zqxlab"], () => {}).hits).toBe(0);
-    expect(redactRot13(`see ${rot13("zqxlab")}.`, ["zqxlab"], () => {}).hits).toBe(1);
+    expect(redactCopies(inside, ["zqxlab"], () => {}).hits).toBe(0);
+    expect(redactCopies(`see ${rot13("zqxlab")}.`, ["zqxlab"], () => {}).hits).toBe(1);
   });
 
   it("leaves rot13 of unmasked text alone", () => {
     const text = `notes ${rot13("ordinary words here")}`;
-    expect(redactRot13(text, ["zqxlab"], () => {}).text).toBe(text);
+    expect(redactCopies(text, ["zqxlab"], () => {}).text).toBe(text);
   });
 
   it("skips values too short or without letters to rotate", () => {
     const text = `ab ${rot13("ab")} 10.0.0.1`;
-    expect(redactRot13(text, ["ab", "10.0.0.1"], () => {}).hits).toBe(0);
+    expect(redactCopies(text, ["ab", "10.0.0.1"], () => {}).hits).toBe(0);
   });
 
   it("is lifted by [allow-all]", () => {
@@ -93,5 +93,64 @@ describe("rot13 copies of a masked value", () => {
     redactText(`ssh ${HOST}`);
     const text = `decoded: ${rot13(HOST)}`;
     expect(redactText(text, new Set(["all"])).text).toBe(text);
+  });
+});
+
+describe("spelled copies of a masked value", () => {
+  // "zqx": bytes 122 113 120, hex 7a 71 78, octal 172 161 170.
+  const spelled = [
+    String.raw`printf '\x7a\x71\x78'`,
+    String.raw`printf '\x7A\x71\x78'`,
+    String.raw`echo -e '\0172\0161\0170'`,
+    String.raw`printf '\172\161\170'`,
+    "curl https://example.com/%7a%71%78",
+    "  122 113 120  10",
+    "bytes: [122, 113, 120]",
+    "0x7a, 0x71, 0x78",
+    // A backslash, then u00 and the hex: built, so no layer decodes it early.
+    ["7a", "71", "78"].map((h) => String.fromCharCode(92) + "u00" + h).join(""),
+    // Inside a longer escaped string, the run still counts.
+    String.raw`printf '\x0a\x7a\x71\x78\x0a'`,
+  ];
+
+  it("withholds each spelling of a value already masked", () => {
+    for (const text of spelled) {
+      const result = redactCopies(text, ["zqx"], () => {});
+      expect(result.hits).toBe(1);
+      expect(result.text).toContain("(an encoded copy of a masked value)");
+      expect(spellsValue(text, ["zqx"])).toBe(true);
+    }
+  });
+
+  it("leaves numbers that only contain the run, and short values", () => {
+    for (const text of ["1122 113 120", "122 113 1200", "122 113 120.5", "7a 71 78"])
+      expect(redactCopies(text, ["zqx"], () => {}).hits).toBe(0);
+    expect(redactCopies(String.raw`\x7a\x71`, ["zq"], () => {}).hits).toBe(0);
+    expect(spellsValue("plain text", ["zqx"])).toBe(false);
+    expect(spellsValue(String.raw`\x7a\x71\x78`, [])).toBe(false);
+  });
+
+  it("keeps edits in the input's coordinates", () => {
+    const edits: Array<[number, number]> = [];
+    const text = "od: 122 113 120 end";
+    redactCopies(text, ["zqx"], (start, end) => edits.push([start, end]));
+    expect(edits).toEqual([[4, 15]]);
+  });
+
+  it("spells non-ASCII values as UTF-8 bytes, and skips \\u past the BMP", () => {
+    expect(spellsValue(String.raw`\xc3\xa9t\xc3\xa9`.replace("t", String.raw`\x74`), ["été"])).toBe(
+      true,
+    );
+    expect(spelledSources("ab😀").some((source) => source.startsWith(String.raw`\\u`))).toBe(false);
+    expect(spelledSources("abc").some((source) => source.startsWith(String.raw`\\u`))).toBe(true);
+  });
+
+  it("withholds od's decimal bytes of a masked hostname", () => {
+    setRuntimeInventory(collectRuntimeIdentity({ hostname: HOST }));
+    expect(redactText(`ssh ${HOST}`).text).not.toContain(HOST);
+    const decimal = [...Buffer.from(HOST)].join(" ");
+    const result = redactText(`od -An -tu1:\n ${decimal}  10\n`);
+    expect(result.text).not.toContain(decimal);
+    expect(result.text).toContain("(an encoded copy of a masked value)");
   });
 });

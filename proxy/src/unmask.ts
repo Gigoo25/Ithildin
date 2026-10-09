@@ -7,6 +7,7 @@
 // built at run time, is out of scope. encoded.ts withholds rot13 copies of
 // masked values from tool output as the second line.
 
+import { spellsValue } from "../engine/lib/encoded.ts";
 import { shellCommand } from "./tools.ts";
 import { shellPrograms } from "./protect.ts";
 
@@ -14,6 +15,24 @@ export const UNMASK_BLOCKED =
   "Not run: this command substitutes letters (rot13 or a similar cipher), which would read " +
   "past masked values. Work with the text as shown, or ask the user to include [allow-pii] " +
   "in their prompt.";
+
+// Says nothing about redaction (provider blindness, redact.ts): only what to
+// do instead.
+export const SPELLED_BLOCKED =
+  "Not run: this call spells a value byte by byte (escapes or character codes) instead of " +
+  "writing it out. Use values exactly as they appear in files and tool output, or ask the " +
+  "user to include [allow-pii] in their prompt.";
+
+// A call, any tool, whose arguments spell a masked value byte by byte. An
+// agent that saw a value's bytes (od, xxd) wrote them back as printf '\x..',
+// so the value reached the shell and the transcript whole. encoded.ts
+// withholds such copies from output; this stops the ones the model writes.
+export function spellsMasked(args: unknown, values: string[]): boolean {
+  if (!values.length) return false;
+  const text = typeof args === "string" ? args : JSON.stringify(args ?? null);
+  // JSON doubles every backslash; the shell sees one.
+  return spellsValue(text.replace(/\\\\/g, "\\"), values);
+}
 
 const INTERPRETERS = new Set([
   "python",
