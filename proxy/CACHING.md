@@ -3,11 +3,13 @@
 For an agent picking up the cache work. `AGENTS.md` covers the repo; this
 covers how context shaping (`shape.ts`) interacts with Anthropic's prompt
 cache, what has been tried, what is known, and how to find out the rest.
-Status as of 2026-10-09: note dropping is fixed, but most steps still read
-only the system prompt, and five causes have been tested and ruled out (see
-[Step misses after the fix](#step-misses-after-the-fix-2026-10-09)). The
-journal now names each request's session, markers and write TTLs, so the
-next miss can be read without kept bodies.
+Status as of 2026-10-09: note dropping is fixed; most remaining step misses
+look to come from Claude Code switching a session between 1h and 5m
+markers, which moved the cutoff, now fixed (see
+[Found: the cutoff moved with the markers' TTL](#found-the-cutoff-moved-with-the-markers-ttl-2026-10-09-1512)).
+Not yet confirmed that it was every miss. The journal names each request's
+session, markers and write TTLs, so the next miss can be read without kept
+bodies.
 
 ## The problem
 
@@ -288,6 +290,36 @@ message, and see whether it was answered.
   had marked, since those were read and written many times.
 - Something else changes before the cutoff between steps: `firstChangedBlock`
   in a kept miss names it, as it did for note dropping.
+
+### Found: the cutoff moved with the markers' TTL (2026-10-09, 15:12)
+
+The first minutes of the new journal fields showed one session, three
+requests in a row:
+
+| Time | `markers=` | Step | Read | Written |
+|---|---|---|---|---|
+| 15:12:39 | `s1:5m,s2:5m,m502:5m,m582:5m` | — | 13.5K | 106K at 5m |
+| 15:12:57 | `s1,s2,m444,m584` | (cutoff back) | 13.5K | 116K at 1h |
+| 15:13:09 | `s1,s2,m444,m587` | — | 129K | 1K |
+
+Claude Code sent one turn with 5-minute markers and the next with 1-hour
+ones; why is its business. `shape.ts` priced a write by the markers it saw
+(1.25x at 5m, 2x at 1h), and every past step is decided again on each
+request, so the cheaper price put the cutoff further on (its cutoff marker
+sat on message 502 instead of 444). That rewrote everything after the
+system prompt, and so did the next turn when the price, and the cutoff, went
+back. Nothing in the bytes before the old cutoff changed, which is why no
+earlier test found it: the cutoff itself moved.
+
+Fixed by always pricing an Anthropic write at the hour's 2x, whatever the
+markers ask for. The step decision no longer depends on anything the client
+can switch from one turn to the next. It makes steps slightly rarer when a
+session really does use 5-minute markers, which is the safe direction.
+
+Whether this explains every miss in the table above is not yet known: the
+journal only started naming TTLs today, and kept misses never recorded them.
+The next few days of `markers=` will say. A step miss with the same TTL on
+both sides would still be open.
 
 ## Instruments now in the proxy
 
