@@ -42,7 +42,6 @@ import {
   AliasBook,
   aliasKeyPath,
   isAliasValue,
-  isCommonWord,
   loadAliasKey,
   SESSION_KEY_SUFFIX,
 } from "./lib/aliases.ts";
@@ -1090,12 +1089,17 @@ export function latestAllowTags(messages: Message[]): Set<string> {
 const SWAPPED = new Map<string, string>();
 const SWAPPED_MAX = 2_000;
 
-// An ordinary word is never remembered. Every later text has it, so once in
-// it masked the word in every system prompt, tool description and message
-// of every session: each prefix changed, so every cache was written again,
-// and the model read a stand-in for one of its most common instructions.
+// A plain word is never remembered. Every later text has it, so once in it
+// masked the word in every system prompt, tool description and message of
+// every session: each prefix changed, so every cache was written again, and
+// the model read a stand-in for one of its most common instructions. A value
+// with a digit or a separator in it (a host, an address, a login) is what the
+// memory is for. A single word of letters only stays out even when it looks
+// like a name: capitalized, it starts sentences, and lowercased it is too
+// often a plain word (as respelledFindings has it). The name rules still
+// catch a name in prose without the memory.
 export function rememberSwapped(value: string, ruleId: string): void {
-  if (value.length < 3 || isCommonWord(value) || SWAPPED.has(value)) return;
+  if (value.length < 3 || /^\p{L}+$/u.test(value) || SWAPPED.has(value)) return;
   if (SWAPPED.size >= SWAPPED_MAX) SWAPPED.delete(SWAPPED.keys().next().value!);
   SWAPPED.set(value, ruleId);
 }

@@ -614,14 +614,42 @@ export function redactRequest(
   let corpus: string | undefined;
   aliases().setCorpus(() => (corpus ??= JSON.stringify(body)));
   try {
-    return {
-      ...redactWithCorpus(format, body, tags, session),
-      label,
-      unguarded: unguardedTools(body.tools),
-      strays,
-    };
+    const redacted = redactWithCorpus(format, body, tags, session);
+    noteHarnessChange(format, body, redacted.body);
+    return { ...redacted, label, unguarded: unguardedTools(body.tools), strays };
   } finally {
     aliases().setCorpus(undefined);
+  }
+}
+
+// The agent's own instructions and tool list hold nothing of the user's, so a
+// change there is the engine masking something ordinary. Once it did, for
+// every request of every session: the word "run" was remembered from one
+// tool call, and each cache was written again before anyone could tell the
+// change was ours and not the agent's. Said once per change, with the first
+// difference to read it by.
+const harnessChanges = new Set<string>();
+
+export function noteHarnessChange(
+  format: Format,
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+): void {
+  const field = format === "responses" ? "instructions" : "system";
+  for (const key of [field, "tools"]) {
+    if (before[key] === undefined) continue;
+    const was = JSON.stringify(before[key]);
+    const now = JSON.stringify(after[key]);
+    if (was === now) continue;
+    let at = 0;
+    while (at < was.length && was[at] === now[at]) at++;
+    const word = (text: string) => text.slice(at, at + 24).split(/[^\p{L}\p{N}_.@-]/u)[0];
+    const change = `${key}: ${word(was) || "…"} -> ${word(now) || "…"}`;
+    if (harnessChanges.has(change)) continue;
+    if (harnessChanges.size < 64) harnessChanges.add(change);
+    process.stderr.write(
+      `ithildin: warning: redaction changed the agent's ${change} (masked a value it should not)\n`,
+    );
   }
 }
 

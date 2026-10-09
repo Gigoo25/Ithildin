@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { withScanBudget } from "./lib/rules.ts";
@@ -333,22 +333,42 @@ describe("bounded caches", () => {
 // A common word swapped back into a tool call was remembered, and from then on
 // masked in every text: the system prompt, the tool descriptions, every
 // message of every session. Each request's prefix changed and every cache was
-// written again.
+// written again. Tests start from an empty memory, so none saw it: these fill
+// the memory the way a long session does first.
 describe("values swapped into tool calls", () => {
-  it("does not remember an ordinary word", () => {
+  const docs = ["../README.md", "../AGENTS.md"].map((name) =>
+    readFileSync(new URL(name, import.meta.url), "utf8"),
+  );
+  // Real values of the kinds the memory is for, none of them in the docs.
+  const values: Array<[string, string]> = [
+    ["zqxvelmarx-build7", "pii-inventory-runtime-host"],
+    ["qorvant.dmz.example.invalid", "pii-inventory-runtime-host"],
+    ["kwvrt.olmsby@example.invalid", "pii-email"],
+  ];
+
+  it("leaves ordinary text as a fresh engine does after a long session", () => {
     clearCaches();
-    const word = ["r", "u", "n"].join("");
-    rememberSwapped(word, "pii-gazetteer-name");
-    rememberSwapped(word.toUpperCase(), "pii-gazetteer-name");
-    const prompt = `Tools ${word} behind a permission mode. ${word.toUpperCase()} it again.`;
-    expect(redactText(prompt).text).toBe(prompt);
+    const fresh = docs.map((doc) => redactText(doc).text);
+    // Every word the docs use, swapped back in each case a model might write
+    // it: the worst a session can teach the memory.
+    const words = new Set(docs.flatMap((doc) => doc.match(/\p{L}{3,}/gu) ?? []));
+    for (const word of words)
+      for (const spelled of [word, word.toLowerCase(), word.toUpperCase()])
+        rememberSwapped(spelled, "pii-gazetteer-name");
+    for (const [value, rule] of values) rememberSwapped(value, rule);
+    expect(docs.map((doc) => redactText(doc).text)).toEqual(fresh);
     clearCaches();
   });
 
-  it("still remembers a value that is not a word", () => {
+  it("still masks a remembered value echoed where no rule would catch it", () => {
     clearCaches();
-    rememberSwapped("zqxvelmarxhost", "pii-inventory-runtime-host");
-    expect(redactText("ssh zqxvelmarxhost").text).not.toContain("zqxvelmarxhost");
+    for (const [value, rule] of values) rememberSwapped(value, rule);
+    const echoed = values.map(([value]) => `see ${value} here`).join("\n");
+    const out = redactText(echoed).text;
+    for (const [value] of values) expect(out).not.toContain(value);
+    // A single word of letters is not held, whatever its case.
+    rememberSwapped("Zqxandra", "pii-gazetteer-name");
+    expect(redactText("see Zqxandra here").text).toBe("see Zqxandra here");
     clearCaches();
   });
 });

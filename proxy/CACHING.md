@@ -352,10 +352,30 @@ value the proxy swaps back into a tool call is remembered and masked in every
 later text, so output that echoes it is caught even where no rule would. One
 swap of a common word put it there, for every session, until a restart:
 every prefix changed at once, and the model read a stand-in in place of one
-of the most common words in its instructions. An ordinary word
-(`isCommonWord`, the list stand-ins already avoid) is no longer remembered.
+of the most common words in its instructions. It is the same failure as
+`fb3da02` above, by a second path.
+
+Three changes keep it from coming back:
+
+- A single word made of letters only is never remembered, in any case. The
+  memory is for values with a digit or a separator in them (a host, an
+  address, a login); the name rules still find a name in prose without it.
+  A list of common words was the first fix and was not enough: the test
+  below remembered every word of the README and failed on words it lacked.
+- `engine/core.test.ts` fills the memory the way a long session can (every
+  word the README and AGENTS.md use, in every case, plus real-looking
+  values) and requires both to come through as a fresh engine leaves them.
+  Every earlier test started from an empty memory, which is why none saw it.
+- The proxy says so when redaction changes a request's system prompt,
+  instructions or tool list (`noteHarnessChange` in `redact.ts`), once per
+  change, with the words: `redaction changed the agent's system: run -> …`.
+  Nothing of the user's is in those, so any change there is the engine.
+
+What first masked the word in one file of one session is not known: a fresh
+engine leaves that file alone. The memory is what spread it everywhere.
 The first deploy with the fix rewrites each session once more, as the word
 comes back.
+
 Reading the model is safe where reading the TTL was not: a cache belongs to
 one model, so switching it rewrites everything whatever the cutoff does.
 

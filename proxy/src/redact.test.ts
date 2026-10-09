@@ -1,10 +1,11 @@
-import { beforeAll, describe, expect, it } from "bun:test";
+import { beforeAll, describe, expect, it, spyOn } from "bun:test";
 import path from "node:path";
 import { type InventoryEntry, scan, withScanBudget } from "../engine/lib/rules.ts";
 import {
   IDENTITY_ENTRIES_MAX,
   initEngine,
   mergeIdentity,
+  noteHarnessChange,
   redactPath,
   redactQuery,
   redactRequest,
@@ -391,5 +392,48 @@ describe("stand-ins on disk", () => {
     };
     expect(strayStandIns("responses", responses)).toEqual([{ standIn, tool: "exec_command" }]);
     expect(strayStandIns("chat", { messages: [null, 3] })).toEqual([]);
+  });
+});
+
+// The engine once masked the word "run" in every request's system prompt and
+// tool descriptions; nothing said so, and it looked like the agent's change.
+describe("a change to the agent's own instructions", () => {
+  it("is said once per change, naming the field and the words", () => {
+    const said: string[] = [];
+    const write = spyOn(process.stderr, "write").mockImplementation((chunk) => {
+      said.push(String(chunk));
+      return true;
+    });
+    try {
+      const before = {
+        system: [{ type: "text", text: "Tools run behind a mode." }],
+        tools: [{ name: "Bash", description: "Runs a command." }],
+        messages: [],
+      };
+      const masked = { ...before, system: [{ type: "text", text: "Tools qzxv behind a mode." }] };
+      noteHarnessChange("anthropic", before, masked);
+      noteHarnessChange("anthropic", before, masked);
+      noteHarnessChange("anthropic", before, before);
+      noteHarnessChange("anthropic", { messages: [] }, { messages: [] });
+      expect(said).toHaveLength(1);
+      expect(said[0]).toContain("system: run -> qzxv");
+      noteHarnessChange("responses", { instructions: "a b" }, { instructions: "a c" });
+      expect(said[1]).toContain("instructions: b -> c");
+    } finally {
+      write.mockRestore();
+    }
+  });
+
+  it("does not happen for a request with nothing to mask in them", async () => {
+    await initEngine();
+    const body = {
+      model: "claude-opus-5-5",
+      system: [{ type: "text", text: "Tools run behind a user-selected permission mode." }],
+      tools: [{ name: "Bash", description: "Run a shell command and return its output." }],
+      messages: [{ role: "user", content: "hello" }],
+    };
+    const out = redactRequest("anthropic", structuredClone(body), "s-harness").body;
+    expect(out.system).toEqual(body.system);
+    expect(out.tools).toEqual(body.tools);
   });
 });

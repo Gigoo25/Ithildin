@@ -666,12 +666,6 @@ const COMMON_WORDS = new Set([
   "yaml",
   "zero",
 ]);
-
-// One ordinary word: as a stand-in it would turn the word back into a value
-// on every swap, and as a remembered value it would mask the word everywhere.
-export function isCommonWord(value: string): boolean {
-  return COMMON_WORDS.has(value.toLowerCase());
-}
 const MAX_TRIES = 32;
 const MAX_COUNTERS = 200_000;
 
