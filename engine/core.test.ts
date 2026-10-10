@@ -14,7 +14,9 @@ import {
   MAX_SCAN_BYTES,
   redactText,
   redactValue,
+  loadSwapped,
   rememberSwapped,
+  saveSwapped,
   SYNTHESIS_NOTICE,
   setAliasBook,
   setCacheBudgets,
@@ -358,6 +360,25 @@ describe("values swapped into tool calls", () => {
     for (const [value, rule] of values) rememberSwapped(value, rule);
     expect(docs.map((doc) => redactText(doc).text)).toEqual(fresh);
     clearCaches();
+  });
+
+  it("masks a value swapped before a restart the same way after it", () => {
+    clearCaches();
+    const file = path.join(mkdtempSync(path.join(tmpdir(), "swapped-")), "swapped.json");
+    const key = Buffer.alloc(32, 3);
+    loadSwapped(key, file);
+    for (const [value, rule] of values) rememberSwapped(value, rule);
+    const echoed = values.map(([value]) => `see ${value} here`).join("\n");
+    const before = redactText(echoed).text;
+    saveSwapped();
+    expect(readFileSync(file, "utf8")).not.toContain(values[0]![0]);
+    clearCaches();
+    expect(redactText(echoed).text).toContain(values[0]![0]);
+    clearCaches();
+    loadSwapped(key, file);
+    expect(redactText(echoed).text).toBe(before);
+    clearCaches();
+    saveSwapped(); // nothing loaded: nothing to write, and no throw
   });
 
   it("still masks a remembered value echoed where no rule would catch it", () => {

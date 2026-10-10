@@ -11,7 +11,7 @@
 // every stand-in the model can name, so the book never needs to be saved.
 
 import { createHash, createHmac } from "node:crypto";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import {
   aliases,
@@ -24,6 +24,8 @@ import {
   isSecretPath,
   latestAllowTags,
   loadScanCache,
+  loadSwapped,
+  saveSwapped,
   redactValue,
   rememberSwapped,
   setAliasBook,
@@ -89,6 +91,51 @@ export function saveScanCache(): void {
   flushScanCache(scanCacheBase);
   saveReplay();
   aliases().saveCounters();
+  saveSwapped();
+  if (scanCacheBase) saveSessions(`${scanCacheBase}-sessions.json`);
+}
+
+// Per-session switches and blocked calls, kept across a restart: each decides
+// bytes of every later request (a compacted history no longer holds the
+// prompt that set a switch; a blocked call's result is its notice), so losing
+// them rewrote those conversations to the cache. Nothing in it is new to the
+// provider: tags and switches were typed into prompts, notices were sent.
+function saveSessions(file: string): void {
+  const state = {
+    blocked: [...blockedCalls],
+    tags: [...sessionTags].map(([session, tags]) => [session, [...tags]]),
+    shapes: [...sessionShapes],
+    images: [...sessionImages],
+  };
+  try {
+    writeFileSync(`${file}.tmp`, JSON.stringify(state), { mode: 0o600 });
+    renameSync(`${file}.tmp`, file);
+  } catch {
+    // Not kept costs one cache write per affected conversation after a restart.
+  }
+}
+
+function loadSessions(file: string): void {
+  let state: Record<string, unknown>;
+  try {
+    state = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+  } catch {
+    return;
+  }
+  const pairs = (key: string): [string, unknown][] =>
+    Array.isArray(state[key])
+      ? (state[key] as unknown[]).filter(
+          (pair): pair is [string, unknown] => Array.isArray(pair) && typeof pair[0] === "string",
+        )
+      : [];
+  for (const [id, notice] of pairs("blocked"))
+    if (typeof notice === "string") blockedCalls.set(id, notice);
+  for (const [session, tags] of pairs("tags"))
+    if (Array.isArray(tags)) rememberTags(session, new Set(tags.map(String)));
+  for (const [session, on] of pairs("shapes"))
+    if (typeof on === "boolean") rememberShape(session, on);
+  for (const [session, on] of pairs("images"))
+    if (typeof on === "boolean") rememberImages(session, on);
 }
 
 // This machine's identity, as runtime inventory. The proxy serves every
@@ -195,6 +242,11 @@ export function initEngine(
     `${scanCacheBase}-replay.json`,
   );
   loadScanCache(scanCacheBase);
+  loadSwapped(
+    createHmac("sha256", aliasKey).update("recall").digest(),
+    `${scanCacheBase}-swapped.json`,
+  );
+  loadSessions(`${scanCacheBase}-sessions.json`);
   seedStandIns();
 }
 

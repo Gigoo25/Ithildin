@@ -62,6 +62,7 @@ import {
 } from "./lib/inspector.ts";
 import { commandSendsCookies, redactCookieHeaders, redactCookieValue } from "./lib/cookies.ts";
 import { isImagePayload, isPayloadMediaType } from "./lib/image-payload.ts";
+import { Recall } from "./lib/recall.ts";
 import { isSecretFile } from "./lib/secret-files.ts";
 
 // Larger strings skip regex scanning and are synthesized in full.
@@ -321,6 +322,7 @@ export function clearCaches(): void {
   lastScanCacheRevision = -1;
   aliasBook?.clear();
   SWAPPED.clear();
+  recall = undefined;
 }
 
 // Distinct values found while collectValues runs, for ithildin's badge
@@ -1100,8 +1102,32 @@ const SWAPPED_MAX = 2_000;
 // catch a name in prose without the memory.
 export function rememberSwapped(value: string, ruleId: string): void {
   if (value.length < 3 || /^\p{L}+$/u.test(value) || SWAPPED.has(value)) return;
+  keepSwapped(value, ruleId);
+}
+
+function keepSwapped(value: string, ruleId: string): void {
   if (SWAPPED.size >= SWAPPED_MAX) SWAPPED.delete(SWAPPED.keys().next().value!);
   SWAPPED.set(value, ruleId);
+}
+
+// The memory across a restart (lib/recall.ts): loaded at start, written with
+// the other state, and searched before each text so a value swapped before
+// the restart is masked again in the history that still holds it.
+let recall: Recall | undefined;
+let recallFile: string | undefined;
+
+export function loadSwapped(key: Buffer, file: string): void {
+  recall = new Recall(key);
+  recallFile = file;
+  recall.load(file);
+}
+
+export function saveSwapped(): void {
+  if (!recall || !recallFile) return;
+  const lines = [...SWAPPED]
+    .map(([value, ruleId]) => recall!.entry(value, ruleId))
+    .filter((line): line is Record<string, unknown> => line !== undefined);
+  recall.save(recallFile, [...recall.entries(), ...lines].slice(-SWAPPED_MAX));
 }
 
 // Multi-word personal values already masked, found again in another case or
@@ -1174,6 +1200,7 @@ export function respelledFindings(text: string, raw: LocatedFinding[]): LocatedF
 }
 
 function swappedFindings(text: string): LocatedFinding[] {
+  if (recall) for (const { value, ruleId } of recall.find(text)) keepSwapped(value, ruleId);
   if (SWAPPED.size === 0) return [];
   const lower = text.toLowerCase();
   const out: LocatedFinding[] = [];

@@ -84,7 +84,11 @@ Check it before you finish, not after.
 - Entry points: `server.ts` (`createHandler`, `start`, the request path),
   `redact.ts` (the request-shaped redaction), `requests.ts` (what the dashboard
   keeps), `titles.ts` + `sessions.ts` (session naming), `dashboard.ts` (the page).
-- State is in memory only; a restart clears it. `SentRequests` caps a body at
+- Dashboard state is in memory only; a restart clears it. What decides the
+  bytes sent upstream is kept in the state directory instead (`proxy-*.json`:
+  stand-in counters, replay, learned values as digests, per-session switches
+  and blocked calls), since losing it rewrote every conversation to the
+  cache. Anything new of that kind belongs there too. `SentRequests` caps a body at
   `BODY_BYTES_MAX` (8 MiB) and **clamps a longer one so it still parses**, which
   is what keeps the conversation view working on very large bodies.
 - Shaping and Anthropic's prompt cache: `proxy/CACHING.md` has the design, the

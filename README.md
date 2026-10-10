@@ -55,7 +55,8 @@ the same /24 stay together. A hostname becomes another word of the same
 length. A ticket key keeps its shape. They come from an HMAC under a key kept
 in `~/.local/state/ithildin`, so they stay the same across restarts and the
 provider's prompt cache stays warm. No table of real values is ever written
-to disk.
+to disk: a value the proxy learned in a session is kept across a restart as a
+keyed digest, and found again by hashing the text it next sees.
 
 ## What it catches
 

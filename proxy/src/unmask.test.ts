@@ -1,6 +1,16 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { aliases } from "../engine/core.ts";
-import { blockedNotice, initEngine, swapToolArguments } from "./redact.ts";
+import { readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import {
+  blockedNotice,
+  initEngine,
+  requestAllowTags,
+  saveScanCache,
+  shapingSwitch,
+  swapToolArguments,
+  withholdImages,
+} from "./redact.ts";
 import { SPELLED_BLOCKED, spellsMasked, substitutesLetters, unmasksText } from "./unmask.ts";
 
 beforeAll(() => initEngine());
@@ -87,5 +97,56 @@ describe("spelled value guard", () => {
     expect(spellsMasked({ command: `printf '${hex}'` }, [])).toBe(false);
     expect(spellsMasked(`printf '${hex}'`, [NAME])).toBe(true);
     expect(spellsMasked(undefined, [NAME])).toBe(false);
+  });
+});
+
+describe("session state across a restart", () => {
+  const sessionsFile = () =>
+    join(dirname(process.env.ITHILDIN_PROXY_KEY_FILE!), "proxy-sessions.json");
+  const typed = (text: string) => ({ messages: [{ role: "user", content: text }] });
+
+  it("writes blocked calls and each session's switches", () => {
+    aliases().standIn("pii-gazetteer-name", "Quorvel");
+    const hex = [...Buffer.from("Quorvel")].map((b) => "\\x" + b.toString(16)).join("");
+    swapToolArguments("bash", { command: `printf '${hex}'` }, new Set(), "toolu_keep");
+    shapingSwitch("anthropic", typed("[raw] go"), "s-keep");
+    requestAllowTags("anthropic", typed("[allow-pii] go"), "s-keep");
+    withholdImages("anthropic", typed("[allow-images:session] go"), "s-keep");
+    saveScanCache();
+    const state = JSON.parse(readFileSync(sessionsFile(), "utf8"));
+    expect(new Map(state.blocked).get("toolu_keep")).toStartWith(SPELLED_BLOCKED);
+    expect(state.shapes).toContainEqual(["s-keep", false]);
+    expect(state.tags).toContainEqual(["s-keep", ["pii"]]);
+    expect(state.images).toContainEqual(["s-keep", true]);
+  });
+
+  it("reads them back at start, skipping what does not parse", () => {
+    writeFileSync(
+      sessionsFile(),
+      JSON.stringify({
+        blocked: [["toolu_loaded", "Not run: loaded."], ["toolu_bad", 3], "junk"],
+        tags: [
+          ["s-loaded", ["pii"]],
+          ["s-bad", "pii"],
+        ],
+        shapes: [
+          ["s-loaded", false],
+          ["s-bad", "no"],
+        ],
+        images: [
+          ["s-loaded", true],
+          ["s-bad", 1],
+        ],
+      }),
+    );
+    initEngine();
+    expect(blockedNotice("toolu_loaded")).toBe("Not run: loaded.");
+    expect(blockedNotice("toolu_bad")).toBeUndefined();
+    const quiet = typed("go on");
+    expect(shapingSwitch("anthropic", quiet, "s-loaded").on).toBe(false);
+    expect(shapingSwitch("anthropic", quiet, "s-bad").on).toBeUndefined();
+    expect([...requestAllowTags("anthropic", { messages: [] }, "s-loaded")]).toEqual(["pii"]);
+    writeFileSync(sessionsFile(), "{not json");
+    expect(() => initEngine()).not.toThrow();
   });
 });
