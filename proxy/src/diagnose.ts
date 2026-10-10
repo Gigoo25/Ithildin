@@ -100,30 +100,84 @@ export function diagnosingOn(env: Record<string, string | undefined> = process.e
   return value !== "off" && value !== "false" && value !== "0";
 }
 
-// Sessions whose last bodies are kept, newest kept: a body can run to
+// Conversation keys whose bodies are kept, newest kept: a body can run to
 // megabytes, so far fewer than the ids.
 export const BODIES_MAX = 16;
 
 // A miss to keep: the request that missed, and the one it was compared with.
 export type MissSaver = (miss: Miss) => void;
 
-// The last response id per session, and per session the last step's.
+// Which conversation a request belongs to, and one digest per message as sent
+// (prefix.ts), markers aside. A session's subagents share its id, and its forks
+// its first message too, and they run side by side: compared with the
+// session's last reply, nearly every request named another conversation's,
+// and the kept misses were pairs of unrelated requests (CACHING.md). So the
+// key separates subagents, and among the replies under one key a request is
+// compared with the one whose messages it carries furthest: its own thread's.
+export interface Thread {
+  key: string;
+  digests: string[];
+  // The reply it was asked against, once asked; null when there was none.
+  against?: Reply | null;
+}
+
+interface Reply {
+  id: string;
+  digests: string[];
+  // As sent upstream; dropped for all but the newest BODIES_MAX keys.
+  body?: string | undefined;
+}
+
+// Replies kept per key, and steps apart from them: enough for a thread and a
+// few forks beside it. A step is compared with a step, which may be long ago.
+export const REPLIES_MAX = 4;
+
+function thread(of: Thread | string): Thread {
+  return typeof of === "string" ? { key: of, digests: [] } : of;
+}
+
+function shared(a: string[], b: string[]): number {
+  let at = 0;
+  while (at < a.length && at < b.length && a[at] === b[at]) at++;
+  return at;
+}
+
+function keepNewest(list: Reply[], reply: Reply): Reply[] {
+  return [...list, reply].slice(-REPLIES_MAX);
+}
+
+// The replies heard per conversation key, and per key the steps among them.
 export class Diagnoses {
-  private last = new Map<string, { id?: string; step?: string | undefined }>();
-  // The bodies those ids answered, sent as they went upstream.
-  private bodies = new Map<string, { last?: string; step?: string | undefined }>();
+  private known = new Map<string, { replies: Reply[]; steps: Reply[] }>();
   // Set for good when Anthropic refuses the field or the header.
   off = false;
 
   constructor(private readonly save?: MissSaver) {}
 
-  // The body to send instead, asking about the cache against the session's
-  // last request (its last step, on a step), with the beta header added; or
-  // undefined to send the body as it is.
-  ask(session: string, step: boolean, body: string, headers: Headers): string | undefined {
+  // The earlier reply a request is compared with: of its key's replies (its
+  // steps, on a step, when there are any), the one it shares most messages
+  // with, the newest of those.
+  private closest(of: Thread, step: boolean): Reply | null {
+    const seen = this.known.get(of.key);
+    if (!seen) return null;
+    const pool = step && seen.steps.length > 0 ? seen.steps : seen.replies;
+    let best: Reply | null = null;
+    let most = -1;
+    for (const reply of pool) {
+      const count = shared(reply.digests, of.digests);
+      if (count >= most) [best, most] = [reply, count];
+    }
+    return best;
+  }
+
+  // The body to send instead, asking about the cache against the closest
+  // earlier reply of the request's conversation (closest), with the beta
+  // header added; or undefined to send the body as it is.
+  ask(of: Thread | string, step: boolean, body: string, headers: Headers): string | undefined {
     if (this.off || !body.startsWith("{") || body.slice(1).trimStart().startsWith("}")) return;
-    const seen = this.last.get(session);
-    const previous = (step ? seen?.step : undefined) ?? seen?.id ?? null;
+    const asked = thread(of);
+    asked.against = this.closest(asked, step);
+    const previous = asked.against?.id ?? null;
     // Added to what the agent sent, never in place of it: dropping its own
     // betas would change how the request is served.
     const betas = (headers.get("anthropic-beta") ?? "").split(",").map((beta) => beta.trim());
@@ -135,29 +189,35 @@ export class Diagnoses {
   // Remembers what a reply said, and returns the journal's words for a miss.
   // `body` is the request as sent: on a miss where Anthropic names what
   // changed, it is saved beside the body it was compared with (misses.ts).
-  answer(session: string, step: boolean, heard: Heard, body?: string): string {
+  // The session in a kept miss is the key's first part (server.ts).
+  answer(of: Thread | string, step: boolean, heard: Heard, body?: string): string {
+    const asked = thread(of);
     if (heard.reason?.includes("_changed") && body !== undefined) {
-      const kept = this.bodies.get(session);
-      const previous = (step ? kept?.step : undefined) ?? kept?.last;
+      const previous = (asked.against === undefined ? this.closest(asked, step) : asked.against)
+        ?.body;
+      const session = asked.key.split("\0")[0]!;
       if (previous !== undefined)
         this.save?.({ session, step, reason: heard.reason, previous, missed: body });
     }
-    if (heard.id) {
-      const seen = this.last.get(session) ?? {};
-      this.last.delete(session);
-      this.last.set(session, { id: heard.id, step: step ? heard.id : seen.step });
-      while (this.last.size > DIAGNOSED_MAX) this.last.delete(this.last.keys().next().value!);
-      if (body !== undefined) this.keepBody(session, step, body);
-    }
+    if (heard.id) this.remember(asked, step, { id: heard.id, digests: asked.digests, body });
     const thinking = heard.thinking ? ` thinking=${heard.thinking}` : "";
     return (heard.reason ? ` cachemiss=${heard.reason}` : "") + thinking;
   }
 
-  private keepBody(session: string, step: boolean, body: string): void {
-    const seen = this.bodies.get(session) ?? {};
-    this.bodies.delete(session);
-    this.bodies.set(session, { last: body, step: step ? body : seen.step });
-    while (this.bodies.size > BODIES_MAX) this.bodies.delete(this.bodies.keys().next().value!);
+  private remember(of: Thread, step: boolean, reply: Reply): void {
+    const seen = this.known.get(of.key) ?? { replies: [], steps: [] };
+    this.known.delete(of.key);
+    this.known.set(of.key, {
+      replies: keepNewest(seen.replies, reply),
+      steps: step ? keepNewest(seen.steps, reply) : seen.steps,
+    });
+    while (this.known.size > DIAGNOSED_MAX) this.known.delete(this.known.keys().next().value!);
+    // A body can run to megabytes: only the newest keys keep theirs.
+    let older = this.known.size - BODIES_MAX;
+    for (const kept of this.known.values()) {
+      if (older-- <= 0) break;
+      for (const old of [...kept.replies, ...kept.steps]) old.body = undefined;
+    }
   }
 
   // Whether a refused reply was about the field or either header: then the

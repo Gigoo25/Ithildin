@@ -6,6 +6,8 @@ import {
   DIAGNOSE_BETA,
   DIAGNOSED_MAX,
   Diagnoses,
+  REPLIES_MAX,
+  type Thread,
   diagnosingOn,
   heardIn,
 } from "./diagnose.ts";
@@ -146,6 +148,40 @@ describe("cache diagnostics", () => {
         missed: "turn3",
       },
     ]);
+  });
+
+  it("compares a request with its own thread's reply, not a fork's beside it", () => {
+    const kept: Miss[] = [];
+    const diagnoses = new Diagnoses((miss) => kept.push(miss));
+    const key = "s\0opus\0first";
+    const asked = (digests: string[], step = false) => {
+      const thread: Thread = { key, digests };
+      const body = JSON.parse(diagnoses.ask(thread, step, '{"a":1}', new Headers())!);
+      return { thread, id: body.diagnostics.previous_message_id };
+    };
+    diagnoses.answer({ key, digests: ["a", "b"] }, true, { id: "msg_step" }, "step");
+    diagnoses.answer({ key, digests: ["a", "b", "c"] }, false, { id: "msg_main" }, "main");
+    diagnoses.answer({ key, digests: ["a", "b", "x"] }, false, { id: "msg_fork" }, "fork");
+    expect(asked(["a", "b", "c", "d"]).id).toBe("msg_main");
+    expect(asked(["a", "b", "x", "y"]).id).toBe("msg_fork");
+    // Sharing as much with each, the newest.
+    expect(asked(["a", "b", "z"]).id).toBe("msg_fork");
+    expect(asked(["a", "q"], true).id).toBe("msg_step");
+    // Another key is another conversation: a subagent has nothing to compare.
+    const sub = { key: "s\0haiku\0other", digests: ["a"] };
+    expect(JSON.parse(diagnoses.ask(sub, false, "{}", new Headers()) ?? "null")).toBeNull();
+    const fresh = JSON.parse(diagnoses.ask(sub, false, '{"a":1}', new Headers())!);
+    expect(fresh.diagnostics.previous_message_id).toBeNull();
+    // A miss is kept with the reply it was asked against, filed by session.
+    const { thread } = asked(["a", "b", "c", "e"]);
+    diagnoses.answer(thread, false, { reason: "messages_changed" }, "missed");
+    expect(kept).toEqual([
+      { session: "s", step: false, reason: "messages_changed", previous: "main", missed: "missed" },
+    ]);
+    // Only so many replies per key: the oldest goes.
+    for (let at = 0; at < REPLIES_MAX; at++)
+      diagnoses.answer({ key, digests: [`n${at}`] }, false, { id: `msg_n${at}` });
+    expect(asked(["a", "b", "c"]).id).toBe(`msg_n${REPLIES_MAX - 1}`);
   });
 
   it("keeps bodies for only so many sessions", () => {

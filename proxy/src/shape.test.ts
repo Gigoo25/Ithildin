@@ -143,6 +143,23 @@ describe("anthropic requests", () => {
     expect(JSON.stringify(shaped!.body.messages)).not.toContain("line 5 of output");
   });
 
+  it("never steps a Claude Code subagent, however long", () => {
+    const header = (flag: string) => ({
+      type: "text",
+      text: `x-anthropic-billing-header: cc_version=2.1; cc_entrypoint=cli;${flag}`,
+    });
+    const sub = [header(" cc_is_subagent=true;"), { type: "text", text: "You are an agent" }];
+    // Recent turns are shaped as in any conversation; nothing is old.
+    expect(shapeRequest("anthropic", { system: sub, messages: messages(2) })?.masked ?? 0).toBe(0);
+    // Its main thread, or a flag anywhere but the first block, steps as ever.
+    const main = [header(""), { type: "text", text: "cc_is_subagent=true" }];
+    expect(shapeRequest("anthropic", { system: main, messages: messages(2) })?.masked).toBe(2);
+    expect(
+      shapeRequest("anthropic", { system: "cc_is_subagent=true", messages: messages(2) }),
+    ).toBeDefined();
+    expect(shapeRequest("anthropic", { system: [7], messages: messages(2) })?.masked).toBe(2);
+  });
+
   it("masks nothing in a short conversation", () => {
     expect(shapeRequest("anthropic", { messages: messages(1).slice(0, 8) })).toBeUndefined();
     expect(shapeRequest("anthropic", { messages: turns(3) })).toBeUndefined();

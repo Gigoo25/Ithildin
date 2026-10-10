@@ -90,6 +90,18 @@ function keyOf(format: Format, session: string, body: Fields): string {
   return `${session}\0${String(body.model)}\0${digest(first, new WeakMap())}`;
 }
 
+// The conversation a request belongs to and its messages' digests, for cache
+// diagnostics (diagnose.ts) to tell a session's threads apart.
+export function threadOf(
+  format: Format,
+  session: string,
+  body: Fields,
+): { key: string; digests: string[] } {
+  const seen = new WeakMap<object, string>();
+  const digests = messages(format, body).map((item) => digest(item, seen));
+  return { key: keyOf(format, session, body), digests };
+}
+
 export class PrefixWatch {
   private readonly last = new Map<string, { arrived: string[]; sent: string[] }>();
   constructor() {}

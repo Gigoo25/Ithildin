@@ -110,7 +110,7 @@ describe("saveMiss", () => {
   it("writes both bodies and the meta, for the user only", () => {
     const dir = scratch();
     const at = saveMiss(miss, dir, 5, new Date("2026-10-08T12:00:00.123Z"))!;
-    expect(path.basename(at)).toBe("2026-10-08T12-00-00-123Z-abcd-123");
+    expect(path.basename(at)).toBe("2026-10-08T12-00-00-123Z-abcd-123.step");
     expect(readFileSync(path.join(at, "previous.json"), "utf8")).toBe(miss.previous);
     expect(readFileSync(path.join(at, "missed.json"), "utf8")).toBe(miss.missed);
     expect(JSON.parse(readFileSync(path.join(at, "meta.json"), "utf8")).reason).toBe(
@@ -125,7 +125,19 @@ describe("saveMiss", () => {
     for (let second = 0; second < 4; second++)
       saveMiss(miss, dir, 2, new Date(Date.UTC(2026, 9, 8, 12, 0, second)));
     expect(readdirSync(dir).sort()).toEqual([
-      "2026-10-08T12-00-02-000Z-abcd-123",
+      "2026-10-08T12-00-02-000Z-abcd-123.step",
+      "2026-10-08T12-00-03-000Z-abcd-123.step",
+    ]);
+  });
+
+  it("drops a turn's miss before any step's, however old the step's", () => {
+    const dir = scratch();
+    const turn = { ...miss, step: false };
+    const at = (second: number) => new Date(Date.UTC(2026, 9, 8, 12, 0, second));
+    saveMiss(miss, dir, 2, at(0));
+    for (let second = 1; second < 4; second++) saveMiss(turn, dir, 2, at(second));
+    expect(readdirSync(dir).sort()).toEqual([
+      "2026-10-08T12-00-00-000Z-abcd-123.step",
       "2026-10-08T12-00-03-000Z-abcd-123",
     ]);
   });
@@ -151,7 +163,7 @@ describe("pruneMisses", () => {
     const dir = scratch();
     for (let second = 0; second < 4; second++) saveMiss(miss, dir, 10, at(second));
     expect(pruneMisses(dir, 1)).toBe(3);
-    expect(readdirSync(dir)).toEqual(["2026-10-08T12-00-03-000Z-abcd-123"]);
+    expect(readdirSync(dir)).toEqual(["2026-10-08T12-00-03-000Z-abcd-123.step"]);
     expect(pruneMisses(dir, 1)).toBe(0);
   });
 
@@ -162,7 +174,7 @@ describe("pruneMisses", () => {
     const longAgo = (Date.now() - MISS_AGE_MAX_MS - 60_000) / 1000;
     utimesSync(old, longAgo, longAgo);
     expect(pruneMisses(dir, 10)).toBe(1);
-    expect(readdirSync(dir)).toEqual(["2026-10-08T12-00-01-000Z-abcd-123"]);
+    expect(readdirSync(dir)).toEqual(["2026-10-08T12-00-01-000Z-abcd-123.step"]);
   });
 
   it("drops the oldest until the rest fit the size limit", () => {
@@ -178,8 +190,8 @@ describe("pruneMisses", () => {
     // Room for two, not three.
     expect(pruneMisses(dir, 10, Date.now(), one * 2 + 1)).toBe(1);
     expect(readdirSync(dir).sort()).toEqual([
-      "2026-10-08T12-00-01-000Z-abcd-123",
-      "2026-10-08T12-00-02-000Z-abcd-123",
+      "2026-10-08T12-00-01-000Z-abcd-123.step",
+      "2026-10-08T12-00-02-000Z-abcd-123.step",
     ]);
   });
 

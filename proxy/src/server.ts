@@ -52,12 +52,19 @@ import {
 } from "./titles.ts";
 import { AGENT, GUESS, SessionNames, USER } from "./sessions.ts";
 import { createStatusBook } from "./status.ts";
-import { PrefixWatch } from "./prefix.ts";
+import { PrefixWatch, threadOf } from "./prefix.ts";
 import { answerMcp, offeredTool, Originals, outputId } from "./retrieve.ts";
 import { markerText } from "./mark.ts";
 import { merge, type Usage, usageOf, usageOfEvent, usageText, writtenText } from "./usage.ts";
 import { findWatched, knownValues, watchPolicy } from "./watch.ts";
-import { Diagnoses, diagnosingOn, type Heard, heardIn, type MissSaver } from "./diagnose.ts";
+import {
+  Diagnoses,
+  diagnosingOn,
+  type Heard,
+  heardIn,
+  type MissSaver,
+  type Thread,
+} from "./diagnose.ts";
 import { type Miss, pruneMisses, saveMiss } from "./misses.ts";
 import { errorReply, readCapped } from "./reply.ts";
 import { type SelfTest, selfTest } from "./selftest.ts";
@@ -726,7 +733,12 @@ async function forward(
   const renamed = nameSession(names, session, scanned);
   const ask = session ? titleAsk(scanned.object) : undefined;
 
-  const asking = { stores, session: session?.id, main: isMainRequest(scanned.object), format };
+  const main = isMainRequest(scanned.object);
+  const thread =
+    session && main && format
+      ? threadOf(format, session.id, (shaped.object ?? scanned.object) as Record<string, unknown>)
+      : undefined;
+  const asking = { stores, thread, main, format };
   const reached = await sendAsking(asking, fetchUpstream, target, request, headers, shaped);
   if ("refused" in reached) return reached.refused;
   const { upstream } = reached;
@@ -742,7 +754,7 @@ async function forward(
   const counted = usageCounter(events, context);
   const answered = (usage: Usage | undefined) =>
     counted(usage) +
-    (reached.asked ? stores.diagnoses.answer(session!.id, !!shaped.step, heard, shaped.body) : "");
+    (reached.asked ? stores.diagnoses.answer(thread!, !!shaped.step, heard, shaped.body) : "");
   const listen = (value: unknown) => Object.assign(heard, heardIn(value));
   return relayReply(upstream, { format, asked }, tags, line, tap, answered, listen);
 }
@@ -792,7 +804,7 @@ function parsedOr(data: string): unknown {
 async function sendAsking(
   asking: {
     stores: Stores;
-    session: string | undefined;
+    thread: Thread | undefined;
     main: boolean;
     format: Format | undefined;
   },
@@ -811,11 +823,11 @@ async function sendAsking(
       redirect: "manual",
     });
   const firstParty = new URL(target).hostname === "api.anthropic.com";
-  const eligible = asking.format === "anthropic" && asking.session && asking.main && firstParty;
+  const eligible = asking.format === "anthropic" && asking.thread && asking.main && firstParty;
   const askHeaders = new Headers(headers);
   const body =
     eligible && shaped.body !== undefined && diagnosingOn()
-      ? diagnoses.ask(asking.session!, !!shaped.step, shaped.body, askHeaders)
+      ? diagnoses.ask(asking.thread!, !!shaped.step, shaped.body, askHeaders)
       : undefined;
   if (body === undefined) return { ...(await plain()), asked: false };
   const init = { method: request.method, headers: askHeaders, body, redirect: "manual" as const };

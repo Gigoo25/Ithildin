@@ -3,13 +3,13 @@
 For an agent picking up the cache work. `AGENTS.md` covers the repo; this
 covers how context shaping (`shape.ts`) interacts with Anthropic's prompt
 cache, what has been tried, what is known, and how to find out the rest.
-Status as of 2026-10-09: note dropping is fixed; most remaining step misses
-look to come from Claude Code switching a session between 1h and 5m
-markers, which moved the cutoff, now fixed (see
-[Found: the cutoff moved with the markers' TTL](#found-the-cutoff-moved-with-the-markers-ttl-2026-10-09-1512)).
-Not yet confirmed that it was every miss. The journal names each request's
-session, markers and write TTLs, so the next miss can be read without kept
-bodies.
+Status as of 2026-10-10: note dropping is fixed, and so is the cutoff moving
+with the markers' TTL. A session's subagents and forks share its id, which
+misled the diagnostics and let subagents step for nothing; both fixed (see
+[Subagents and forks in one session](#subagents-and-forks-in-one-session-2026-10-10)).
+Open: some main-thread steps still read only the system prompt, and the
+kept pairs that would say why were lost before the fix; the next ones will
+not be.
 
 ## The problem
 
@@ -321,6 +321,12 @@ journal only started naming TTLs today, and kept misses never recorded them.
 The next few days of `markers=` will say. A step miss with the same TTL on
 both sides would still be open.
 
+Read again on 2026-10-10: the "switch" was probably not one thread changing
+TTL. Forks run beside the main thread with 5-minute markers and the session's
+id, and the 5m request's last marker (`m582`) is not where the 1h thread's
+was (`m584`), so they were likely two conversations interleaved. The fix
+stands either way: a price read from the request still moved every past step.
+
 ### A read is not a tenth on every model
 
 `pays()` priced a cache read at 0.1x input. Opus 5.5 reads at $0.20 against
@@ -379,6 +385,56 @@ comes back.
 Reading the model is safe where reading the TTL was not: a cache belongs to
 one model, so switching it rewrites everything whatever the cutoff does.
 
+## Subagents and forks in one session (2026-10-10)
+
+From the 16:40 deploy on 2026-10-09 to the next afternoon, one session
+(`e3aa9649`) did all the stepping, and it ran forks and Haiku and Sonnet
+subagents beside its main thread. Claude Code gives them all the session's
+id: a subagent marks itself with `cc_is_subagent=true` in the billing header
+that opens its system prompt, a fork does not mark itself at all (it carries
+the parent's first message and 5-minute markers).
+
+| Requests | Count | Read | Written | Steps | Step writes |
+|---|---|---|---|---|---|
+| Main thread and forks | 2739 | 233M | 7.96M | 29 | 1.31M (0.68M on misses) |
+| Subagents | 56 | 0.32M | 1.86M | 36 | 1.29M, every one a miss |
+
+Three things followed.
+
+**The diagnostics compared unrelated requests.** `Diagnoses` kept one last
+reply per session, so a subagent was asked about against the parent's last
+reply and the other way round. Every one of the 20 kept pairs was such a
+pair (a 750K Opus body against a 32K Haiku one, two subagents with different
+first messages), and most `model_changed` and `messages_changed` that day
+were these: the requests themselves read 60–110K. The 20 slots filled within
+minutes, and the one real step miss of the day (`60>120` at 04:52Z) was
+dropped before anyone read it. Now the diagnostics are keyed like
+`PrefixWatch` (session, model, first message), keep the last few replies per
+key with their messages' digests, and compare a request with the reply whose
+messages it carries furthest, so a fork is compared with itself and a step
+with the step it should read. A turn's kept miss is dropped before any
+step's.
+
+**Subagents stepped for nothing.** A subagent lives minutes. It crossed the
+step threshold quickly (`0>10` to `0>30`), each step rewrote it from the
+system prompt on, and it ended before a step could pay back. `shape.ts` now
+holds a subagent's cutoff at zero (`isSubagent`). The header is the same on
+every request of a conversation, so this cannot flap the way the TTL did.
+
+**Forks repeat the parent's step, each at full price.** `60>120` ran four
+times in a row, about 57K written each: parallel forks, none able to read
+another's entry. `120>180` and `60>80` show the same. Not fixed: a fork has
+no mark of its own, and keying shaping on the markers' TTL is what moved the
+cutoff before. A fork that outlives the step pays for its own entry like any
+thread.
+
+Still open: of the main thread's steps, `30>60`, `60>120`, `180>270` and
+`340>420` read only the system prompt, while `270>340` and `420>490` read
+through to the old cutoff (129K and 183K). For `60>120` Anthropic counted
+about 28K tokens missed, which puts a change before the old cutoff. Many of
+those steps also had `swapped=2` or `swapped=4`, so the learned-values
+re-masking above is a suspect, unproven. The next kept step pair should say.
+
 ## Instruments now in the proxy
 
 Both go into the journal (`journalctl --user -u ithildin`), which survives
@@ -390,9 +446,11 @@ restarts; the dashboard and the proxy's memory do not.
 - **`cachemiss=<reason>`** from Anthropic's cache diagnostics
   (`diagnose.ts`). Every main Claude request to `api.anthropic.com` with a
   session gets the beta header (`DIAGNOSE_BETA`) and a top-level
-  `diagnostics: { previous_message_id }`. A normal request names the session's
-  last reply; a step names the session's **last step**, which is the request
-  that should have written the entry this step reads. The reply's
+  `diagnostics: { previous_message_id }`. Replies are kept per conversation
+  (session, model, first message), the last few each. A normal request names
+  the one whose messages it carries furthest; a step names the step it
+  carries furthest, which is the request that should have written the entry
+  this step reads. The reply's
   `diagnostics.cache_miss_reason.type` (and any other fields, short) is
   logged. `previous_message_not_found` means the proxy's id was unknown
   upstream: after a restart, or more than the server keeps.
@@ -405,9 +463,10 @@ restarts; the dashboard and the proxy's memory do not.
   with the start of each side), the offset where the raw bodies first differ
   (`divergesAt`, usually in `safeguards`, which is not cached) and 300
   characters of each side of it. The
-  journal says `cache miss kept: <dir>`. Bodies are kept in memory for the
-  newest 16 sessions only, so a miss right after a restart, or in an older
-  session, is not kept. On disk the oldest go first past any of three limits:
+  journal says `cache miss kept: <dir>`; a step's directory ends in `.step`.
+  Bodies are kept in memory for the newest 16 conversations only, so a miss
+  right after a restart, or in an older one, is not kept. On disk turns' misses
+  go before steps', and within each the oldest first, past any of three limits:
   20 misses (`ITHILDIN_CACHEMISS_KEEP`; 0 turns saving off and deletes what
   was kept), 14 days, or 200 MB in all. The limits are applied after each save
   and when the proxy starts, so a lowered count takes effect on restart; the

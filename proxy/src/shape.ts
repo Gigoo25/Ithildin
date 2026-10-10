@@ -270,14 +270,28 @@ function pays(items: Sized[], step: Step, price: Price): boolean {
   return !changed || gain * read * horizon >= suffix * (write - read);
 }
 
+// A Claude Code subagent, by the billing header it puts first in its system
+// prompt. A subagent lives minutes and stepped as soon as it was long enough,
+// and every one of its steps rewrote it whole: on 2026-10-10 a session's
+// subagents took 36 steps that wrote 1.29M tokens, as much as its main thread's
+// 29, for nothing read back (CACHING.md). The header is the same on every
+// request of the conversation, so holding the cutoff at zero never moves it.
+function isSubagent(format: Format, body: Record<string, unknown>): boolean {
+  if (format !== "anthropic" || !Array.isArray(body.system)) return false;
+  const text = record(body.system[0])?.text;
+  return typeof text === "string" && text.includes("cc_is_subagent=true");
+}
+
 // The cutoff, and the cutoff as the request before this one had it: the one
 // decided just before the newest assistant turn, where that request ended.
 function cutoffFor(
   format: Format,
   list: unknown[],
   walk: Walk,
-  model: unknown,
+  body: Record<string, unknown>,
 ): { cutoff: number; previous: number } {
+  if (isSubagent(format, body)) return { cutoff: 0, previous: 0 };
+  const model = body.model;
   const items = sizes(format, list, walk.retrieval);
   const write = cachePrice(format, model);
   let cutoff = 0;
@@ -481,7 +495,7 @@ export function shapeRequest(
   const list = conversation(format, body);
   if (!list) return;
   const walk: Walk = { calls: new Map(), outputs: new Map(), retrieval };
-  const { cutoff, previous } = cutoffFor(format, list, walk, body.model);
+  const { cutoff, previous } = cutoffFor(format, list, walk, body);
   const kept = latestNotes(format, list, cutoff);
   const totals: Counts = { masked: 0, compacted: 0, deduped: 0 };
   let turn = 0;

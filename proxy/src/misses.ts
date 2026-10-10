@@ -115,8 +115,14 @@ function dirBytes(at: string): number {
   return readdirSync(at).reduce((sum, name) => sum + statSync(path.join(at, name)).size, 0);
 }
 
+// A step's miss is named so (saveMiss): the session's own name never holds a
+// dot.
+const STEP_SUFFIX = ".step";
+
 // Drops the misses past the count, older than the age limit, or, oldest
-// first, past the size limit; returns how many went. Run after each save and
+// first, past the size limit; returns how many went. A turn's miss goes before
+// any step's: a step is rare and the costly one, and a burst of subagents'
+// turns once pushed the only step's miss of a day out within minutes. Run after each save and
 // at start, so a lowered ITHILDIN_CACHEMISS_KEEP (0 included) takes effect
 // without waiting for the next miss.
 export function pruneMisses(
@@ -134,7 +140,10 @@ export function pruneMisses(
     return 0;
   }
   // Named by time, so a name sort is oldest first.
-  const misses = found.sort().map((name) => {
+  const sorted = found.sort();
+  const isStep = (name: string) => name.endsWith(STEP_SUFFIX);
+  const ordered = [...sorted.filter((name) => !isStep(name)), ...sorted.filter(isStep)];
+  const misses = ordered.map((name) => {
     const at = path.join(dir, name);
     return { at, age: now - statSync(at).mtimeMs, bytes: dirBytes(at) };
   });
@@ -163,7 +172,8 @@ export function saveMiss(
     return undefined;
   }
   const session = miss.session.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 16);
-  const at = path.join(dir, `${now.toISOString().replace(/[:.]/g, "-")}-${session}`);
+  const name = `${now.toISOString().replace(/[:.]/g, "-")}-${session}`;
+  const at = path.join(dir, miss.step ? name + STEP_SUFFIX : name);
   mkdirSync(at, { recursive: true, mode: 0o700 });
   const file = (name: string, text: string) =>
     writeFileSync(path.join(at, name), text, { mode: 0o600 });
