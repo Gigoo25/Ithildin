@@ -228,9 +228,10 @@ interface Sized {
   gain: number;
 }
 
-function sizes(format: Format, list: unknown[], retrieval: Retrieval | undefined): Sized[] {
-  const asOld: Walk = { calls: new Map(), outputs: new Map(), retrieval };
-  const asNew: Walk = { calls: new Map(), outputs: new Map(), retrieval };
+function sizes(format: Format, list: unknown[], from: Walk): Sized[] {
+  const { retrieval, compacted } = from;
+  const asOld: Walk = { calls: new Map(), outputs: new Map(), retrieval, compacted };
+  const asNew: Walk = { calls: new Map(), outputs: new Map(), retrieval, compacted };
   let turn = 0;
   return list.map((item) => {
     for (const walk of [asOld, asNew]) remember(format, item, walk);
@@ -292,7 +293,7 @@ function cutoffFor(
 ): { cutoff: number; previous: number } {
   if (isSubagent(format, body)) return { cutoff: 0, previous: 0 };
   const model = body.model;
-  const items = sizes(format, list, walk.retrieval);
+  const items = sizes(format, list, walk);
   const write = cachePrice(format, model);
   let cutoff = 0;
   let previous = 0;
@@ -333,6 +334,11 @@ interface Walk {
   calls: Map<string, Call>;
   outputs: Map<string, string>;
   retrieval: Retrieval | undefined;
+  // Each output's compacted text (null: nothing to compact), shared by every
+  // walk of one request. The cost walks (sizes) and the real pass compacted
+  // each recent output again, and compaction was most of a request's shaping
+  // time: a 60-turn test took over 5s. Pure, so a cached answer is the answer.
+  compacted: Map<string, string | null>;
 }
 
 // The agent's retrieve tool (retrieve.ts), when the request offers it: its
@@ -421,10 +427,47 @@ function shaped(content: unknown, id: unknown, walk: Walk, old: boolean): Change
     }
     walk.outputs.set(text, describe(name, call?.input));
   }
-  const compacted = crushed(text, walk.retrieval) ?? compact(text);
-  return compacted === undefined
+  let compacted = walk.compacted.get(text);
+  if (compacted === undefined) {
+    compacted = crushed(text, walk.retrieval) ?? compactOnce(text) ?? null;
+    walk.compacted.set(text, compacted);
+  }
+  return compacted === null
     ? undefined
     : { text: compacted, saved: text.length - compacted.length, kind: "compacted" };
+}
+
+// Compacted outputs across requests, newest kept, up to this many characters
+// of output and result together. Every request carries the whole conversation,
+// so without it each turn compacted every earlier output again: a 60-turn
+// conversation reshaped turn by turn took over 5s, most of it in compact.ts.
+// compact() is pure, so a remembered answer is the answer. Crushing is not
+// kept here: it stores the output for retrieval, which must happen each time.
+export const COMPACTED_CHARS_MAX = 32 * 1024 * 1024;
+const compactedSeen = new Map<string, string | null>();
+let compactedChars = 0;
+
+export function compactOnce(text: string, max = COMPACTED_CHARS_MAX): string | undefined {
+  const seen = compactedSeen.get(text);
+  if (seen !== undefined) {
+    compactedSeen.delete(text);
+    compactedSeen.set(text, seen);
+    return seen ?? undefined;
+  }
+  const result = compact(text) ?? null;
+  compactedSeen.set(text, result);
+  compactedChars += text.length + (result?.length ?? 0);
+  for (const [old, value] of compactedSeen) {
+    if (compactedChars <= max) break;
+    compactedSeen.delete(old);
+    compactedChars -= old.length + (value?.length ?? 0);
+  }
+  return result ?? undefined;
+}
+
+// How many outputs compactOnce holds, for its tests.
+export function compactedHeld(): number {
+  return compactedSeen.size;
 }
 
 const CRUSH_MIN_CHARS = 1_000;
@@ -494,7 +537,7 @@ export function shapeRequest(
 ): Shaped | undefined {
   const list = conversation(format, body);
   if (!list) return;
-  const walk: Walk = { calls: new Map(), outputs: new Map(), retrieval };
+  const walk: Walk = { calls: new Map(), outputs: new Map(), retrieval, compacted: new Map() };
   const { cutoff, previous } = cutoffFor(format, list, walk, body);
   const kept = latestNotes(format, list, cutoff);
   const totals: Counts = { masked: 0, compacted: 0, deduped: 0 };

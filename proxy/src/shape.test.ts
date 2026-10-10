@@ -1,4 +1,6 @@
 import { describe, expect, it } from "bun:test";
+
+import { compact } from "./compact.ts";
 import {
   MASK_KEEP_TURNS,
   MASK_MIN_CHARS,
@@ -6,6 +8,8 @@ import {
   MASK_THRESHOLD_TOKENS,
   DEDUPE_MIN_CHARS,
   INPUT_MIN_CHARS,
+  compactOnce,
+  compactedHeld,
   shapingOn,
   shapeRequest,
 } from "./shape.ts";
@@ -86,6 +90,33 @@ function resultText(list: unknown, index: number, field = "content"): string {
   if (Array.isArray(value)) return String((value[0] as Record<string, unknown>)?.content ?? "");
   return String(value ?? "");
 }
+
+describe("compacting once", () => {
+  it("gives compact's answer, the same again from memory, and holds only so much", () => {
+    const noisy = (tag: string) => `${tag}\n${"same line\n".repeat(400)}`;
+    const first = noisy("a");
+    expect(compactOnce(first)).toBe(compact(first));
+    expect(compactOnce(first)).toBe(compact(first));
+    // Nothing to compact is remembered as that.
+    expect(compactOnce("short")).toBeUndefined();
+    expect(compactOnce("short")).toBeUndefined();
+    // Past the limit the least recently used go first: touching `b` keeps it.
+    const held = compactedHeld();
+    const [b, c, d] = ["b", "c", "d"].map(noisy) as [string, string, string];
+    const each = b.length + compact(b)!.length;
+    compactOnce(b, Infinity);
+    compactOnce(c, Infinity);
+    expect(compactedHeld()).toBe(held + 2);
+    compactOnce(b, Infinity);
+    // Room for two: adding d drops everything older than b, c included.
+    compactOnce(d, each * 2);
+    expect(compactedHeld()).toBe(2);
+    expect(compactOnce(b)).toBe(compact(b));
+    expect(compactedHeld()).toBe(2);
+    expect(compactOnce(c)).toBe(compact(c));
+    expect(compactedHeld()).toBe(3);
+  });
+});
 
 describe("kill switch", () => {
   it("is on unless the environment says otherwise", () => {
