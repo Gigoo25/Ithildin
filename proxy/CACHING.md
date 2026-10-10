@@ -232,6 +232,33 @@ above would go. Middle ground: step mid-session only when the saving is
 large, otherwise wait for a cold request. Worth building as a setting and
 comparing on real sessions once the note-dropping fix has a few days of data.
 
+### Idea: a keep-alive for the cutoff entry (not built; explains a minority)
+
+The entry at the cutoff is written by a step (or a cold request, which
+writes at every marker) and read only by the next step. A read refreshes
+only the entry it hits, so ordinary turns, which read the newest entry,
+never refresh it: it expires an hour after it was written however busy the
+session is. The proxy could re-send a thread's last body cut after the
+cutoff marker, with `max_tokens: 0` and `stream` off, about 55 minutes on:
+a read at 0.05× instead of a rewrite at 2×.
+
+Measured on 2026-10-10 against each main-thread step since 2026-10-09
+15:00, with the entry's age taken from the last step or cold request in the
+session:
+
+| Outcome | Entry age at the step (minutes) |
+|---|---|
+| hit | 29, 35, 1 (cold), 32 (cold) |
+| miss, entry over an hour old | 78, 98, 130 |
+| miss, entry younger | 1, 4, 19, 9, 1, 26, 58, 19, 1, 20 |
+
+Expiry fits the three old misses and every hit, but most misses came with a
+young entry, several a minute after a cold request that had just written
+it. Something before the old cutoff changes, or the marker lands elsewhere;
+the per-thread kept pairs (from 2026-10-10 12:03) are where to look. Build
+the keep-alive after that is fixed, if old-entry misses are still a share
+worth it.
+
 ## Step misses after the fix (2026-10-09)
 
 The note-dropping fix (`81b76c9`) did not stop step misses. Of 22 steps from
