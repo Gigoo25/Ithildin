@@ -215,6 +215,24 @@ describe("identity refresh", () => {
   });
 });
 
+// A home directory's stand-in kept "/home/" only from this fix on; before it,
+// the whole path was a user's stand-in, and conversations already hold that.
+describe("a home directory's stand-ins", () => {
+  it("are both minted, the old one only so swap-back still knows it", () => {
+    const home = "/home/zqxhomer";
+    refreshIdentity(() => [
+      { id: "runtime-home", literal: home, match: "phrase", caseSensitive: true },
+    ]);
+    const known = aliases()
+      .known()
+      .filter((resolved) => resolved.value.toLowerCase() === home);
+    expect(known).toHaveLength(2);
+    const current = aliases().standIn("pii-inventory-runtime-home", home);
+    expect(current).toStartWith("/home/");
+    expect(aliases().valueOf(current)?.toString().toLowerCase()).toBe(home);
+  });
+});
+
 describe("invented stand-ins by shape", () => {
   // Stand-in shaped, never minted, never in real input.
   const INVENTED = "user-0a1b2c";
@@ -416,9 +434,24 @@ describe("a change to the agent's own instructions", () => {
       noteHarnessChange("anthropic", before, before);
       noteHarnessChange("anthropic", { messages: [] }, { messages: [] });
       expect(said).toHaveLength(1);
-      expect(said[0]).toContain("system: run -> qzxv");
+      expect(said[0]).toContain("system: run -> qzxv by no rule (a remembered value)");
       noteHarnessChange("responses", { instructions: "a b" }, { instructions: "a c" });
       expect(said[1]).toContain("instructions: b -> c");
+    } finally {
+      write.mockRestore();
+    }
+  });
+
+  it("names the rules that found what changed", () => {
+    const said: string[] = [];
+    const write = spyOn(process.stderr, "write").mockImplementation((chunk) => {
+      said.push(String(chunk));
+      return true;
+    });
+    try {
+      const before = { system: "Connect to nastrel.lan first." };
+      noteHarnessChange("anthropic", before, { system: "Connect to vudrom.lan first." });
+      expect(said[0]).toMatch(/system: nastrel\.lan -> vudrom\.lan by \S*host/);
     } finally {
       write.mockRestore();
     }

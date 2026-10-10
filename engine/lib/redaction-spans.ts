@@ -142,8 +142,18 @@ function editFor(input: PlanInput, r: PlanRange): SpanEdit {
         `[ithildin: omitted ${r.end - r.start} chars (scan budget exceeded)]`,
     };
   const secret = r.members.some((f) => f.category === "secret");
+  // The stand-in is minted for the rule that found the whole span. A home
+  // directory is found whole by one rule and its last part by several user
+  // rules; picked by name alone, a user rule won and minted a user stand-in
+  // for the whole path, so "/home/" itself came out as a made-up word in every
+  // system prompt that names the working directory.
+  const whole = (f: LocatedFinding) => (f.start === r.start && f.end === r.end ? 0 : 1);
   const rep = [...r.members].sort((a, b) =>
-    a.category === b.category ? a.ruleId.localeCompare(b.ruleId) : a.category === "secret" ? -1 : 1,
+    a.category !== b.category
+      ? a.category === "secret"
+        ? -1
+        : 1
+      : whole(a) - whole(b) || a.ruleId.localeCompare(b.ruleId),
   )[0]!;
   const scalar = input.scalars?.find((s) => s.start === r.start && s.end === r.end);
   const finding = {

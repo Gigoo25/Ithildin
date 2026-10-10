@@ -30,6 +30,7 @@ import {
 } from "../engine/core.ts";
 import {
   AliasBook,
+  aliasKind,
   aliasKeyPath,
   aliasMatches,
   aliasSpans,
@@ -57,7 +58,7 @@ import {
   identityFromTailscale,
   identityFromWifi,
 } from "../engine/lib/runtime-inventory.ts";
-import type { InventoryEntry } from "../engine/lib/rules.ts";
+import { type InventoryEntry, scan as scanRules } from "../engine/lib/rules.ts";
 import { planSwapBack, reachesNetwork } from "../engine/lib/swap-back.ts";
 import { protectedBlocked, protectedFinding, shellWrites } from "./protect.ts";
 import { SPELLED_BLOCKED, spellsMasked, UNMASK_BLOCKED, unmasksText } from "./unmask.ts";
@@ -162,11 +163,20 @@ export function refreshIdentity(collect: () => InventoryEntry[] = collectIdentit
   if (!mergeIdentity(knownIdentity, collect())) return false;
   setRuntimeInventory([...knownIdentity.values()]);
   registerAliasLabels(aliasLabels());
-  if (aliasStyle() === "stand-ins") {
-    for (const entry of inventoryLiterals())
-      aliases().standIn(entry.ruleId, entry.literal, entry.label);
-  }
+  seedStandIns();
   return true;
+}
+
+// Every known value's stand-in, minted before any request so swap-back knows
+// it. A home directory once came out whole as a user's stand-in, "/home/"
+// included; that form is minted too, for swap-back only, so a conversation
+// that already holds it still has its paths put back.
+function seedStandIns(): void {
+  if (aliasStyle() !== "stand-ins") return;
+  for (const entry of inventoryLiterals()) {
+    aliases().standIn(entry.ruleId, entry.literal, entry.label);
+    if (aliasKind(entry.ruleId) === "home") aliases().standIn("pii-home-user", entry.literal);
+  }
 }
 
 export function initEngine(
@@ -185,10 +195,7 @@ export function initEngine(
     `${scanCacheBase}-replay.json`,
   );
   loadScanCache(scanCacheBase);
-  if (aliasStyle() === "stand-ins") {
-    for (const entry of inventoryLiterals())
-      aliases().standIn(entry.ruleId, entry.literal, entry.label);
-  }
+  seedStandIns();
 }
 
 // ── allow tags ──────────────────────────────────────────────────────────────
@@ -648,9 +655,25 @@ export function noteHarnessChange(
     if (harnessChanges.has(change)) continue;
     if (harnessChanges.size < 64) harnessChanges.add(change);
     process.stderr.write(
-      `ithildin: warning: redaction changed the agent's ${change} (masked a value it should not)\n`,
+      `ithildin: warning: redaction changed the agent's ${change} by ${rulesAt(was, at)} ` +
+        `(masked a value it should not)\n`,
     );
   }
+}
+
+// Which rules found what changed: the word alone did not say whether a rule
+// is too broad or a value was remembered, and the body that would tell is
+// gone once it is sent. Scanned only for a change not said before.
+function rulesAt(text: string, at: number): string {
+  let ids: string[];
+  try {
+    ids = scanRules(text)
+      .filter((finding) => finding.start <= at && at < finding.end)
+      .map((finding) => finding.ruleId);
+  } catch {
+    return "a rule (the scan ran out of time)";
+  }
+  return ids.length ? [...new Set(ids)].sort().join(",") : "no rule (a remembered value)";
 }
 
 function redactWithCorpus(

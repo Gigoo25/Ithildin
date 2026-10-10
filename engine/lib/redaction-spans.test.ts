@@ -16,6 +16,42 @@ function loc(
 }
 
 describe("redaction spans", () => {
+  it("mints the stand-in for the rule that found the whole span", () => {
+    const text = "cd /home/qorvalt/x";
+    const start = text.indexOf("/home/");
+    const user = text.indexOf("qorvalt");
+    const out = planRedaction({
+      text,
+      findings: [
+        loc({ ruleId: "pii-fleet-user", secretValue: "qorvalt", start: user, end: user + 7 }),
+        loc({ ruleId: "pii-home-user", secretValue: "qorvalt", start: user, end: user + 7 }),
+        loc({
+          ruleId: "pii-inventory-runtime-home",
+          secretValue: "/home/qorvalt",
+          start,
+          end: user + 7,
+        }),
+      ],
+      trips: [],
+      replacementFor: (finding) => `<${finding.ruleId}:${finding.secretValue}>`,
+    });
+    expect(out.text).toBe("cd <pii-inventory-runtime-home:/home/qorvalt>/x");
+  });
+
+  it("keeps the home directory's own name when masking a user's home", async () => {
+    const { redactText } = await import("../core.ts");
+    const { setRuntimeInventory } = await import("./rules.ts");
+    const { collectRuntimeIdentity } = await import("./runtime-inventory.ts");
+    setRuntimeInventory(collectRuntimeIdentity({ username: "qorvalt", homedir: "/home/qorvalt" }));
+    try {
+      const out = redactText("Working directory: /home/qorvalt/Projects/x").text;
+      expect(out).toStartWith("Working directory: /home/");
+      expect(out).not.toContain("qorvalt");
+    } finally {
+      setRuntimeInventory([]);
+    }
+  });
+
   it("redacts only the intended span, not longer identifiers", () => {
     const text = `username = "sampler"\nconst samplerCount = 3;`;
     const start = text.indexOf("sampler");
