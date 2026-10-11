@@ -146,8 +146,12 @@ function editFor(input: PlanInput, r: PlanRange): SpanEdit {
   // directory is found whole by one rule and its last part by several user
   // rules; picked by name alone, a user rule won and minted a user stand-in
   // for the whole path, so "/home/" itself came out as a made-up word in every
-  // system prompt that names the working directory.
-  const whole = (f: LocatedFinding) => (f.start === r.start && f.end === r.end ? 0 : 1);
+  // system prompt that names the working directory. A remembered value
+  // (swappedFindings) ranks below a scanning rule over the same span: it
+  // carries the rule id it was learned under, and a home path learned before
+  // that fix still said "user", so the memory alone kept "/home/" masked.
+  const whole = (f: LocatedFinding) =>
+    f.start === r.start && f.end === r.end ? (f.matchRedacted === "[swapped]" ? 1 : 0) : 2;
   const rep = [...r.members].sort((a, b) =>
     a.category !== b.category
       ? a.category === "secret"

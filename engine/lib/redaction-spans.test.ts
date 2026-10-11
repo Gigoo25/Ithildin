@@ -38,6 +38,44 @@ describe("redaction spans", () => {
     expect(out.text).toBe("cd <pii-inventory-runtime-home:/home/qorvalt>/x");
   });
 
+  it("prefers a scanning rule over a value remembered for the same span", () => {
+    const text = "cd /home/qorvalt/x";
+    const start = text.indexOf("/home/");
+    const end = start + "/home/qorvalt".length;
+    const out = planRedaction({
+      text,
+      findings: [
+        loc({
+          ruleId: "pii-fleet-user",
+          matchRedacted: "[swapped]",
+          secretValue: "/home/qorvalt",
+          start,
+          end,
+        }),
+        loc({ ruleId: "pii-inventory-runtime-home", secretValue: "/home/qorvalt", start, end }),
+      ],
+      trips: [],
+      replacementFor: (finding) => `<${finding.ruleId}:${finding.secretValue}>`,
+    });
+    expect(out.text).toBe("cd <pii-inventory-runtime-home:/home/qorvalt>/x");
+  });
+
+  it("keeps the home directory once it was remembered under a user rule", async () => {
+    const { clearCaches, redactText, rememberSwapped } = await import("../core.ts");
+    const { setRuntimeInventory } = await import("./rules.ts");
+    const { collectRuntimeIdentity } = await import("./runtime-inventory.ts");
+    setRuntimeInventory(collectRuntimeIdentity({ username: "qorvalt", homedir: "/home/qorvalt" }));
+    try {
+      rememberSwapped("/home/qorvalt", "pii-fleet-user");
+      const out = redactText("Working directory: /home/qorvalt/Projects/x").text;
+      expect(out).toStartWith("Working directory: /home/");
+      expect(out).not.toContain("qorvalt");
+    } finally {
+      setRuntimeInventory([]);
+      clearCaches();
+    }
+  });
+
   it("keeps the home directory's own name when masking a user's home", async () => {
     const { redactText } = await import("../core.ts");
     const { setRuntimeInventory } = await import("./rules.ts");
