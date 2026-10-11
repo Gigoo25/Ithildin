@@ -7,6 +7,7 @@ import {
   entropy,
   isNotSecretShaped,
   isPlaceholder,
+  isProseAssignment,
   keyDescribesRatherThanHolds,
 } from "./shapes.ts";
 import { getValidator, isReservedIpv4 } from "./validators.ts";
@@ -1706,7 +1707,8 @@ function scanRule(rule: Rule, text: string): LocatedFinding[] {
     const matchStart = match.index ?? 0;
     const matchEnd = matchStart + match[0].length;
     const following = text.slice(matchEnd, matchEnd + 64);
-    if (!secretShaped(rule, secretValue, match, following)) continue;
+    const preceding = text.slice(Math.max(0, matchStart - 64), matchStart);
+    if (!secretShaped(rule, secretValue, match, { preceding, following })) continue;
     if (rule.entropyThreshold != null && entropy(secretValue) < rule.entropyThreshold) continue;
     if (rule.validate != null && !rule.validate(secretValue, match)) continue;
 
@@ -1737,7 +1739,7 @@ function secretShaped(
   rule: Rule,
   secretValue: string,
   match: RegExpMatchArray,
-  following: string,
+  { preceding, following }: { preceding: string; following: string },
 ): boolean {
   // The shape test applies only where the rule captured a free-form value.
   // A rule that matches a fixed prefix has already said what the thing is —
@@ -1751,7 +1753,8 @@ function secretShaped(
         (isNotSecretShaped(secretValue) ||
           isPlaceholder(match[0], following) ||
           isNotSecretShaped(match[0]) ||
-          keyDescribesRatherThanHolds(match[0]))))
+          keyDescribesRatherThanHolds(match[0]) ||
+          isProseAssignment(match[0], preceding, secretValue))))
   );
 }
 

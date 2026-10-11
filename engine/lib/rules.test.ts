@@ -123,6 +123,29 @@ describe("generic secret detection", () => {
   });
 });
 
+describe("env-assignment in prose", () => {
+  const found = (text: string) => scan(text).some((f) => f.ruleId === "env-assignment");
+
+  it("reads a credential word in a sentence as a word", () => {
+    // From a Go comment: the identifier went upstream as a password.
+    expect(found("// stays servable. One pass = WhiskyJumpingFox feed through the same")).toBe(
+      false,
+    );
+    expect(found("# each token = SessionCounter of the run")).toBe(false);
+  });
+
+  it("still finds a credential written the way credentials are", () => {
+    for (const text of [
+      "One pass = Xk9fQ2mZwr feed through",
+      'One pass = "WhiskyJumpingFox" here',
+      "export PASSWORD=WhiskyJumpingFox",
+      "password = WhiskyJumpingFox",
+      "One PASS = WhiskyJumpingFox feed",
+    ])
+      expect(found(text)).toBe(true);
+  });
+});
+
 describe("local rule additions", () => {
   it("detects provider prefixes added locally", () => {
     for (const [text, id] of [

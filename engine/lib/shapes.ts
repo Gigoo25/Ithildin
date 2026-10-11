@@ -62,6 +62,20 @@ export function readsAsWords(segment: string): boolean {
   return segment.length / words.length >= MIN_MEAN_WORD_LENGTH;
 }
 
+// A sentence that happens to put a credential word in front of an `=`: "One
+// pass = StaleQueueRefresh feed through the same …" in a Go comment read as a
+// password, and its stand-in then replaced the identifier in every grep that
+// reached that line and nowhere else, so the agent saw two names for one
+// function. What marks it is all three at once: a bare lowercase word as the
+// key, another word before it on the line, and an unquoted value made of
+// words. `export PASSWORD=…`, `password: …` at the start of a line, a quoted
+// literal and anything with a digit in it are still credentials.
+export function isProseAssignment(matchText: string, preceding: string, value: string): boolean {
+  if (!/^[a-z]+[ \t]+=[ \t]+[A-Za-z]+$/.test(matchText)) return false;
+  const line = preceding.slice(preceding.lastIndexOf("\n") + 1);
+  return /[A-Za-z][ \t]+$/.test(line) && readsAsWords(value);
+}
+
 // A key that says where a secret lives, or what it is called, rather than what
 // it is. The rule fires on the keyword anywhere in the name, so
 // `SECRET_MANAGER_PROJECT` reads as a secret because of its first word, when its
