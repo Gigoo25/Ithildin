@@ -1389,10 +1389,15 @@ function marksFor(id, masked = []) {
   for (const entry of feed)
     if (entry.type === 'blocked') held.set(firstSentence(entry.text), entry.text);
   const heldMarks = [...held].map(([text, title]) => ({ text, type: 'held', title }));
-  const value = ([text, entry]) => ({ text, type: 'masked', title: valueTitle(entry) });
+  // A home directory's stand-in is its path with the user swapped, so only the
+  // user is marked: the rest is the real path, never masked.
+  const value = ([text, entry]) => ({
+    text: entry.kind === 'home' ? text.slice(text.search(/[^\\\\/]*$/)) : text,
+    type: 'masked', title: valueTitle(entry),
+  });
   const plain = [...known].map(value);
   const model = [...known].map(([text, entry]) => !back.has(text) ? value([text, entry]) : {
-    text, type: 'masked', back: true,
+    ...value([text, entry]), back: true,
     title: valueTitle(entry) + '\\nThe model used it, and the proxy put the real value back in ' +
       [...back.get(text)].join(', ') + '.',
   });

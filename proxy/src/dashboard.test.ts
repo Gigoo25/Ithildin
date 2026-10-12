@@ -839,6 +839,26 @@ describe("dashboard", () => {
     );
   });
 
+  it("marks only the user of a home directory's stand-in", () => {
+    const pick = (name: string) =>
+      new RegExp(`function ${name}[\\s\\S]*?\\n\\}`).exec(DASHBOARD_HTML)![0];
+    const kinds = /const VALUE_KINDS = \{[\s\S]*?\n\};/.exec(DASHBOARD_HTML)![0];
+    const source = [
+      "const OTHER = ''; const HELD_NOTICES = [];",
+      kinds,
+      ...["plural", "firstSentence", "valueTitle", "marksFor"].map(pick),
+    ].join("\n");
+    const marksFor = new Function("feed", `${source}; return marksFor;`)([
+      { session: "s", standIn: "/home/qorvanbe", kind: "home" },
+      { session: "s", standIn: "C:\\Users\\zelmtrop", kind: "home" },
+      { session: "s", standIn: "/home/qorvanbe", type: "swapped", where: "reply text" },
+      { session: "s", standIn: "web.example.invalid", kind: "host" },
+    ]) as (id: string) => { plain: { text: string }[]; model: { text: string; back?: boolean }[] };
+    const { plain, model } = marksFor("s");
+    expect(plain.map((mark) => mark.text)).toEqual(["qorvanbe", "zelmtrop", "web.example.invalid"]);
+    expect(model[0]).toMatchObject({ text: "qorvanbe", back: true });
+  });
+
   it("counts stand-ins outside the messages, and past the cap, without marking them", () => {
     const pick = (name: string) =>
       new RegExp(`function ${name}[\\s\\S]*?\\n\\}`).exec(DASHBOARD_HTML)![0];
