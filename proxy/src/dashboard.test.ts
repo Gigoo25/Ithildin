@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { observeActivity, REPLY_TEXT, reportActivity } from "../engine/lib/activity.ts";
-import { DASHBOARD_HTML } from "./dashboard.ts";
+import { DASHBOARD_HTML, DASHBOARD_PATH } from "./dashboard.ts";
 import { ENTRIES_MAX, around, EventLog, preview, SEEN_MAX, TALLIES_MAX } from "./events.ts";
 import { BODY_BYTES_MAX } from "./requests.ts";
 import { initEngine, redactRequest } from "./redact.ts";
@@ -994,6 +994,10 @@ describe("dashboard", () => {
   it("leaves Sessions and Numbers open, so both sides read without a click", () => {
     expect(DASHBOARD_HTML).toMatch(/<details class="section" id="fold_sessions" open>/);
     expect(DASHBOARD_HTML).toMatch(/<details class="section" id="fold_numbers" open>/);
+  });
+
+  it("goes back to the newest session from the name", () => {
+    expect(DASHBOARD_HTML).toContain(`<h1><a href="${DASHBOARD_PATH}"`);
   });
 
   it("says how much of a cut request the page holds", () => {

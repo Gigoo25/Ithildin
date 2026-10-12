@@ -120,6 +120,7 @@ export const DASHBOARD_HTML = `<!doctype html>
     margin: 0; font: 600 21px/1.1 var(--serif); letter-spacing: .4em;
     text-transform: uppercase; color: var(--silver); text-shadow: var(--glow);
   }
+  h1 a { color: inherit; text-decoration: none; }
   .motto { margin: 2px 0 4px; font: italic 13px var(--serif); color: var(--dim); }
   #state { display: flex; align-items: center; gap: 6px; color: var(--dim); font-size: 11px; }
   #state::before {
@@ -403,7 +404,7 @@ export const DASHBOARD_HTML = `<!doctype html>
   </g>
 </svg>
   <div class="brand">
-    <h1>Ithildin</h1>
+    <h1><a href="${DASHBOARD_PATH}" title="Back to the newest session">Ithildin</a></h1>
     <p class="motto">Mirrors only starlight and moonlight</p>
     <span id="state">connecting</span>
   </div>
