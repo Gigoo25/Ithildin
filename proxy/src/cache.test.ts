@@ -1,6 +1,6 @@
 import { describe, expect, it, spyOn } from "bun:test";
 import { markerText } from "./mark.ts";
-import { createHandler, DEFAULT_ROUTES } from "./server.ts";
+import { cacheTrail, createHandler, DEFAULT_ROUTES } from "./server.ts";
 import { PrefixWatch } from "./prefix.ts";
 import { merge, usageOf, usageOfEvent, usageText, writtenText } from "./usage.ts";
 
@@ -162,8 +162,27 @@ describe("the journal names a main request's session and markers", () => {
       write.mockRestore();
     }
     const line = lines.find((text) => text.includes("v1/messages 200"))!;
-    expect(line).toContain(" session=abcdef12 markers=s0");
+    expect(line).toContain(" session=abcdef12 model=m markers=s0");
     expect(line).toContain(" usage=1/0/8/1 written=1h:8,5m:0");
+  });
+});
+
+describe("cache trail", () => {
+  const body = { model: "deepseek v4", messages: [{ role: "user", content: "hi" }] };
+
+  it("names the session and model on any route, and markers only on Anthropic", () => {
+    expect(cacheTrail("chat", "ses_ed29abcdefgh12345678", true, body)).toBe(
+      " session=12345678 model=deepseek_v4",
+    );
+    expect(cacheTrail("anthropic", "abcdef12-3456", false, body)).toBe(
+      " session=abcdef12 model=deepseek_v4",
+    );
+    expect(cacheTrail("anthropic", undefined, true, { messages: [] })).toBe(" markers=none");
+  });
+
+  it("says nothing it does not know", () => {
+    expect(cacheTrail("chat", undefined, true, undefined)).toBe("");
+    expect(cacheTrail("chat", undefined, true, { model: "" })).toBe("");
   });
 });
 

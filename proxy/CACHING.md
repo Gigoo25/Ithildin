@@ -512,14 +512,16 @@ everything read, and single requests saved more than a context window. Many
 of those requests could not have been sent unshaped; the estimate in [What
 shaping costs and saves](#what-shaping-costs-and-saves) does not carry over.
 
-**The instruments are Anthropic-only.** `session=`, `markers=`, `written=`,
-`cachemiss=` and kept misses are all on main Anthropic requests, and the
-journal line carries no model on any route. An opencode line says
-`step=`, `cachebreak=` and `usage=`, and nothing ties it to its session:
-sessions interleave, so the request before a step in the journal is often
-another session's, and "how much did this step read back of what the last
-request had" cannot be answered. Logging `session=` (opencode sends
-`x-opencode-session`) and the model on every route would answer it.
+**The instruments were Anthropic-only.** `markers=`, `written=`, `cachemiss=`
+and kept misses are on main Anthropic requests only. Over this window an
+opencode line said `step=`, `cachebreak=` and `usage=`, and nothing tied it
+to its session: sessions interleave, so the request before a step in the
+journal was often another session's, and "how much did this step read back
+of what the last request had" could not be answered. Every line now names
+`session=` and `model=` when the request carried them, on every route. An
+opencode id (`ses_` then a time-ordered part) is logged by its last eight
+characters, since sessions begun close together share their first. The next
+window can pair each step with the request before it in its own session.
 
 Non-step breaks in the same window were few: 13 `system(agent)` and 7
 `messageN(agent)` on `go/openai` responses (its lower read share), 12

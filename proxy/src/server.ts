@@ -850,19 +850,30 @@ function usageCounter(events: EventLog, context: Context): (usage: Usage | undef
   };
 }
 
-// Which session a main Anthropic request belongs to and where its cache
-// markers sit, so a step that misses can be read against the requests before
-// it in the journal alone: the cache entries a step could read are the ones
-// those markers wrote. `sent` is the body as it went upstream, shaped or not.
-function cacheTrail(
+// Which session and model a request belongs to, and for a main Anthropic
+// request where its cache markers sit, so a step can be read against the
+// requests before it in its own session from the journal alone: sessions
+// interleave there, and the cache entries a step could read are the ones the
+// session's earlier requests left. `sent` is the body as it went upstream.
+export function cacheTrail(
   format: Format | undefined,
   session: string | undefined,
   main: boolean,
   sent: unknown,
 ): string {
-  if (format !== "anthropic" || !main || !sent || typeof sent !== "object") return "";
-  const at = session ? ` session=${session.slice(0, 8)}` : "";
-  return `${at} markers=${markerText(sent as Record<string, unknown>) || "none"}`;
+  const body = sent && typeof sent === "object" ? (sent as Record<string, unknown>) : undefined;
+  const at = session ? ` session=${shortSession(session)}` : "";
+  const model =
+    typeof body?.model === "string" && body.model ? ` model=${body.model.replace(/\s/g, "_")}` : "";
+  if (format !== "anthropic" || !main || !body) return at + model;
+  return `${at}${model} markers=${markerText(body) || "none"}`;
+}
+
+// Eight characters that tell a session from the others. opencode's ids
+// (`ses_` then a time-ordered part) share their start between sessions begun
+// close together, so theirs are told by the random end instead.
+function shortSession(id: string): string {
+  return id.startsWith("ses_") ? id.slice(-8) : id.slice(0, 8);
 }
 
 // Whether this request broke its conversation's cached prefix, and where:
