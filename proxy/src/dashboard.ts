@@ -525,9 +525,17 @@ function plural(count, word) {
   return count + ' ' + word + (count === 1 ? '' : 's');
 }
 
-// A size the reader can place, in MiB.
-function mib(chars) {
-  return (chars / 1048576).toFixed(1) + ' MiB';
+// A size the reader can place: the largest unit that keeps it at least one, so a
+// session's savings read as 11.2 GiB rather than 11503.5 MiB.
+function bytes(chars) {
+  const units = ['KiB', 'MiB', 'GiB', 'TiB'];
+  let value = chars / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit++;
+  }
+  return value.toFixed(1) + ' ' + units[unit];
 }
 
 // A guard's notice runs long; the full text is in the card's tooltip.
@@ -660,7 +668,7 @@ function tallyLine(tally) {
     const parts = [count(tally.shapedMasked) + ' stubbed'];
     if (tally.shapedCompacted) parts.push(count(tally.shapedCompacted) + ' compacted');
     if (tally.shapedDeduped) parts.push(count(tally.shapedDeduped) + ' repeats');
-    said.push('Shaping: ' + parts.join(', ') + ', ' + mib(tally.shapedSavedChars) + ' saved');
+    said.push('Shaping: ' + parts.join(', ') + ', ' + bytes(tally.shapedSavedChars) + ' saved');
   }
   const read = tally.usageCacheRead;
   const prompt = tally.usageInput + read + tally.usageCacheWrite;
@@ -744,7 +752,7 @@ async function showSession() {
   const first = shownId === 0;
   shownId = sent.id;
   byId('view_note').textContent = 'As sent ' + clock(sent.time) +
-    (sent.cut ? ', cut at ${BODY_BYTES_MAX / 1048576} MiB of ' + mib(sent.size) : '');
+    (sent.cut ? ', cut at ${BODY_BYTES_MAX / 1048576} MiB of ' + bytes(sent.size) : '');
   showText(first ? 'top' : 'keep');
 }
 
@@ -842,8 +850,8 @@ function renderStats(stats, watch) {
   // sessions have all opted out, and only the badge tells those apart.
   const saved = stats.shapedSavedChars || 0;
   figures('num_shaping', [
-    ['Saved', saved === 0 ? 'none yet' : mib(saved)],
-    ['Per request', stats.requests ? mib(Math.round(saved / stats.requests)) : 'none yet'],
+    ['Saved', saved === 0 ? 'none yet' : bytes(saved)],
+    ['Per request', stats.requests ? bytes(Math.round(saved / stats.requests)) : 'none yet'],
     ['Stubbed', count(stats.shapedMasked || 0)],
     ['Compacted', count(stats.shapedCompacted || 0)],
     ['Repeats', count(stats.shapedDeduped || 0)],

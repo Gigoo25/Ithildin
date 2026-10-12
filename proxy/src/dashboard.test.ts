@@ -664,9 +664,9 @@ describe("dashboard", () => {
     // One request, 355276 characters saved by 91 stubbed results.
     expect(read("num_shaping")).toEqual([
       "Saved",
-      "0.3 MiB",
+      "346.9 KiB",
       "Per request",
-      "0.3 MiB",
+      "346.9 KiB",
       "Stubbed",
       "91",
       "Compacted",
@@ -871,10 +871,20 @@ describe("dashboard", () => {
     expect(unmarked()).toEqual({ masked: 5 });
   });
 
+  it("says a size in the largest unit that keeps it at least one", () => {
+    const source = /function bytes[\s\S]*?\n\}/.exec(DASHBOARD_HTML)![0];
+    const bytes = new Function(`${source}; return bytes;`)() as (chars: number) => string;
+    expect(bytes(512)).toBe("0.5 KiB");
+    expect(bytes(355276)).toBe("346.9 KiB");
+    expect(bytes(5 * 1048576)).toBe("5.0 MiB");
+    expect(bytes(11503.5 * 1048576)).toBe("11.2 GiB");
+    expect(bytes(3 * 1024 ** 5)).toBe("3072.0 TiB");
+  });
+
   it("says a session's shaping and cache in a line", () => {
     const pick = (name: string) =>
       new RegExp(`function ${name}[\\s\\S]*?\\n\\}`).exec(DASHBOARD_HTML)![0];
-    const source = ["count", "mib", "tallyLine"].map(pick).join("\n");
+    const source = ["count", "bytes", "tallyLine"].map(pick).join("\n");
     const tallyLine = new Function(`${source}; return tallyLine;`)() as (
       tally?: Record<string, number>,
     ) => string;
@@ -969,7 +979,7 @@ describe("dashboard", () => {
   it("says how much of a cut request the page holds", () => {
     // The cap is the proxy's, so the two cannot drift apart.
     expect(DASHBOARD_HTML).toContain(`', cut at ${BODY_BYTES_MAX / 1048576} MiB of '`);
-    expect(DASHBOARD_HTML).toContain("function mib(chars)");
+    expect(DASHBOARD_HTML).toContain("function bytes(chars)");
     // A body is megabytes, so the page holds a few, not every one it read.
     expect(DASHBOARD_HTML).toContain(`const TEXTS_MAX = ${4};`);
     expect(DASHBOARD_HTML).toContain("while (texts.size > TEXTS_MAX)");
