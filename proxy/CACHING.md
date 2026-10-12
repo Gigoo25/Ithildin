@@ -9,7 +9,8 @@ misled the diagnostics and let subagents step for nothing; both fixed (see
 [Subagents and forks in one session](#subagents-and-forks-in-one-session-2026-10-10)).
 Open: some main-thread steps still read only the system prompt, and the
 kept pairs that would say why were lost before the fix; the next ones will
-not be.
+not be. opencode's routes, with automatic caching and no markers, read back
+through their steps (see [opencode](#opencode-the-same-shaping-without-markers-2026-10-07-to-10-12)).
 
 ## The problem
 
@@ -19,7 +20,7 @@ Shaping therefore holds its cutoff still and moves it in steps of
 `MASK_STEP_TURNS` (10) turns; each move is a **step**, and a step rewrites the
 cache from the first changed message on.
 
-Over 14 days of journal (before any of the work below), Claude cache writes
+Over 14 days of journal (before any of the work below), Claude Code's cache writes
 split roughly:
 
 | Cause | Share |
@@ -461,6 +462,75 @@ through to the old cutoff (129K and 183K). For `60>120` Anthropic counted
 about 28K tokens missed, which puts a change before the old cutoff. Many of
 those steps also had `swapped=2` or `swapped=4`, so the learned-values
 re-masking above is a suspect, unproven. The next kept step pair should say.
+
+## opencode: the same shaping without markers (2026-10-07 to 10-12)
+
+Everything above is Claude Code on Anthropic. opencode's traffic goes through
+the `opencode-ai` route to OpenAI-shaped endpoints, where caching is
+automatic: no `cache_control`, no write premium (every reply reports 0
+written), and a request reads whatever prefix of it the provider already
+has. `cachePrice` prices those steps that way (write 1x, read 0.1x, only
+from the first changed item on). From the journal, 2026-10-07 09:14 to
+2026-10-12 10:11:
+
+| Route | Requests | Uncached in | Read | Read share | Steps |
+|---|---|---|---|---|---|
+| `go/openai` chat | 6984 | 38.9M | 655M | 94.4% | 641 |
+| `go/openai` responses | 2563 | 26.4M | 192M | 87.9% | 8 |
+| `openai` responses | 2041 | 12.5M | 585M | 97.9% | 55 |
+| `openai` chat | 136 | 0.6M | 6.5M | 91.5% | 13 |
+
+The kept bodies on `go/openai` chat were `deepseek-v4.1-flash` and one other
+model; 97% of that route's reads are a multiple of 64 tokens, the provider's
+cache unit, where the `openai` responses route reads to the token.
+
+**Steps read back with nothing to help them.** A step on `go/openai` chat
+read 69% of its prompt from cache on average (41.3M read, 18.8M not), and
+only 5 of 641 read under 2K. No marker, no entry a previous request had to
+write: the provider matched the prefix up to the change. That is what the
+Anthropic design (`mark.ts`) tries to get, and what its open misses lack. The
+shaping code and its bytes before the cutoff are the same for both formats,
+so this points the Anthropic misses at how entries are written and found
+there (markers, lookback), not at shaping changing old bytes. Consistent,
+not proof: a different provider, and no per-session pairs to check (below).
+
+**Steps are frequent and most of the uncached input.** On `go/openai` chat a
+step came every 11 requests, and steps sent 48% of the route's uncached
+input (18.8M of 38.9M): 29K uncached each against 3.2K for an ordinary turn.
+opencode sends one assistant message per tool call, so `MASK_STEP_TURNS` (10)
+turns go by in ten requests. The gate approves nearly all of them, rightly:
+with no write premium a step costs `0.9x` of what follows the change, and
+the masked results would otherwise be re-read on every request. A larger
+step on these routes would take fewer, bigger rewrites; worth measuring, not
+obviously better.
+
+**`saved=` is not what the unshaped request would have cost.** opencode does
+not prune old tool output itself, so bodies arrive very large (1.65 MB, 601
+items, in one kept request) and shaping sends a fraction. Summed, `saved=`
+on `go/openai` chat is about 2.8B tokens at four characters each, four times
+everything read, and single requests saved more than a context window. Many
+of those requests could not have been sent unshaped; the estimate in [What
+shaping costs and saves](#what-shaping-costs-and-saves) does not carry over.
+
+**The instruments are Anthropic-only.** `session=`, `markers=`, `written=`,
+`cachemiss=` and kept misses are all on main Anthropic requests, and the
+journal line carries no model on any route. An opencode line says
+`step=`, `cachebreak=` and `usage=`, and nothing ties it to its session:
+sessions interleave, so the request before a step in the journal is often
+another session's, and "how much did this step read back of what the last
+request had" cannot be answered. Logging `session=` (opencode sends
+`x-opencode-session`) and the model on every route would answer it.
+
+Non-step breaks in the same window were few: 13 `system(agent)` and 7
+`messageN(agent)` on `go/openai` responses (its lower read share), 12
+`messageN(agent)` on `openai` responses.
+
+To list opencode steps:
+
+```sh
+journalctl --user -u ithildin --since today --no-pager -o short-iso \
+  | grep 'opencode-ai/' | grep 'step=' | sed -E 's/scan=[^ ]+ (allow=[^ ]+ )?redacted=[^ ]+ //'
+```
 
 ## Instruments now in the proxy
 
