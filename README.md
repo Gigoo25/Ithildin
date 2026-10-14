@@ -87,6 +87,8 @@ fake survives a restart, and those fakes are never swapped back:
 - Hostnames and usernames in home paths, `user@host` and labelled fields.
 - This machine's identity, read at startup and again every five minutes:
   - username, hostname, home directory, `git config` name and email
+  - the domain of that email, and every host under it, unless it is a
+    public mail provider
   - hosts and users in `~/.ssh/config`
   - git remote hosts of every repository under `$ITHILDIN_REPO_ROOTS`
     (default: your home directory)
