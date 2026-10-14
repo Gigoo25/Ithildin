@@ -487,10 +487,9 @@ describe("dashboard", () => {
     expect(DASHBOARD_HTML).not.toContain("innerHTML");
   });
 
-  it("ships a script that parses, and a crescent drawn where its mask is", () => {
+  it("ships a script that parses", () => {
     const script = DASHBOARD_HTML.split("<script>")[1]!.split("</script>")[0]!;
     expect(() => new Function(script)).not.toThrow();
-    expect(DASHBOARD_HTML).toMatch(/translate\(100 50\)[^>]*>\s*<circle r="13"/);
   });
 
   it("runs: picks the latest session, names it, and lays out its conversation", async () => {

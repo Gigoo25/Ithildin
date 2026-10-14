@@ -63,11 +63,8 @@ export const DASHBOARD_HTML = `<!doctype html>
     --alert: #ff9d8c; --alert_bg: #ff9d8c26;
     --quiet: #c5cedc; --quiet_bg: #ffffff1a;
     --find: #f2d36b; --find_bg: #f2d36b40;
-    --stone: #222b3c; --glow: 0 0 6px #d3dcea55;
-    --serif: Palatino, 'Palatino Linotype', 'Book Antiqua', Georgia, serif;
     --mono: ui-monospace, monospace;
   }
-  /* In daylight the door is a blank cliff face: plain stone. */
   @media (prefers-color-scheme: light) {
     :root {
       --bg: #ebe9e4; --panel: #f6f5f1; --head: #e4e1da; --edge: #0000002e; --soft: #0000001a;
@@ -77,51 +74,28 @@ export const DASHBOARD_HTML = `<!doctype html>
       --alert: #962718; --alert_bg: #9627181f;
       --quiet: #44413b; --quiet_bg: #0000001a;
       --find: #8a6400; --find_bg: #f2c94c66;
-      --stone: #efede8; --glow: none;
     }
   }
   * { box-sizing: border-box; }
   body {
     font: 14px/1.45 system-ui, sans-serif; color: var(--ink); background: var(--bg);
     margin: 0; height: 100vh; display: flex; flex-direction: column;
-    background-image: radial-gradient(ellipse at 50% -30%, var(--head), transparent 65%);
   }
-  /* Night over Hollin: a few faint stars behind it all. */
-  body::before {
-    content: ''; position: fixed; inset: 0; z-index: -1; pointer-events: none; opacity: .5;
-    background-image:
-      radial-gradient(1px 1px at 12% 18%, var(--silver), transparent),
-      radial-gradient(1px 1px at 37% 64%, var(--silver), transparent),
-      radial-gradient(1px 1px at 58% 12%, var(--silver), transparent),
-      radial-gradient(1.5px 1.5px at 81% 41%, var(--silver), transparent),
-      radial-gradient(1px 1px at 92% 83%, var(--silver), transparent),
-      radial-gradient(1px 1px at 23% 88%, var(--silver), transparent),
-      radial-gradient(1.5px 1.5px at 68% 76%, var(--silver), transparent);
-    background-size: 420px 380px;
-  }
-  @media (prefers-color-scheme: light) { body::before { display: none; } }
   ::-webkit-scrollbar { width: 8px; height: 8px; }
   ::-webkit-scrollbar-thumb { background: var(--edge); border-radius: 4px; }
   button { font: inherit; color: inherit; }
   [hidden] { display: none !important; }
 
-  /* The bar: is the proxy up, and did anything leak. The door's lines shine
-     as ithildin does, and go red when a leak is found. */
+  /* The bar: is the proxy up, and did anything leak. */
   #bar {
     display: flex; align-items: center; gap: 22px; padding: 8px 20px;
     border-bottom: 1px solid var(--edge); box-shadow: 0 1px 0 var(--soft);
   }
-  .door {
-    display: block; height: 62px; width: auto; flex: none; color: var(--silver);
-    filter: drop-shadow(var(--glow));
-  }
   .brand { flex: none; }
   h1 {
-    margin: 0; font: 600 21px/1.1 var(--serif); letter-spacing: .4em;
-    text-transform: uppercase; color: var(--silver); text-shadow: var(--glow);
+    margin: 0 0 2px; font: 600 16px/1.2 system-ui, sans-serif; color: var(--silver);
   }
   h1 a { color: inherit; text-decoration: none; }
-  .motto { margin: 2px 0 4px; font: italic 13px var(--serif); color: var(--dim); }
   #state { display: flex; align-items: center; gap: 6px; color: var(--dim); font-size: 11px; }
   #state::before {
     content: ''; width: 9px; height: 9px; border-radius: 50%; background: var(--dim);
@@ -132,9 +106,9 @@ export const DASHBOARD_HTML = `<!doctype html>
   #verdict {
     flex: 1; min-width: 0; padding-left: 22px; border-left: 1px solid var(--edge);
   }
-  #verdict b { display: block; font: 600 21px/1.2 var(--serif); letter-spacing: .02em; }
+  #verdict b { display: block; font-size: 16px; font-weight: 600; }
   #verdict span { color: var(--dim); font-size: 12px; }
-  #verdict.ok b { color: var(--silver); text-shadow: var(--glow); }
+  #verdict.ok b { color: var(--silver); }
   #verdict.unwatched b { color: var(--dim); }
   #verdict.bad b { color: var(--alert); }
   .small {
@@ -154,10 +128,8 @@ export const DASHBOARD_HTML = `<!doctype html>
   main > * { min-height: 0; overflow-y: auto; }
   h2 {
     display: flex; align-items: center; gap: 8px; margin: 18px 0 6px;
-    font: 600 12px var(--serif); letter-spacing: .22em; text-transform: uppercase;
-    color: var(--silver);
+    font-size: 12px; font-weight: 600; color: var(--silver);
   }
-  h2::before { content: '\\2726'; font-size: 10px; color: var(--dim); }
   h2::after { content: ''; flex: 1; border-top: 1px solid var(--edge); }
   /* Every section of the left column folds the same way, and remembers it. */
   .section summary h2 { cursor: pointer; }
@@ -169,7 +141,6 @@ export const DASHBOARD_HTML = `<!doctype html>
 
   /* Left: sessions, what to show, and the totals. */
   #side { padding: 0 14px 14px; }
-  #side dl, .pick, .kind { font-family: var(--serif); }
   .pick {
     display: flex; align-items: baseline; gap: 6px; width: 100%; text-align: left;
     background: none; border: 0; border-radius: 4px; padding: 4px 8px; cursor: pointer;
@@ -186,8 +157,7 @@ export const DASHBOARD_HTML = `<!doctype html>
   /* The totals, in three groups: busy, what it changed, what got through. */
   #numbers { display: flex; flex-direction: column; gap: 14px; margin-top: 12px; }
   #numbers .group h3 {
-    margin: 0 0 6px; font: 600 10px var(--serif); letter-spacing: .18em;
-    text-transform: uppercase; color: var(--dim);
+    margin: 0 0 6px; font-size: 11px; font-weight: 600; color: var(--dim);
   }
   #numbers .group h3::after {
     content: ''; display: block; margin-top: 4px; border-top: 1px solid var(--soft);
@@ -203,7 +173,7 @@ export const DASHBOARD_HTML = `<!doctype html>
   #center { display: flex; flex-direction: column; overflow: hidden; }
   #session_head { padding: 14px 18px 0; }
   #session_title {
-    margin: 0; font: 600 20px/1.2 var(--serif); color: var(--silver); text-shadow: var(--glow);
+    margin: 0; font: 600 17px/1.25 system-ui, sans-serif; color: var(--silver);
   }
   #session_note { margin: 4px 0 0; color: var(--dim); font-size: 12px; }
   #session_note .leaks { color: var(--alert); font-weight: 600; }
@@ -237,7 +207,7 @@ export const DASHBOARD_HTML = `<!doctype html>
   }
   mark[data-type=found] { background: var(--find_bg); outline-color: var(--find); }
   @keyframes pulse {
-    from { box-shadow: 0 0 0 5px var(--masked_bg), var(--glow); }
+    from { box-shadow: 0 0 0 5px var(--masked_bg); }
     to { box-shadow: 0 0 0 0 transparent; }
   }
   mark.at { animation: pulse 1.4s ease-out; }
@@ -263,8 +233,8 @@ export const DASHBOARD_HTML = `<!doctype html>
     margin: 0 0 6px; padding: 3px 8px; font-size: 12px; font-weight: 600; color: var(--alert);
     background: var(--alert_bg); border-left: 2px solid var(--alert); border-radius: 0 3px 3px 0;
   }
-  .empty { color: var(--dim); font: italic 15px var(--serif); padding: 24px 0; text-align: center; }
-  .empty b { display: block; color: var(--silver); font-size: 18px; text-shadow: var(--glow); }
+  .empty { color: var(--dim); padding: 24px 0; text-align: center; }
+  .empty b { display: block; color: var(--silver); font-size: 15px; }
 
   .view.on { color: var(--silver); border-color: var(--silver); }
   .view:disabled { opacity: .4; cursor: default; }
@@ -297,18 +267,17 @@ export const DASHBOARD_HTML = `<!doctype html>
   .turn.latest { border-left-color: var(--silver); }
   .turn_head {
     display: flex; align-items: center; gap: 8px; margin: 0 0 8px -22px; padding-top: 14px;
-    font: 600 11px var(--serif); letter-spacing: .2em; text-transform: uppercase;
-    color: var(--dim);
+    font-size: 12px; font-weight: 600; color: var(--dim);
   }
   .turn:first-child .turn_head { padding-top: 0; }
   .turn:not([open]) .turn_head { padding-top: 6px; margin-bottom: 0; }
   .turn_head::before {
-    content: '\\2726'; width: 11px; text-align: center; background: var(--panel);
+    content: '\\2022'; width: 11px; text-align: center; background: var(--panel);
     color: var(--dim); font-size: 11px;
   }
   .turn_head::after { content: ''; flex: 1; border-top: 1px solid var(--soft); }
   .turn.latest .turn_head, .turn.latest .turn_head::before {
-    color: var(--silver); text-shadow: var(--glow);
+    color: var(--silver);
   }
   /* A turn folds away on a click of its head; the chevron says it will. */
   .turn_head { cursor: pointer; }
@@ -354,7 +323,6 @@ export const DASHBOARD_HTML = `<!doctype html>
   }
 
   @media (max-width: 700px) {
-    .door, .motto { display: none; }
     main { display: flex; flex-direction: column; overflow-y: auto; }
     #side { border-right: 0; }
     #center { min-height: 80vh; }
@@ -363,49 +331,8 @@ export const DASHBOARD_HTML = `<!doctype html>
 </head>
 <body>
 <header id="bar">
-<svg class="door" viewBox="-2 -2 484 200" role="img" aria-label="The West-gate of Moria">
-  <defs>
-    <mask id="moon_cut"><rect x="-20" y="-20" width="40" height="40" fill="#fff"/>
-      <circle cx="6" cy="-3" r="11" fill="#000"/></mask>
-    <g id="tree">
-      <path d="M100 196V84"/>
-      <path d="M100 156C88 150 76 140 70 124M100 156C112 150 124 140 130 124"/>
-      <path d="M100 132C90 126 82 116 80 102M100 132C110 126 118 116 120 102"/>
-      <path d="M100 110C94 104 90 96 90 88M100 110C106 104 110 96 110 88"/>
-      <circle cx="70" cy="124" r="3"/><circle cx="130" cy="124" r="3"/>
-      <circle cx="80" cy="102" r="3"/><circle cx="120" cy="102" r="3"/>
-      <circle cx="90" cy="88" r="3"/><circle cx="110" cy="88" r="3"/>
-      <circle cx="100" cy="80" r="3"/>
-      <g transform="translate(100 50) rotate(-20)">
-        <circle r="13" fill="currentColor" stroke="none" mask="url(#moon_cut)"/>
-      </g>
-    </g>
-  </defs>
-  <g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
-    stroke-linejoin="round">
-    <path d="M24 196V100A216 94 0 0 1 456 100V196Z"/>
-    <use href="#tree"/>
-    <use href="#tree" transform="translate(480 0) scale(-1 1)"/>
-    <polygon points="240.0,15.0 241.5,26.6 247.3,16.4 244.2,27.8 253.4,20.6 246.2,29.8
-      257.6,26.7 247.4,32.5 259.0,34.0 247.4,35.5 257.6,41.3 246.2,38.2
-      253.4,47.4 244.2,40.2 247.3,51.6 241.5,41.4 240.0,53.0 238.5,41.4
-      232.7,51.6 235.8,40.2 226.6,47.4 233.8,38.2 222.4,41.3 232.6,35.5
-      221.0,34.0 232.6,32.5 222.4,26.7 233.8,29.8 226.6,20.6 235.8,27.8
-      232.7,16.4 238.5,26.6" fill="currentColor" stroke="none"/>
-    <circle cx="214.0" cy="81.0" r="2.4" fill="currentColor" stroke="none"/>
-    <circle cx="220.7" cy="73.0" r="2.4" fill="currentColor" stroke="none"/>
-    <circle cx="229.7" cy="67.8" r="2.4" fill="currentColor" stroke="none"/>
-    <circle cx="240.0" cy="66.0" r="2.4" fill="currentColor" stroke="none"/>
-    <circle cx="250.3" cy="67.8" r="2.4" fill="currentColor" stroke="none"/>
-    <circle cx="259.3" cy="73.0" r="2.4" fill="currentColor" stroke="none"/>
-    <circle cx="266.0" cy="81.0" r="2.4" fill="currentColor" stroke="none"/>
-    <path d="M212 114L217 94L229 105L240 90L251 105L263 94L268 114Z"/>
-    <path d="M196 124H284L272 136H252V146H274V154H206V146H228V136H208Z"/>
-  </g>
-</svg>
   <div class="brand">
     <h1><a href="${DASHBOARD_PATH}" title="Back to the newest session">Ithildin</a></h1>
-    <p class="motto">Mirrors only starlight and moonlight</p>
     <span id="state">connecting</span>
   </div>
   <div id="verdict"><b>Connecting</b><span></span></div>
@@ -700,7 +627,7 @@ function renderOther() {
 
 function emptyNote() {
   const note = byClass('div', 'empty');
-  note.append(byClass('b', '', 'Speak, friend, and enter'),
+  note.append(byClass('b', '', 'No requests yet'),
     'Nothing yet. Send a prompt with a host, an email or a key.');
   return note;
 }
