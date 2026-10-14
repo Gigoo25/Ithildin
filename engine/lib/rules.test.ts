@@ -144,6 +144,27 @@ describe("env-assignment in prose", () => {
     ])
       expect(found(text)).toBe(true);
   });
+
+  it("reads a variable on the right of an assignment in code as a variable", () => {
+    // A tuple assignment read a parameter as a password, and its stand-in,
+    // never swapped back, was written into the file.
+    for (const text of [
+      "        self.think_below, self.think_tokens = think_below, think_tokens",
+      "self.max_tokens = max_new_tokens",
+      "max_tokens = n_tokens_left, x",
+      "api_token = settings_value",
+    ])
+      expect(found(text)).toBe(false);
+  });
+
+  it("still finds a snake_case value that is quoted or carries a digit or capital", () => {
+    for (const text of [
+      'api_token = "correct_horse_battery"',
+      "api_token = hunter_two_7seven",
+      "API_TOKEN=Correct_Horse_Battery",
+    ])
+      expect(found(text)).toBe(true);
+  });
 });
 
 describe("local rule additions", () => {
@@ -292,6 +313,8 @@ describe("local rule additions", () => {
       "home-manager.users.rstocchi.home",
       "options.local",
       "file = ./.env.local",
+      "edit .claude/settings.local.json",
+      "see config.home.yaml",
     ]) {
       expect(scan(text).some((f) => f.ruleId === "pii-internal-host")).toBe(false);
     }

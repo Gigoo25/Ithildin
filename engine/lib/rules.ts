@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 import {
   entropy,
+  isCodeIdentifier,
   isNotSecretShaped,
   isPlaceholder,
   isProseAssignment,
@@ -1028,8 +1029,14 @@ const LOCAL_RULES: Rule[] = [
     description: "Internal hostname (generic)",
     // Flat quantifiers only: the nested-label form catastrophized on
     // dot-chains (6.5s per 40KB). Structure is validated in code instead.
-    regex:
-      /\b([A-Za-z0-9][A-Za-z0-9.-]{0,300}\.(?:local|lan|home|internal|corp|intranet|ts\.net))\b/gi,
+    // A file extension after the suffix makes it a file name:
+    // `settings.local.json` is Claude Code's own settings file, not a host.
+    regex: new RegExp(
+      String.raw`\b([A-Za-z0-9][A-Za-z0-9.-]{0,300}\.(?:local|lan|home|internal|corp|intranet|` +
+        String.raw`ts\.net))\b(?!\.(?:json|jsonc|ya?ml|toml|ini|conf|cfg|env|txt|md|js|ts|py|` +
+        String.raw`sh|xml|lock)\b)`,
+      "gi",
+    ),
     validate: (value: string) => {
       // Nix attribute paths wear the same shape (config.home, env.local):
       // refuse matches built from Nix-ecosystem labels.
@@ -1801,6 +1808,7 @@ function secretShaped(
           isPlaceholder(match[0], following) ||
           isNotSecretShaped(match[0]) ||
           keyDescribesRatherThanHolds(match[0]) ||
+          isCodeIdentifier(match[0], secretValue) ||
           isProseAssignment(match[0], preceding, secretValue))))
   );
 }

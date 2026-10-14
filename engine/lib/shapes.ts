@@ -88,6 +88,19 @@ const DESCRIBES_A_SECRET = new RegExp(
   "i",
 );
 
+// A variable on the right of an assignment in code: `self.max_tokens =
+// max_new_tokens`, and the tuple form `self.limit, self.think_tokens =
+// think_below, think_tokens`, which read a parameter as a password. Its
+// stand-in is a secret's, never swapped back, so the agent saw a name the file
+// does not hold, called the code broken and wrote the stand-in into it. What
+// marks it is an unquoted value in lower-case snake_case, built only of letters.
+// A capital or a digit is still a credential: `KqvywbNimhakeDit` reads as words
+// too, so camelCase is no evidence.
+export function isCodeIdentifier(matchText: string, value: string): boolean {
+  if (!/^[a-z]+(?:_[a-z]+)+$/.test(value)) return false;
+  return !/["'][ \t]*$/.test(matchText.slice(0, matchText.length - value.length));
+}
+
 export function keyDescribesRatherThanHolds(matchText: string): boolean {
   return DESCRIBES_A_SECRET.test(matchText);
 }
