@@ -63,7 +63,7 @@ import {
 } from "../engine/lib/runtime-inventory.ts";
 import { type InventoryEntry, scan as scanRules } from "../engine/lib/rules.ts";
 import { planSwapBack, reachesNetwork } from "../engine/lib/swap-back.ts";
-import { protectedBlocked, protectedFinding, shellWrites } from "./protect.ts";
+import { allowHint, protectedBlocked, protectedFinding, shellWrites } from "./protect.ts";
 import { SPELLED_BLOCKED, spellsMasked, UNMASK_BLOCKED, unmasksText } from "./unmask.ts";
 import {
   conversationLabel,
@@ -902,7 +902,7 @@ export function mangledBlocked(tokens: string[]): string {
     `Not run: ${tokens.join(", ")} ${tokens.length === 1 ? "is" : "are"} written differently ` +
     `from how ${tokens.length === 1 ? "it appears" : "they appear"} in this conversation, so ` +
     `nothing was written. Use each name exactly as it appears, with the same case, spacing and ` +
-    `no suffix, or ask the user to include [allow-pii] in their prompt.`
+    `no suffix, or ask the user to include ${allowHint("pii")}.`
   );
 }
 
@@ -914,8 +914,8 @@ export function egressBlocked(tokens: string[]): string {
   return (
     `Not run: this command uses the network and names ${tokens.join(", ")}, so nothing ran. ` +
     `If it also changes files, make that change in a separate command first, then run the ` +
-    `network step on its own. Ask the user before sending these values off the machine; ` +
-    `they can include [allow-pii] in their prompt to permit it.`
+    `network step on its own. Ask the user before sending these values off the machine; to ` +
+    `permit it, they can include ${allowHint("pii")}.`
   );
 }
 
@@ -1095,13 +1095,13 @@ export function redactBody(
 export const WITHHELD_NOTICE =
   "Output withheld: this call read a protected file (.env, private keys, credentials), so its " +
   "contents are not shown. Work with such files through commands that do not print their values, " +
-  "or ask the user to include [allow-secrets] in their prompt.";
+  `or ask the user to include ${allowHint("secrets")}.`;
 // Ithildin's own config and inventory hold personal values, so [allow-pii]
 // opens them, not [allow-secrets]. One notice for both sent the user around
 // in circles typing a tag that could never work.
 export const INVENTORY_NOTICE =
-  "Output withheld: this call read a file of personal values, so its contents are not shown. Ask " +
-  "the user to include [allow-pii] in their prompt if you need to see it.";
+  "Output withheld: this call read a file of personal values, so its contents are not shown. If " +
+  `you need to see it, ask the user to include ${allowHint("pii")}.`;
 
 // The agent's working directory, from its system prompt (Claude: "Primary
 // working directory:", Pi: "Current working directory:"). The latest mention
@@ -1747,7 +1747,7 @@ function guardNotice(
 export const SECRET_SENT =
   "Not run: this command reads a file that holds secrets and talks to the network, so its " +
   "contents could leave the machine. Run the network step without the file, or ask the user " +
-  "to include [allow-secrets] in their prompt.";
+  `to include ${allowHint("secrets")}.`;
 
 // A shell command that reads a secret file and runs a network client: its
 // result would be withheld, but by then the data has gone. Lifted by the

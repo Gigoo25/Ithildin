@@ -41,13 +41,19 @@ export interface ProtectedFinding {
   remedy?: string;
 }
 
+// How a notice names the tag that lifts it: for this prompt, or the session.
+// One wording, so every notice offers both the same way.
+export function allowHint(tag: string): string {
+  return `[allow-${tag}] in their prompt, or [allow-${tag}:session] for the rest of the session`;
+}
+
 export function protectedBlocked(kind: ProtectedKind, remedy?: string): string {
   const what =
     kind === "git" ? "would delete or rewrite git history" : "would change protected configuration";
   return (
     `Not run: this call ${what}, so nothing was changed. ${remedy ? `${remedy} ` : ""}` +
     `Do not look for another command that makes the same change. If it is intended, ask the ` +
-    `user to include [allow-protected] in their prompt.`
+    `user to include ${allowHint("protected")}.`
   );
 }
 

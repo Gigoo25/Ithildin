@@ -5,11 +5,19 @@ import { join } from "node:path";
 import {
   approvalHint,
   callApproval,
+  egressBlocked,
+  IMAGE_NOTICE,
   initEngine,
+  INVENTORY_NOTICE,
+  mangledBlocked,
   redactRequest,
+  SECRET_SENT,
   swapToolArguments,
+  WITHHELD_NOTICE,
 } from "./redact.ts";
 import { protectedBlocked, protectedChange, protectedFinding } from "./protect.ts";
+import { PRIVATE_SEND, UNTRUSTED_SEND } from "./trust.ts";
+import { SPELLED_BLOCKED, UNMASK_BLOCKED } from "./unmask.ts";
 
 // A fake home laid out like the real one: config links into a dotfiles repo.
 let home = "";
@@ -54,6 +62,29 @@ afterAll(() => {
     else process.env[key] = value;
   }
   rmSync(home, { recursive: true, force: true });
+});
+
+describe("guard notices", () => {
+  it("offer the tag for the prompt and for the session", () => {
+    const notices: [string, string][] = [
+      [protectedBlocked("git"), "protected"],
+      [protectedBlocked("config", "Edit it by hand."), "protected"],
+      [UNMASK_BLOCKED, "pii"],
+      [SPELLED_BLOCKED, "pii"],
+      [UNTRUSTED_SEND, "send"],
+      [PRIVATE_SEND, "send"],
+      [mangledBlocked(["zqxcorp"]), "pii"],
+      [egressBlocked(["zqxcorp"]), "pii"],
+      [WITHHELD_NOTICE, "secrets"],
+      [INVENTORY_NOTICE, "pii"],
+      [SECRET_SENT, "secrets"],
+      [IMAGE_NOTICE, "images"],
+    ];
+    for (const [notice, tag] of notices) {
+      expect(notice).toContain(`[allow-${tag}]`);
+      expect(notice).toContain(`[allow-${tag}:session]`);
+    }
+  });
 });
 
 describe("protected writes", () => {

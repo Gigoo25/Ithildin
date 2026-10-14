@@ -286,7 +286,11 @@ describe("the proxy", () => {
     const handler = createHandler(DEFAULT_ROUTES, upstream);
     const response = await send(handler, "see zebra-internal");
     expect(response.status).toBe(403);
-    expect(JSON.stringify(await response.json())).not.toContain("zebra-internal");
+    const refusal = JSON.stringify(await response.json());
+    expect(refusal).not.toContain("zebra-internal");
+    // It names the tag that sends it anyway, so the agent can pass it on.
+    expect(refusal).toContain("[allow-pii]");
+    expect(refusal).toContain("[allow-pii:session]");
     const data = await activity(handler);
     expect(data.entries.map((entry) => entry.type)).toEqual(
       expect.arrayContaining(["leaked", "refused"]),

@@ -70,6 +70,7 @@ import { errorReply, readCapped } from "./reply.ts";
 import { type SelfTest, selfTest } from "./selftest.ts";
 import { createRewriter, formatSse, parseSseBlock, swapResponseBody } from "./streams.ts";
 import type { Label } from "./trust.ts";
+import { allowHint } from "./protect.ts";
 
 export interface Route {
   upstream: string;
@@ -1222,7 +1223,11 @@ function watchOutgoing(
   log(`watch list: ${hits.length} hit(s) in the request to ${context.route} (${places})`);
   const blocking = policy.action === "block" && hits.some((hit) => hit.source === "watch");
   if (!blocking) return undefined;
-  return refuse(403, `watch list: a watched string is in the request (${places}), not sending it`);
+  return refuse(
+    403,
+    `watch list: a watched string is in the request (${places}), not sending it. If it ` +
+      `should go, the user can include ${allowHint("pii")}.`,
+  );
 }
 
 // A turn of the conversation itself, not a side request beside it (a title,

@@ -9,19 +9,19 @@
 
 import { spellsValue } from "../engine/lib/encoded.ts";
 import { shellCommand } from "./tools.ts";
-import { shellPrograms } from "./protect.ts";
+import { allowHint, shellPrograms } from "./protect.ts";
 
 export const UNMASK_BLOCKED =
   "Not run: this command substitutes letters (rot13 or a similar cipher), which would read " +
-  "past masked values. Work with the text as shown, or ask the user to include [allow-pii] " +
-  "in their prompt.";
+  "past masked values. Work with the text as shown, or ask the user to include " +
+  `${allowHint("pii")}.`;
 
 // Says nothing about redaction (provider blindness, redact.ts): only what to
 // do instead.
 export const SPELLED_BLOCKED =
   "Not run: this call spells a value byte by byte (escapes or character codes) instead of " +
   "writing it out. Use values exactly as they appear in files and tool output, or ask the " +
-  "user to include [allow-pii] in their prompt.";
+  `user to include ${allowHint("pii")}.`;
 
 // A call, any tool, whose arguments spell a masked value byte by byte. An
 // agent that saw a value's bytes (od, xxd) wrote them back as printf '\x..',
