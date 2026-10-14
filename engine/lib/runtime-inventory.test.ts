@@ -2,12 +2,14 @@ import { afterEach, describe, expect, it } from "bun:test";
 import {
   collectRuntimeIdentity,
   gitRemoteHost,
+  gitRemoteOwner,
   identityFromGit,
   identityFromGitRemotes,
   identityFromNetworkFiles,
   identityFromRepos,
   identityFromSsh,
   identityFromTailscale,
+  identityFromToolConfigs,
   identityFromWifi,
   mailDomain,
   nmcliFields,
@@ -161,6 +163,26 @@ describe("infrastructure sources", () => {
     expect(ssh.sshUsers).toEqual(["zqxadmin", "git"]);
   });
 
+  it("takes the owner of SSH remotes on public forges only", () => {
+    expect(gitRemoteOwner("git@github.com:zqx-corp/tool.git")).toBe("zqx-corp");
+    expect(gitRemoteOwner("ssh://git@ssh.github.com:443/zqxdev/tool")).toBe("zqxdev");
+    expect(gitRemoteOwner("git@codeberg.org:/zqxdev/tool")).toBe("zqxdev");
+    // https is as often someone else's project; a private host is masked whole.
+    expect(gitRemoteOwner("https://github.com/torvalds/linux")).toBeUndefined();
+    expect(gitRemoteOwner("git@zqxgit.internal:team/repo.git")).toBeUndefined();
+    expect(gitRemoteOwner("/srv/repo.git")).toBeUndefined();
+    const found = identityFromGitRemotes("/", () => [
+      "git@github.com:zqx-corp/a.git",
+      "git@github.com:zqx-corp/b.git",
+      "https://github.com/nixos/nixpkgs",
+    ]);
+    expect(found.gitOwners).toEqual(["zqx-corp"]);
+    const entries = collectRuntimeIdentity({ gitOwners: ["zqx-corp"] });
+    expect(entries).toEqual([
+      { id: "runtime-git-owner-1", literal: "zqx-corp", match: "token", caseSensitive: false },
+    ]);
+  });
+
   it("extracts git remote hosts from every URL form", () => {
     expect(gitRemoteHost("git@zqxgit.zqxcorp.internal:team/repo.git")).toBe(
       "zqxgit.zqxcorp.internal",
@@ -232,6 +254,72 @@ describe("network sources", () => {
       searchDomains: ["zqxcorp.test", "tail0zq.ts.net"],
       etcHosts: ["192.168.7.20", "zqxnas", "zqxnas.lan"],
     });
+  });
+
+  it("reads private hosts and AWS accounts from tool configs, never their tokens", () => {
+    const home = "/h";
+    const files: Record<string, string> = {
+      "/h/.npmrc": [
+        "registry=https://npm.zqxcorp.test/",
+        "@zqx:registry=https://pkgs.zqxcorp.test/npm/",
+        "//npm.zqxcorp.test/:_authToken=npm_SECRETSECRET",
+        "//registry.npmjs.org/:_authToken=npm_OTHER",
+      ].join("\n"),
+      "/h/.config/pip/pip.conf": [
+        "[global]",
+        "index-url = https://pypi.org/simple",
+        "extra-index-url = https://u:p@py.zqxcorp.test/simple https://mirror.zqx.test/x",
+        "trusted-host = py.zqxcorp.test",
+      ].join("\n"),
+      "/h/.docker/config.json": JSON.stringify({
+        auths: { "https://index.docker.io/v1/": {}, "cr.zqxcorp.test": { auth: "c2VjcmV0" } },
+        credHelpers: { "493817260154.dkr.ecr.us-east-1.amazonaws.com": "ecr-login" },
+      }),
+      "/h/.kube/config": "clusters:\n- cluster:\n    server: https://k8s.zqxcorp.test:6443\n",
+      "/h/.netrc": "machine api.github.com login x password y\nmachine git.zqx.test login z",
+      "/h/.aws/config": [
+        "[profile prod]",
+        "sso_start_url = https://zqxcorp.awsapps.com/start",
+        "sso_account_id = 493817260154",
+        "role_arn = arn:aws:iam::102938475610:role/admin",
+      ].join("\n"),
+    };
+    const found = identityFromToolConfigs(home, (file) => files[file]);
+    expect(found.toolHosts?.sort()).toEqual(
+      [
+        "npm.zqxcorp.test",
+        "pkgs.zqxcorp.test",
+        "py.zqxcorp.test",
+        "mirror.zqx.test",
+        "cr.zqxcorp.test",
+        "493817260154.dkr.ecr.us-east-1.amazonaws.com",
+        "k8s.zqxcorp.test",
+        "git.zqx.test",
+        "zqxcorp.awsapps.com",
+      ].sort(),
+    );
+    expect(found.awsAccounts).toEqual(["493817260154", "102938475610"]);
+    expect(JSON.stringify(found)).not.toMatch(/SECRET|c2VjcmV0|password|npm_/);
+  });
+
+  it("finds nothing in missing or malformed tool configs", () => {
+    expect(identityFromToolConfigs("/none", () => undefined)).toEqual({
+      toolHosts: [],
+      awsAccounts: [],
+    });
+    const broken = (file: string) => (file.endsWith("config.json") ? "{not json" : undefined);
+    expect(identityFromToolConfigs("/h", broken).toolHosts).toEqual([]);
+  });
+
+  it("masks tool hosts and AWS account numbers as inventory", () => {
+    const entries = collectRuntimeIdentity({
+      toolHosts: ["k8s.zqxcorp.test"],
+      awsAccounts: ["493817260154"],
+    });
+    expect(entries.map((e) => [e.id, e.literal])).toEqual([
+      ["runtime-tool-host-1", "k8s.zqxcorp.test"],
+      ["runtime-aws-account-1", "493817260154"],
+    ]);
   });
 
   it("reads MagicDNS names from tailscale status", () => {

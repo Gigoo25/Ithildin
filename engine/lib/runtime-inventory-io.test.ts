@@ -77,4 +77,17 @@ describe("identityFromRepos on disk", () => {
     expect(identityFromRepos([projects]).gitHosts).toEqual(["zqxgit.example.test"]);
     expect(identityFromRepos([path.join(root, "absent")]).gitHosts).toEqual([]);
   });
+
+  it("takes the owner of a repository pushed over SSH to a public forge", () => {
+    const git = path.join(root, "owned", "tool", ".git");
+    mkdirSync(git, { recursive: true });
+    writeFileSync(
+      path.join(git, "config"),
+      '[remote "origin"]\n\turl = git@github.com:zqx-corp/tool.git\n',
+    );
+    expect(identityFromRepos([path.join(root, "owned")])).toEqual({
+      gitHosts: ["github.com"],
+      gitOwners: ["zqx-corp"],
+    });
+  });
 });

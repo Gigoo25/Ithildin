@@ -58,6 +58,7 @@ import {
   identityFromRepos,
   identityFromSsh,
   identityFromTailscale,
+  identityFromToolConfigs,
   identityFromWifi,
 } from "../engine/lib/runtime-inventory.ts";
 import { type InventoryEntry, scan as scanRules } from "../engine/lib/rules.ts";
@@ -153,6 +154,7 @@ function collectIdentity(): InventoryEntry[] {
           ...identityFromRepos(roots),
           ...identityFromWifi(),
           ...identityFromNetworkFiles(),
+          ...identityFromToolConfigs(),
           ...identityFromTailscale(),
         }
       : {}),

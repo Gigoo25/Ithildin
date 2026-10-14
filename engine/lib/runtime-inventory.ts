@@ -184,6 +184,8 @@ export interface RuntimeIdentity {
   sshUsers?: string[];
   // Hosts of the current repository's git remotes.
   gitHosts?: string[];
+  // Owners (user or org) of SSH remotes on public forges.
+  gitOwners?: string[];
   // Wi-Fi networks: saved and in range, from NetworkManager or iwgetid.
   ssids?: string[];
   // resolv.conf search and domain entries.
@@ -192,6 +194,10 @@ export interface RuntimeIdentity {
   etcHosts?: string[];
   // Tailscale MagicDNS names: this machine, its peers, the tailnet suffix.
   tailnetNames?: string[];
+  // Registries, clusters and portals from npm, pip, docker, kube, netrc, aws.
+  toolHosts?: string[];
+  // AWS account numbers from ~/.aws: role ARNs and SSO settings.
+  awsAccounts?: string[];
 }
 
 export function identityFromOs(): RuntimeIdentity {
@@ -239,6 +245,7 @@ function addInfraHosts(
   prefix: string,
   hosts: string[] | undefined,
   addCaseless: (id: string, literal: string) => void,
+  short = true,
 ): void {
   let n = 0;
   for (const raw of hosts ?? []) {
@@ -252,7 +259,7 @@ function addInfraHosts(
         ? "ipv6"
         : "host";
     addCaseless(`${prefix}-${kind}-${n}`, host);
-    if (kind === "host" && host.includes("."))
+    if (short && kind === "host" && host.includes("."))
       addCaseless(`${prefix}-host-short-${n}`, host.slice(0, host.indexOf(".")));
   }
 }
@@ -265,9 +272,16 @@ function addInfraIdentity(
   addInfraHosts("runtime-ssh", identity.sshHosts, add);
   addInfraHosts("runtime-ssh-hostname", identity.sshHostNames, add);
   addInfraHosts("runtime-git", identity.gitHosts, add);
+  let owner = 0;
+  for (const name of identity.gitOwners ?? []) add(`runtime-git-owner-${++owner}`, name);
   addInfraHosts("runtime-etc-hosts", identity.etcHosts, add);
   addInfraHosts("runtime-search-domain", identity.searchDomains, add);
   addInfraHosts("runtime-tailnet", identity.tailnetNames, add);
+  // Whole hosts only: a registry's first label is npm, k8s or registry,
+  // which as a word of its own is everywhere.
+  addInfraHosts("runtime-tool", identity.toolHosts, add, false);
+  let n = 0;
+  for (const account of identity.awsAccounts ?? []) add(`runtime-aws-account-${++n}`, account);
   // A work or personal domain sits under a public suffix, so no structural
   // rule sees git.acme.com; the domain of your own address names it. The id
   // avoids "email" so the stand-in is minted as a host.
@@ -445,16 +459,30 @@ export function gitRemoteHost(url: string): string | undefined {
   return scp && !/^[a-z]$/i.test(scp[1] ?? "") ? scp[1] : undefined;
 }
 
+// Owner of a remote on a public forge, from an SSH URL only: you clone over
+// SSH what you can push to, so that owner is you or your organisation,
+// where an https clone is as often someone else's public project. A private
+// host is masked whole already.
+export function gitRemoteOwner(url: string): string | undefined {
+  const trimmed = url.trim();
+  const ssh =
+    /^ssh:\/\/(?:[^@/]*@)?([^/:]+)(?::\d+)?\/([^/]+)\//i.exec(trimmed) ??
+    /^(?:[^@/\s]+@)?([^/:\s]+):\/?([^/\s]+)\//.exec(trimmed);
+  if (!ssh || !PUBLIC_HOSTS.has((ssh[1] ?? "").toLowerCase())) return;
+  return ssh[2];
+}
+
 export function identityFromGitRemotes(
   cwd = process.cwd(),
   urls: () => string[] = () => readGitRemoteUrls(cwd),
-): Pick<RuntimeIdentity, "gitHosts"> {
-  return {
-    gitHosts: urls().flatMap((url) => {
-      const host = gitRemoteHost(url);
-      return host ? [host] : [];
-    }),
-  };
+): Pick<RuntimeIdentity, "gitHosts" | "gitOwners"> {
+  const found = urls();
+  const all = (pick: (url: string) => string | undefined) =>
+    found.flatMap((url) => {
+      const value = pick(url);
+      return value ? [value] : [];
+    });
+  return { gitHosts: all(gitRemoteHost), gitOwners: [...new Set(all(gitRemoteOwner))] };
 }
 
 function readGitRemoteUrls(cwd: string): string[] {
@@ -478,20 +506,24 @@ export function identityFromRepos(
   roots: string[] = [os.homedir()],
   list: (dir: string) => Array<{ name: string; dir: boolean }> = listEntries,
   read: (file: string) => string | undefined = readTextFile,
-): Pick<RuntimeIdentity, "gitHosts"> {
+): Pick<RuntimeIdentity, "gitHosts" | "gitOwners"> {
   const hosts = new Set<string>();
+  const owners = new Set<string>();
+  const done = () => ({ gitHosts: [...hosts], gitOwners: [...owners] });
   assert(roots.length > 0, "repo scan has a root");
   let budget = REPO_SCAN_DIRS_MAX;
   let level = roots.map((root) => path.resolve(root));
   for (let depth = 0; depth <= REPO_SCAN_DEPTH_MAX && level.length > 0; depth++) {
     const next: string[] = [];
     for (const dir of level) {
-      if (budget-- <= 0 || hosts.size >= MAX_PER_SOURCE) return { gitHosts: [...hosts] };
+      if (budget-- <= 0 || hosts.size >= MAX_PER_SOURCE) return done();
       const entries = list(dir);
       if (entries.some((entry) => entry.name === ".git" && entry.dir)) {
         for (const url of remoteUrls(read(path.join(dir, ".git", "config")) ?? "")) {
           const host = gitRemoteHost(url);
           if (host) hosts.add(host);
+          const owner = gitRemoteOwner(url);
+          if (owner && owners.size < MAX_PER_SOURCE) owners.add(owner);
         }
         continue;
       }
@@ -501,7 +533,7 @@ export function identityFromRepos(
     }
     level = next;
   }
-  return { gitHosts: [...hosts] };
+  return done();
 }
 
 // url and pushurl values of [remote "…"] sections in a git config file.
@@ -584,6 +616,88 @@ export function identityFromNetworkFiles(
     for (const name of names) if (!/^(?:ip6-|localhost)/i.test(name)) etcHosts.push(name);
   }
   return { searchDomains, etcHosts };
+}
+
+// Registries and endpoints every machine talks to: listing them would mask
+// ordinary install output.
+const PUBLIC_REGISTRIES = new Set([
+  "registry.npmjs.org",
+  "registry.yarnpkg.com",
+  "npm.pkg.github.com",
+  "pypi.org",
+  "pypi.python.org",
+  "files.pythonhosted.org",
+  "test.pypi.org",
+  "docker.io",
+  "index.docker.io",
+  "registry-1.docker.io",
+  "ghcr.io",
+  "gcr.io",
+  "quay.io",
+  "public.ecr.aws",
+  "mcr.microsoft.com",
+  "api.github.com",
+  "kubernetes.docker.internal",
+  "localhost",
+]);
+
+// Host of a URL, or the value itself when it is already a bare host.
+function hostOf(value: string): string | undefined {
+  const v = value.trim().replace(/^["']|["']$/g, "");
+  const url = /^(?:[a-z][a-z0-9+.-]*:)?\/\/(?:[^@/]*@)?(\[[^\]]+\]|[^/:?#\s]+)/i.exec(v);
+  const host = (url ? url[1] : /^[a-z0-9.-]+$/i.test(v) ? v : undefined)?.toLowerCase();
+  if (!host || !host.includes(".") || PUBLIC_REGISTRIES.has(host)) return;
+  return host;
+}
+
+// Hosts from the configs of the tools that talk to private infrastructure,
+// whose output (npm install, docker pull, kubectl) prints them even when the
+// file itself is withheld: npm and pip registries, docker auths, kube
+// clusters, netrc machines and AWS SSO portals. Never the tokens beside
+// them. AWS account numbers come too, from role ARNs and SSO settings.
+export function identityFromToolConfigs(
+  home = os.homedir(),
+  read: (file: string) => string | undefined = readTextFile,
+): Pick<RuntimeIdentity, "toolHosts" | "awsAccounts"> {
+  const hosts = new Set<string>();
+  const accounts = new Set<string>();
+  const take = (value: string | undefined) => {
+    const host = value && hostOf(value);
+    if (host && hosts.size < MAX_PER_SOURCE) hosts.add(host);
+  };
+  const lines = (file: string) => (read(path.join(home, file)) ?? "").split(/\r?\n/);
+  for (const line of lines(".npmrc")) {
+    // registry=URL, @scope:registry=URL, and //host/:_authToken=… keys.
+    const m = /^\s*(?:@[^:=\s]+:)?registry\s*=\s*(\S+)|^\s*(\/\/[^/:\s]+)/.exec(line);
+    take(m?.[1] ?? m?.[2]);
+  }
+  for (const file of [".config/pip/pip.conf", ".pip/pip.conf"])
+    for (const line of lines(file)) {
+      const m = /^\s*(?:extra-)?index-url\s*[=:]\s*(.+)$|^\s*trusted-host\s*[=:]\s*(.+)$/.exec(
+        line,
+      );
+      for (const value of (m?.[1] ?? m?.[2] ?? "").split(/\s+/)) take(value);
+    }
+  try {
+    const docker = JSON.parse(read(path.join(home, ".docker/config.json")) ?? "{}");
+    for (const key of [
+      ...Object.keys(docker?.auths ?? {}),
+      ...Object.keys(docker?.credHelpers ?? {}),
+    ])
+      take(key);
+  } catch {
+    // An unreadable docker config names nothing.
+  }
+  for (const line of lines(".kube/config")) take(/^\s*server:\s*(\S+)/.exec(line)?.[1]);
+  for (const line of lines(".netrc"))
+    for (const m of line.matchAll(/\bmachine\s+(\S+)/g)) take(m[1]);
+  for (const line of [...lines(".aws/config"), ...lines(".aws/credentials")]) {
+    take(/^\s*sso_start_url\s*=\s*(\S+)/.exec(line)?.[1]);
+    const account =
+      /^\s*(?:sso_account_id\s*=\s*|role_arn\s*=\s*arn:aws[a-z-]*:iam::)(\d{12})\b/.exec(line)?.[1];
+    if (account && accounts.size < MAX_PER_SOURCE) accounts.add(account);
+  }
+  return { toolHosts: [...hosts], awsAccounts: [...accounts] };
 }
 
 // MagicDNS names from `tailscale status --json`: this machine, its peers,
