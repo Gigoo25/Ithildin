@@ -337,7 +337,82 @@ function rememberTags(session: string, tags: Set<string>) {
   if (sessionTags.size > SESSION_TAGS_MAX) sessionTags.delete(sessionTags.keys().next().value!);
 }
 
+// Any allow tag with :session holds for every later request of
+// the session; the same tag with :mask ends it, and [mask] ends them all
+// (the image switch too). Kept per session for a history that no longer holds
+// the prompt (compacted), cleared by a restart: a grant forgotten for days
+// should not come back with the proxy. A client without a session header gets
+// none. Images have their own switch below, which keeps earlier turns as sent.
+const SESSION_GRANT = /\[allow-(pii|secrets?|all|protected|send):(session|mask)\]|\[mask\]/gi;
+const sessionGrants = new Map<string, Set<string>>();
+
+// What each grant opens. [allow-all:session] opens what [allow-all] does for
+// the prompt it is typed in.
+const GRANT_OPENS: Record<string, string[]> = {
+  pii: ["pii"],
+  secret: ["secret"],
+  all: ["all", "pii", "secret", "protected", "send", "images"],
+  protected: ["protected"],
+  send: ["send"],
+};
+
+// The session's grants after this request: its history's typed prompts, in
+// order, over what the session held before. The last tag naming a grant
+// decides it, so reading the same history twice changes nothing.
+function sessionGrantsFor(list: unknown[], session: string): Set<string> {
+  const grants = new Set(sessionGrants.get(session));
+  let changed = false;
+  for (const item of list) {
+    if (!item || typeof item !== "object") continue;
+    const entry = item as { role?: unknown; content?: unknown };
+    if (entry.role !== "user") continue;
+    // A tool-result turn is not a prompt, even with harness text beside it.
+    if (
+      Array.isArray(entry.content) &&
+      entry.content.some((block) => (block as { type?: unknown } | null)?.type === "tool_result")
+    )
+      continue;
+    const typed = userTypedText({ role: "user", content: promptBlocks(entry.content) });
+    for (const match of typed.matchAll(SESSION_GRANT)) {
+      changed = true;
+      const grant = match[1]?.toLowerCase().replace("secrets", "secret");
+      if (grant === undefined) grants.clear();
+      else if (match[2]!.toLowerCase() === "session") grants.add(grant);
+      else grants.delete(grant);
+    }
+  }
+  if (changed) {
+    sessionGrants.delete(session);
+    sessionGrants.set(session, grants);
+    if (sessionGrants.size > SESSION_TAGS_MAX)
+      sessionGrants.delete(sessionGrants.keys().next().value!);
+  }
+  return grants;
+}
+
 export function requestAllowTags(
+  format: Format,
+  body: Record<string, unknown>,
+  session?: string | null,
+): Set<string> {
+  const tags = promptAllowTags(format, body, session);
+  const list =
+    format === "responses"
+      ? typeof body.input === "string"
+        ? [{ role: "user", content: body.input }]
+        : body.input
+      : body.messages;
+  if (session && Array.isArray(list))
+    for (const grant of sessionGrantsFor(list, session))
+      for (const tag of GRANT_OPENS[grant]!) tags.add(tag);
+  // [allow-all] lifts every guard, the one on config and git history too.
+  // Context shaping is not a guard: only [raw] turns it off.
+  if (tags.has("all")) for (const tag of GRANT_OPENS.all!) tags.add(tag);
+  return tags;
+}
+
+// The tags of the latest typed prompt, for this request alone.
+function promptAllowTags(
   format: Format,
   body: Record<string, unknown>,
   session?: string | null,
@@ -736,8 +811,11 @@ function redactWithCorpus(
   tags: Set<string>,
   session?: string | null,
 ): { body: Record<string, unknown>; hits: number; counts: Counts; tags: Set<string> } {
-  // Each prompt's own tag, or the session's switch, decides its images.
-  const images = withholdImages(format, body, session);
+  // Each prompt's own tag, or the session's switch, decides its images; a
+  // grant that opens them ([allow-all], with :session or not) lets all through.
+  const images = tags.has("images")
+    ? { body, hits: 0, session: true }
+    : withholdImages(format, body, session);
   if (images.session) tags.add("images");
   if (tags.has("all"))
     return {
@@ -1391,17 +1469,17 @@ function withholdSecretLines(
 // Images by URL or uploaded file id are already the provider's to fetch.
 //
 // [allow-images:session] lets every image through from the prompt it is typed
-// in until [mask-images], for the rest of the session. The history says when
-// it was typed; the proxy remembers it per session for a history that no
-// longer holds it (compacted). A client without a session header gets no
-// switch.
+// in until [allow-images:mask], [mask-images] or [mask], for the rest of the
+// session. The history says when it was typed; the proxy remembers it per
+// session for a history that no longer holds it (compacted). A client without
+// a session header gets no switch.
 
 export const IMAGE_NOTICE =
   "Image withheld: images and documents cannot be checked for sensitive values, so this one is " +
   "not shown. Ask the user to include [allow-images] in their prompt if you need to see it, " +
   "or [allow-images:session] for the rest of the session.";
 const IMAGE_TAG = /\[allow-(?:images?|all)\]/i;
-const SESSION_SWITCH = /\[(?:allow-images:session|mask-images)\]/gi;
+const SESSION_SWITCH = /\[(?:allow-images:(?:session|mask)|mask-images|mask)\]/gi;
 
 // Each session's shaping switch, on the same terms as the image switch below:
 // remembered per session, because the prompt that set it may be compacted out
@@ -1468,7 +1546,7 @@ function rememberImages(session: string, on: boolean) {
 function imageSwitch(typed: Array<{ type: "text"; text: string }>): boolean | undefined {
   const text = userTypedText({ role: "user", content: typed });
   const last = [...text.matchAll(SESSION_SWITCH)].at(-1);
-  return last ? last[0].toLowerCase() !== "[mask-images]" : undefined;
+  return last ? last[0].toLowerCase() === "[allow-images:session]" : undefined;
 }
 
 function isInlineData(value: unknown): boolean {

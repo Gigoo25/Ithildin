@@ -76,7 +76,7 @@ const MAX_SESSIONS = 256;
 // The engine's tag set names the categories [allow-all] opens as well; the
 // badge shows what the user typed.
 export function allowLabels(tags: ReadonlySet<string>): string[] {
-  if (tags.has("all")) return ["all", ...(tags.has("protected") ? ["protected"] : [])];
+  if (tags.has("all")) return ["all"];
   const once = [...tags].some((tag) => tag.startsWith("once:")) ? ["once"] : [];
   return (["pii", "secret", "protected", "send", "images", "raw"] as const)
     .filter((tag) => tags.has(tag))

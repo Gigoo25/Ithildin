@@ -383,21 +383,32 @@ Sometimes the model needs a real value. Put a tag anywhere in your prompt:
 | `[allow-pii]`       | personal and infrastructure details          |
 | `[allow-secrets]`   | secrets                                      |
 | `[allow-images]`    | the image hold                               |
-| `[allow-images:session]` | the image hold, for the rest of the session |
 | `[allow-protected]` | the guard on config and git history          |
 | `[allow-send]`      | the send block in untrusted or private chats |
 | `[allow-once:<id>]` | the guards, for the one call a refusal named |
-| `[allow-all]`       | everything but `protected`                   |
+| `[allow-all]`       | everything: masking, images and the guards   |
 
 A tag applies to the prompt it is typed in, and ends when you send the next
 one. The proxy forwards tags as you typed them, so the model sees what you
 lifted and knows what a tag in a notice means. The footer is how you know one
 took effect.
 
-`[allow-images:session]` is the exception: images pass from that prompt on,
-for the rest of the session, until you type `[mask-images]` or the proxy
-restarts. It needs a client that names its session, and the footer shows
-`+images` while it is on.
+`[allow-all]` sends the request as the agent wrote it: nothing is masked, no
+image is held and no call the reply makes is refused, the guard on config and
+git history included. Context shaping still runs, since only `[raw]` turns it
+off, and the dashboard still shows the request.
+
+### For the session
+
+Add `:session` to any of them but `[allow-once:<id>]` to keep it for the rest
+of the session: `[allow-pii:session]`, `[allow-all:session]`. The same tag with
+`:mask` ends it (`[allow-pii:mask]`), and `[mask]` ends every one the
+session holds. `:mask` ends that grant alone, so `[allow-pii:mask]` after
+`[allow-all:session]` still leaves PII open through `all`.
+
+A session grant needs a client that names its session, and lasts until you
+end it or the proxy restarts. The footer shows it (`+pii`, `+all`) on every
+request while it holds. `[mask-images]` still ends the image grant, as before.
 
 ## Shaping
 

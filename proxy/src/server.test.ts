@@ -16,6 +16,7 @@ import {
   WITHHELD_LINE,
   WITHHELD_NOTICE,
 } from "./redact.ts";
+import { allowLabels } from "./status.ts";
 import {
   bunTooOld,
   createHandler,
@@ -1897,6 +1898,90 @@ describe("images", () => {
         "images",
       ),
     ).toBe(true);
+  });
+
+  it("[allow-images:mask] and [mask] end the image switch", () => {
+    const shot = (text: string) => ({
+      role: "user",
+      content: [
+        { type: "text", text },
+        { type: "image", source: PNG },
+      ],
+    });
+    const reply = { role: "assistant", content: "ok" };
+    const last = (messages: unknown[]) =>
+      (
+        redactRequest("anthropic", { messages }, "s-imgblock").body.messages as Array<{
+          content: Array<{ type: string }>;
+        }>
+      ).at(-1)!.content[1]!.type;
+    expect(last([shot("[allow-images:session] on"), reply, shot("a")])).toBe("image");
+    expect(last([shot("x"), reply, shot("[allow-images:mask] off")])).toBe("text");
+    expect(last([shot("[allow-images:session] on"), reply, shot("b")])).toBe("image");
+    expect(last([shot("x"), reply, shot("[mask] all off")])).toBe("text");
+    expect(last([shot("summary"), reply, shot("c")])).toBe("text");
+  });
+
+  it("every allow tag holds for the session with :session, until :mask or [mask]", () => {
+    const say = (text: string) => ({ role: "user", content: text });
+    const reply = { role: "assistant", content: "ok" };
+    const tags = (messages: unknown[], session: string | null = "s-grant") =>
+      redactRequest("anthropic", { messages }, session).tags;
+    expect(tags([say("[allow-pii:session] go")]).has("pii")).toBe(true);
+    // A later request whose prompt carries no tag, and one compacted.
+    expect(tags([say("[allow-pii:session] go"), reply, say("next")]).has("pii")).toBe(true);
+    expect(tags([say("summary"), reply, say("later")]).has("pii")).toBe(true);
+    // :mask ends that grant, and only that one.
+    tags([say("[allow-send:session]")]);
+    const blocked = tags([say("summary"), reply, say("[allow-pii:mask] stop")]);
+    expect(blocked.has("pii")).toBe(false);
+    expect(blocked.has("send")).toBe(true);
+    // [mask] ends them all.
+    tags([say("[allow-secrets:session] [allow-protected:session]")]);
+    const cleared = tags([say("summary"), reply, say("[mask]")]);
+    for (const tag of ["pii", "secret", "protected", "send"]) expect(cleared.has(tag)).toBe(false);
+    // The whole history replays, so a grant ended later stays ended.
+    expect(
+      tags([say("[allow-all:session]"), reply, say("[allow-all:mask]"), reply, say("x")]).has(
+        "all",
+      ),
+    ).toBe(false);
+    // Not from a quoted reminder, nor for a client the proxy cannot name.
+    expect(
+      tags([say("<system-reminder>[allow-pii:session]</system-reminder> x")], "s-grant-q").has(
+        "pii",
+      ),
+    ).toBe(false);
+    expect(tags([say("[allow-pii:session]")], null).has("pii")).toBe(false);
+    // A different session is not touched.
+    expect(tags([say("hello")], "s-grant-other").has("pii")).toBe(false);
+  });
+
+  it("[allow-all] lifts every guard for one prompt, and :session holds it", () => {
+    const say = (text: string) => ({ role: "user", content: text });
+    const reply = { role: "assistant", content: "ok" };
+    const prompt = "restart vault.zqxcorp.internal";
+    const sent = (messages: unknown[]) => redactRequest("anthropic", { messages }, "s-all");
+    const once = sent([say(`[allow-all] ${prompt}`)]);
+    expect(JSON.stringify(once.body)).toContain("vault.zqxcorp.internal");
+    expect(once.hits).toBe(0);
+    expect(allowLabels(once.tags)).toEqual(["all"]);
+    // The guard on config and git history goes with the rest.
+    const reset = { command: "git reset --hard" };
+    expect(swapToolArguments("Bash", reset, once.tags, "toolu_all")).toEqual({
+      args: reset,
+      swapped: 0,
+    });
+    // One prompt: the next one is masked again, and the guard is back.
+    const next = sent([say(`[allow-all] ${prompt}`), reply, say(prompt)]);
+    expect(JSON.stringify((next.body.messages as unknown[]).at(-1))).not.toContain("zqxcorp");
+    expect(swapToolArguments("Bash", reset, next.tags, "toolu_all2").blocked).toBe(true);
+    // :session holds it until :mask.
+    expect(sent([say("[allow-all:session]"), reply, say(prompt)]).tags.has("all")).toBe(true);
+    expect(sent([say("summary"), reply, say(prompt)]).hits).toBe(0);
+    expect(sent([say("summary"), reply, say(`[allow-all:mask] ${prompt}`)]).hits).toBeGreaterThan(
+      0,
+    );
   });
 
   it("[allow-all] passes images too, and the tag goes with them", () => {

@@ -33,10 +33,7 @@ describe("allow tags", () => {
     expect(allowLabels(new Set(["secret"]))).toEqual(["secrets"]);
     expect(allowLabels(new Set(["protected", "pii"]))).toEqual(["pii", "protected"]);
     expect(allowLabels(new Set(["all", "secret", "pii"]))).toEqual(["all"]);
-    expect(allowLabels(new Set(["all", "secret", "pii", "protected"]))).toEqual([
-      "all",
-      "protected",
-    ]);
+    expect(allowLabels(new Set(["all", "secret", "pii", "protected"]))).toEqual(["all"]);
   });
 
   it("go last in the badge", () => {
