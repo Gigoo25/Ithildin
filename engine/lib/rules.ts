@@ -966,8 +966,55 @@ const LOCAL_RULES: Rule[] = [
   {
     id: "pii-home-user",
     description: "Username in home-directory path (generic)",
-    // Three characters at least, as in pii-user-at-host.
-    regex: /\/(?:home|Users)\/([a-z_][a-z0-9_-]{2,30})/gi,
+    // Three characters at least, as in pii-user-at-host. Windows paths come
+    // with one backslash or, inside JSON, two. The shared profiles every
+    // machine has (Public, Shared, Default) name no one.
+    regex: new RegExp(
+      String.raw`(?:\/(?:home|Users)\/|\b[A-Z]:\\{1,2}Users\\{1,2})` +
+        String.raw`(?!(?:Public|Shared|Default|All Users)\b)([a-z_][a-z0-9_-]{2,30})`,
+      "gi",
+    ),
+    secretGroup: 1,
+    category: "pii",
+  },
+  // Cloud account identifiers. A bare twelve digits or a UUID has no safe
+  // shape, so each fires only where its context says what it is.
+  {
+    id: "pii-aws-account",
+    description: "AWS account number in an ARN or an account field",
+    regex: new RegExp(
+      String.raw`(?:\barn:aws[a-z-]*:[a-z0-9-]*:[a-z0-9-]*:` +
+        String.raw`|\baccount(?:[_-]?id)?["']?\s*[:=]\s*["']?)(\d{12})\b`,
+      "gi",
+    ),
+    secretGroup: 1,
+    category: "pii",
+  },
+  {
+    id: "pii-azure-tenant",
+    description: "Azure subscription or tenant id",
+    regex: new RegExp(
+      String.raw`(?:\/subscriptions\/|\b(?:subscription|tenant)(?:[_-]?id)?["']?\s*[:=]\s*["']?)` +
+        String.raw`([0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12})\b`,
+      "gi",
+    ),
+    secretGroup: 1,
+    category: "pii",
+  },
+  // Bucket names are 3-63 of [a-z0-9.-]. Two rules, as a rule takes one
+  // capture group: the s3:// form and the virtual-hosted one, which ends at
+  // .s3. or .s3-<region>. before amazonaws.com.
+  {
+    id: "pii-s3-bucket",
+    description: "S3 bucket in an s3:// URI",
+    regex: /\bs3:\/\/([a-z0-9][a-z0-9.-]{1,61}[a-z0-9])/g,
+    secretGroup: 1,
+    category: "pii",
+  },
+  {
+    id: "pii-s3-bucket-host",
+    description: "S3 bucket in a bucket hostname",
+    regex: /\b([a-z0-9][a-z0-9-]{1,61}[a-z0-9])\.s3[.-](?:[a-z0-9-]+\.)*amazonaws\.com\b/g,
     secretGroup: 1,
     category: "pii",
   },

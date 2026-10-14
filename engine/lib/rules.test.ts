@@ -705,6 +705,48 @@ describe("freeform name recall", () => {
     expect(scan("/home/deploy/src").some((f) => f.ruleId === "pii-home-user")).toBe(true);
   });
 
+  it("takes the user from a Windows home path, in one backslash or two", () => {
+    for (const text of [
+      String.raw`C:\Users\deploy\src`,
+      String.raw`"cwd": "D:\\Users\\deploy\\repo"`,
+    ]) {
+      const found = scan(text).filter((f) => f.ruleId === "pii-home-user");
+      expect(found.map((f) => f.secretValue)).toEqual(["deploy"]);
+    }
+    for (const text of [
+      String.raw`C:\Users\Public\Desktop`,
+      String.raw`C:\Users\Default\AppData`,
+      String.raw`C:\Users\All Users\x`,
+    ]) {
+      expect(scan(text).some((f) => f.ruleId === "pii-home-user")).toBe(false);
+    }
+  });
+
+  it("finds cloud account ids only where their context names them", () => {
+    const uuid = "3f2b1c4d-9e8a-4b7c-a1d2-0e9f8a7b6c5d";
+    for (const [text, id, value] of [
+      ["arn:aws:iam::493817260154:role/deploy", "pii-aws-account", "493817260154"],
+      ["arn:aws-us-gov:s3:::bucket", "pii-aws-account", null],
+      ['"AccountId": "493817260154"', "pii-aws-account", "493817260154"],
+      ["account_id = 493817260154", "pii-aws-account", "493817260154"],
+      [`/subscriptions/${uuid}/resourceGroups/x`, "pii-azure-tenant", uuid],
+      [`tenantId: ${uuid}`, "pii-azure-tenant", uuid],
+      ["aws s3 cp s3://deploy-backups/db.gz .", "pii-s3-bucket", "deploy-backups"],
+      ["https://deploy-logs.s3.us-east-1.amazonaws.com/x", "pii-s3-bucket-host", "deploy-logs"],
+      ["https://deploy-logs.s3.amazonaws.com/x", "pii-s3-bucket-host", "deploy-logs"],
+    ] as const) {
+      const found = scan(text).filter((f) => f.ruleId === id);
+      expect(found.map((f) => f.secretValue)).toEqual(value ? [value] : []);
+    }
+    for (const text of [
+      "order 493817260154 shipped",
+      `request ${uuid} failed`,
+      "see docs.aws.amazon.com for s3",
+    ]) {
+      expect(scan(text).filter((f) => /aws|azure|s3/.test(f.ruleId))).toEqual([]);
+    }
+  });
+
   it("leaves commit subjects and file names alone", () => {
     for (const text of [
       "Add CLAUDE.md",
