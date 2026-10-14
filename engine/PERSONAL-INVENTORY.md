@@ -35,7 +35,7 @@ PII findings become stable, meaningful stand-ins instead of numbered tokens. Sec
 
 ## Infrastructure inventory
 
-At session start the engine also reads `~/.ssh/config` (following `Include`) and the current repository's git remote URLs. It adds match rules for concrete `Host` aliases, `HostName` values (short names too), `User` values, and remote hosts. Public forges (github.com, gitlab.com, …), service accounts (`git`, `ec2-user`, …), wildcard patterns, and `%` tokens are skipped. These rules stay in memory, like the runtime identity rules, and are capped at 100 per source. `ITHILDIN_INFRA_INVENTORY=off` disables them.
+At session start the engine also reads `~/.ssh/config` (following `Include`) and the current repository's git remote URLs. It adds match rules for concrete `Host` aliases, `HostName` values (short names too), `User` values, and remote hosts. A remote reached over SSH on a public forge adds its owner (`git@github.com:acme/tool` gives `acme`); an https remote does not, since you clone over https as often from strangers. It also reads hosts from the configs of tools that print them: registries in `.npmrc`, `pip.conf` and `.docker/config.json`, `server:` in `.kube/config`, `machine` in `.netrc`, `sso_start_url` in `.aws/config`, plus AWS account numbers from `sso_account_id` and `role_arn`. Only whole hosts: a registry's first label (`npm`, `k8s`) is too common a word. Public registries (npmjs, PyPI, Docker Hub, ghcr.io, …) are skipped. Public forges (github.com, gitlab.com, …), service accounts (`git`, `ec2-user`, …), wildcard patterns, and `%` tokens are skipped. These rules stay in memory, like the runtime identity rules, and are capped at 100 per source. `ITHILDIN_INFRA_INVENTORY=off` disables them.
 
 ## Swap-back
 

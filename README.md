@@ -84,14 +84,22 @@ fake survives a restart, and those fakes are never swapped back:
   accounts, and national ID formats for the US, FR, DE, IT, ES, JP, KR
   and CN.
 - IPv4 and IPv6 addresses, MACs, machine IDs, SSIDs.
-- Hostnames and usernames in home paths, `user@host` and labelled fields.
+- Hostnames and usernames in home paths (Unix and `C:\Users\`), `user@host`
+  and labelled fields.
+- Cloud accounts where their context names them: AWS account numbers in
+  ARNs and `account_id` fields, Azure subscription and tenant ids, S3
+  buckets in `s3://` and bucket hostnames.
 - This machine's identity, read at startup and again every five minutes:
   - username, hostname, home directory, `git config` name and email
   - the domain of that email, and every host under it, unless it is a
     public mail provider
   - hosts and users in `~/.ssh/config`
   - git remote hosts of every repository under `$ITHILDIN_REPO_ROOTS`
-    (default: your home directory)
+    (default: your home directory), and the owner of an SSH remote on a
+    public forge (`git@github.com:acme/…` gives `acme`)
+  - private registries, clusters and portals in `.npmrc`, `pip.conf`,
+    `.docker/config.json`, `.kube/config`, `.netrc` and `.aws/config`, and
+    AWS account numbers there; never the tokens beside them
   - saved Wi-Fi networks
   - `resolv.conf` search domains
   - your own `/etc/hosts` entries
