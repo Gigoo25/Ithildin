@@ -683,8 +683,8 @@ describe("provider blindness", () => {
     for (let i = 0; i < 300; i++) tags({ messages: [{ role: "user", content: "hi" }] }, `f-${i}`);
   });
 
-  it("reads opencode's session headers, for its own providers and the rest", async () => {
-    for (const header of ["x-opencode-session", "x-session-affinity"]) {
+  it("reads opencode's and Codex's session headers", async () => {
+    for (const header of ["x-opencode-session", "x-session-affinity", "session_id", "session-id"]) {
       const up = fakeUpstream(() => Response.json({ content: [] }));
       const handler = createHandler(DEFAULT_ROUTES, up.fetch);
       const send = (text: string) => {

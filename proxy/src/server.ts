@@ -260,12 +260,15 @@ export function splitVia(
 // never forwarded); Claude sends X-Claude-Code-Session-Id itself. opencode
 // sends x-opencode-session to its own providers, with x-opencode-client
 // naming the agent (Pi sends it too, as "pi"), and x-session-affinity to the
-// rest.
+// rest. Codex clients, Pi's openai-codex route among them, send session_id (or
+// session-id) on the Responses API; the first header present wins.
 const SESSION_HEADERS: [string, string][] = [
   ["x-ithildin-session", "pi"],
   ["x-claude-code-session-id", "claude"],
   ["x-opencode-session", "opencode"],
   ["x-session-affinity", "opencode"],
+  ["session_id", "codex"],
+  ["session-id", "codex"],
 ];
 const CLIENT_HEADER = "x-opencode-client";
 // One trailing slash is forgiven: `/dashboard/` is the same page.
