@@ -1688,6 +1688,35 @@ const requestLabels = new WeakMap<Set<string>, Label>();
 // A tag would open every call of its kind; the id opens one. The id is a hash
 // of the call as the model wrote it, so the same call sent again matches;
 // whitespace in a command does not count.
+//
+// An agent cannot always repeat a call word for word: a trimmed context drops
+// the text, and a retyped command differs by a character and gets a new id,
+// so the user is asked again for every try. So the proxy keeps why each recent
+// id was refused, and an approved id also lets through the next call refused
+// for that same reason, once. Only the protected guard works this way: its
+// change stays on this machine. A send or a secret read keeps the exact match,
+// since a retyped call there could point somewhere else.
+const refusals = new Map<string, string>();
+const REFUSALS_MAX = 256;
+
+function rememberRefusal(id: string, notice: string): void {
+  if (!notice.includes(allowHint("protected"))) return;
+  refusals.delete(id);
+  refusals.set(id, notice);
+  if (refusals.size > REFUSALS_MAX) refusals.delete(refusals.keys().next().value!);
+}
+
+// An approved id whose refusal had this reason, spent on first use.
+function approvedForReason(notice: string, tags: Set<string>): boolean {
+  for (const tag of tags) {
+    if (!tag.startsWith("once:")) continue;
+    const id = tag.slice("once:".length);
+    if (refusals.get(id) !== notice) continue;
+    refusals.delete(id);
+    return true;
+  }
+  return false;
+}
 
 export function callApproval(toolName: string, args: unknown): string {
   const command = shellCommand(args);
@@ -1713,7 +1742,9 @@ export function swapToolArguments(
   const id = callApproval(toolName, args);
   if (tags.has(`once:${id}`)) return result;
   const notice = guardNotice(toolName, args, result, tags);
-  return notice ? block(callId, approvalHint(notice, id)) : result;
+  if (!notice || approvedForReason(notice, tags)) return result;
+  rememberRefusal(id, notice);
+  return block(callId, approvalHint(notice, id));
 }
 
 // Why the guards refuse a call, or undefined when they let it run.

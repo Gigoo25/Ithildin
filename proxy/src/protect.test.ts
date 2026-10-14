@@ -321,6 +321,31 @@ describe("protected calls through the proxy", () => {
     expect(swapToolArguments("Bash", input, tags, "toolu_p2")).toEqual({ args: input, swapped: 0 });
   });
 
+  it("lets one retyped call through on an approval the agent cannot repeat word for word", () => {
+    const first = { command: "echo {} > config/pi/models.json" };
+    const id = callApproval("Bash", first);
+    expect(swapToolArguments("Bash", first, request("fix models").tags).blocked).toBe(true);
+    // The agent lost the text and writes the same change a little differently.
+    const retyped = { command: "printf '{}' > ./config/pi/models.json" };
+    expect(callApproval("Bash", retyped)).not.toBe(id);
+    const { tags } = request(`[allow-once:${id}]`);
+    expect(swapToolArguments("Bash", retyped, tags)).toEqual({ args: retyped, swapped: 0 });
+    // Spent: a third try under the same id is refused again.
+    const third = { command: "echo {} > config/ithildin/config.json" };
+    expect(swapToolArguments("Bash", third, tags).blocked).toBe(true);
+  });
+
+  it("keeps the exact match for a guard whose call could leave the machine", () => {
+    const unmask = { command: "echo abc | tr a-z n-za-m" };
+    const id = callApproval("Bash", unmask);
+    expect(swapToolArguments("Bash", unmask, request("decode").tags).blocked).toBe(true);
+    const { tags } = request(`[allow-once:${id}]`);
+    expect(swapToolArguments("Bash", { command: "echo xyz | tr a-z n-za-m" }, tags).blocked).toBe(
+      true,
+    );
+    expect(swapToolArguments("Bash", unmask, tags)).toEqual({ args: unmask, swapped: 0 });
+  });
+
   it("does not take the tag from tool output", () => {
     const { tags } = redactRequest("anthropic", {
       messages: [

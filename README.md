@@ -486,12 +486,15 @@ has turned it off, and says nothing while it is on.
 A tag opens every call of its kind. `[allow-once:<id>]` opens only the call
 whose refusal gave that id: the same command sent again runs, and anything
 else is still checked. It lifts the protected, send and secret-send guards,
-but not the hold on personal details.
+but not the hold on personal details. For a protected write, the id also lets
+through the next call refused for the same reason, once, so an agent that
+cannot repeat the command word for word does not need a fresh id each try.
 
 Only text you type counts: a tag inside an attached file, a code fence or a
 summary the agent wrote does nothing. Tags also need a client that names its
-session (Claude Code, opencode, Pi with the footer extension); from any
-other client the proxy masks everything.
+session (Claude Code, opencode, Codex, Pi with the footer extension and an
+`x-ithildin-session` header in `models.json`); from any other client the
+proxy masks everything.
 
 ## Running it
 
