@@ -9,6 +9,7 @@ import {
   identityFromSsh,
   identityFromTailscale,
   identityFromWifi,
+  mailDomain,
   nmcliFields,
   remoteUrls,
 } from "./runtime-inventory.ts";
@@ -62,6 +63,30 @@ describe("collectRuntimeIdentity", () => {
     expect(entries.find((e) => e.id === "runtime-git-name")?.match).toBe("phrase");
     expect(entries.find((e) => e.id === "runtime-git-email")?.literal).toBe("zzzxqgit@zzzxq.test");
     expect(collectRuntimeIdentity({ gitEmail: "dev@example.com" })).toEqual([]);
+  });
+
+  it("adds the organisation's domain from the git email", () => {
+    const entries = collectRuntimeIdentity({ gitEmail: "zzzxqgit@eng.zzzxqcorp.com" });
+    const host = entries.find((e) => e.id === "runtime-mail-host");
+    expect(host?.literal).toBe("zzzxqcorp.com");
+    expect(host?.caseSensitive).toBe(false);
+    expect(entries.find((e) => e.id === "runtime-mail-host-short")?.literal).toBe("zzzxqcorp");
+    setRuntimeInventory(entries);
+    const out = redactText("deploy to git.zzzxqcorp.com, then tell ZZZXQCORP").text;
+    expect(out).not.toMatch(/zzzxqcorp/i);
+  });
+
+  it("finds the registrable domain and skips public mail", () => {
+    expect(mailDomain("a@zzzxqcorp.co.uk")).toBe("zzzxqcorp.co.uk");
+    expect(mailDomain("a@cs.zzzxquni.edu")).toBe("zzzxquni.edu");
+    expect(mailDomain("a@ZZZXQCORP.COM.")).toBe("zzzxqcorp.com");
+    expect(mailDomain("a@gmail.com")).toBeUndefined();
+    expect(mailDomain("1+a@users.noreply.github.com")).toBeUndefined();
+    expect(mailDomain("a@mail.example.org")).toBeUndefined();
+    expect(mailDomain("a@localhost")).toBeUndefined();
+    expect(mailDomain("a@bad_domain.com")).toBeUndefined();
+    expect(mailDomain("no-at-sign")).toBeUndefined();
+    expect(mailDomain(undefined)).toBeUndefined();
   });
 
   it("does not duplicate the same literal under two ids", () => {

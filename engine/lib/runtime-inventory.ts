@@ -97,6 +97,63 @@ const PUBLIC_HOSTS = new Set([
   "git.kernel.org",
 ]);
 
+// Mail providers anyone can sign up to: the domain of an address there says
+// nothing about who you work for.
+const FREE_MAIL = new Set([
+  "gmail.com",
+  "googlemail.com",
+  "outlook.com",
+  "hotmail.com",
+  "live.com",
+  "msn.com",
+  "yahoo.com",
+  "icloud.com",
+  "me.com",
+  "mac.com",
+  "aol.com",
+  "proton.me",
+  "protonmail.com",
+  "pm.me",
+  "tutanota.com",
+  "tuta.io",
+  "fastmail.com",
+  "hey.com",
+  "zoho.com",
+  "gmx.com",
+  "gmx.de",
+  "gmx.net",
+  "web.de",
+  "mail.com",
+  "yandex.com",
+  "yandex.ru",
+  "qq.com",
+  "163.com",
+]);
+
+// Second-level labels under which a country suffix takes two labels
+// (acme.co.uk), so the organisation is the label before both.
+const SECOND_LEVEL = /^(?:co|com|ac|org|net|gov|edu|ne|or)$/;
+
+// The registrable domain of a git email (eng.acme.com gives acme.com), unless
+// it belongs to a free provider, a forge's noreply relay or an example.
+export function mailDomain(email: string | undefined): string | undefined {
+  const at = email?.lastIndexOf("@") ?? -1;
+  if (!email || at < 0) return;
+  const labels = email
+    .slice(at + 1)
+    .trim()
+    .toLowerCase()
+    .replace(/\.$/, "")
+    .split(".");
+  if (labels.length < 2 || labels.some((l) => !/^[a-z0-9-]+$/.test(l))) return;
+  const n = labels.length;
+  const suffix = n >= 3 && SECOND_LEVEL.test(labels[n - 2]!) ? 2 : 1;
+  const domain = labels.slice(Math.max(0, n - 1 - suffix)).join(".");
+  if (FREE_MAIL.has(domain) || PUBLIC_HOSTS.has(domain)) return;
+  if (/^example\.(?:com|org|net)$/.test(domain)) return;
+  return domain;
+}
+
 // Upper bound per source, so a huge generated SSH config cannot flood the
 // rule list (each entry is one regex on every scan).
 const MAX_PER_SOURCE = 100;
@@ -200,6 +257,27 @@ function addInfraHosts(
   }
 }
 
+// Infrastructure names, and the domain your own address is at.
+function addInfraIdentity(
+  identity: RuntimeIdentity,
+  add: (id: string, literal: string) => void,
+): void {
+  addInfraHosts("runtime-ssh", identity.sshHosts, add);
+  addInfraHosts("runtime-ssh-hostname", identity.sshHostNames, add);
+  addInfraHosts("runtime-git", identity.gitHosts, add);
+  addInfraHosts("runtime-etc-hosts", identity.etcHosts, add);
+  addInfraHosts("runtime-search-domain", identity.searchDomains, add);
+  addInfraHosts("runtime-tailnet", identity.tailnetNames, add);
+  // A work or personal domain sits under a public suffix, so no structural
+  // rule sees git.acme.com; the domain of your own address names it. The id
+  // avoids "email" so the stand-in is minted as a host.
+  const domain = mailDomain(identity.gitEmail);
+  if (domain) {
+    add("runtime-mail-host", domain);
+    add("runtime-mail-host-short", domain.slice(0, domain.indexOf(".")));
+  }
+}
+
 export function collectRuntimeIdentity(identity: RuntimeIdentity): InventoryEntry[] {
   const out: InventoryEntry[] = [];
   const seen = new Set<string>();
@@ -238,20 +316,13 @@ export function collectRuntimeIdentity(identity: RuntimeIdentity): InventoryEntr
     add("runtime-git-email", gitEmail);
 
   // Infrastructure names. Hostnames match case-insensitively (DNS does).
-  const addHosts = (prefix: string, hosts: string[] | undefined) =>
-    addInfraHosts(prefix, hosts, addCaseless);
   const addCaseless = (id: string, literal: string) => {
     const v = usableLiteral(literal);
     if (!v || seen.has(v.toLowerCase())) return;
     seen.add(v.toLowerCase());
     out.push({ id, literal: v, match: "token", caseSensitive: false });
   };
-  addHosts("runtime-ssh", identity.sshHosts);
-  addHosts("runtime-ssh-hostname", identity.sshHostNames);
-  addHosts("runtime-git", identity.gitHosts);
-  addHosts("runtime-etc-hosts", identity.etcHosts);
-  addHosts("runtime-search-domain", identity.searchDomains);
-  addHosts("runtime-tailnet", identity.tailnetNames);
+  addInfraIdentity(identity, addCaseless);
   let users = 0;
   for (const user of identity.sshUsers ?? []) {
     if (users >= MAX_PER_SOURCE) break;
