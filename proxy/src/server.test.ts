@@ -1202,6 +1202,67 @@ describe("secret reads", () => {
     expect(result("[allow-pii] show it")).toBe("{}");
   });
 
+  it("keeps what a tag let through as it went, after a later prompt without one", () => {
+    // A read let through by [allow-pii], withheld again at the next plain
+    // prompt, had the agent call its own answer made up.
+    const call = (id: string) => ({
+      role: "assistant",
+      content: [
+        {
+          type: "tool_use",
+          id,
+          name: "bash",
+          input: { command: "cat ~/.config/ithildin/config.json" },
+        },
+      ],
+    });
+    const result = (id: string) => ({
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: id, content: "{}" }],
+    });
+    const say = (text: string) => ({ role: "user", content: text });
+    const sent = (messages: unknown[], session = "s-turns") =>
+      redactRequest("anthropic", { messages }, session).body.messages as Array<{
+        content: unknown;
+      }>;
+    const read = (messages: Array<{ content: unknown }>, at: number) =>
+      (messages[at]!.content as Array<{ content: unknown }>)[0]!.content;
+    const history = [say(`[allow-pii] mail ${EMAIL}`), call("t1"), result("t1")];
+    const later = sent([
+      ...history,
+      { role: "assistant", content: "ok" },
+      say("next"),
+      call("t2"),
+      result("t2"),
+    ]);
+    expect(read(later, 2)).toBe("{}");
+    expect(later[0]!.content).toContain(EMAIL);
+    // The later turn is masked under its own prompt.
+    expect(read(later, 6)).toBe(INVENTORY_NOTICE);
+    // A session grant holds for the turns while it was held, not after :mask.
+    const granted = sent(
+      [
+        say("[allow-pii:session] go"),
+        call("t3"),
+        result("t3"),
+        say("[allow-pii:mask] stop"),
+        call("t4"),
+        result("t4"),
+      ],
+      "s-turns-grant",
+    );
+    expect(read(granted, 2)).toBe("{}");
+    expect(read(granted, 5)).toBe(INVENTORY_NOTICE);
+    // An earlier turn sent masked stays masked under a later tag.
+    for (const tag of ["[allow-pii]", "[allow-all]"])
+      expect(
+        sent([say(`mail ${EMAIL}`), { role: "assistant", content: "ok" }, say(`${tag} go`)])[0]!
+          .content,
+      ).not.toContain(EMAIL);
+    // A client the proxy cannot name gets nothing through, earlier or later.
+    expect(read(sent(history, null as unknown as string), 2)).toBe(INVENTORY_NOTICE);
+  });
+
   it("an Anthropic prompt's [allow-secrets] outlives the tool results after it", () => {
     const messages = (prompt: string) => [
       { role: "user", content: prompt },

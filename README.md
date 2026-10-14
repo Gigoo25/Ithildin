@@ -389,7 +389,8 @@ Sometimes the model needs a real value. Put a tag anywhere in your prompt:
 | `[allow-all]`       | everything: masking, images and the guards   |
 
 A tag applies to the prompt it is typed in, and ends when you send the next
-one. The proxy forwards tags as you typed them, so the model sees what you
+one. What it let through stays as it was sent: the next prompt hides nothing
+the model has already read. The proxy forwards tags as you typed them, so the model sees what you
 lifted and knows what a tag in a notice means. The footer is how you know one
 took effect.
 

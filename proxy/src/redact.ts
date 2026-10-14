@@ -363,21 +363,10 @@ function sessionGrantsFor(list: unknown[], session: string): Set<string> {
   const grants = new Set(sessionGrants.get(session));
   let changed = false;
   for (const item of list) {
-    if (!item || typeof item !== "object") continue;
-    const entry = item as { role?: unknown; content?: unknown };
-    if (entry.role !== "user") continue;
-    // A tool-result turn is not a prompt, even with harness text beside it.
-    if (
-      Array.isArray(entry.content) &&
-      entry.content.some((block) => (block as { type?: unknown } | null)?.type === "tool_result")
-    )
-      continue;
-    const typed = userTypedText({ role: "user", content: promptBlocks(entry.content) });
-    for (const match of typed.matchAll(SESSION_GRANT)) {
+    for (const { grant, on } of typedGrants(item)) {
       changed = true;
-      const grant = match[1]?.toLowerCase().replace("secrets", "secret");
       if (grant === undefined) grants.clear();
-      else if (match[2]!.toLowerCase() === "session") grants.add(grant);
+      else if (on) grants.add(grant);
       else grants.delete(grant);
     }
   }
@@ -388,6 +377,25 @@ function sessionGrantsFor(list: unknown[], session: string): Set<string> {
       sessionGrants.delete(sessionGrants.keys().next().value!);
   }
   return grants;
+}
+
+// The grant tags one history item's typed prompt holds, in order. grant is
+// undefined for [mask], which ends them all; on, whether it opens the grant.
+function typedGrants(item: unknown): Array<{ grant: string | undefined; on: boolean }> {
+  if (!item || typeof item !== "object") return [];
+  const entry = item as { role?: unknown; content?: unknown };
+  if (entry.role !== "user") return [];
+  // A tool-result turn is not a prompt, even with harness text beside it.
+  if (
+    Array.isArray(entry.content) &&
+    entry.content.some((block) => (block as { type?: unknown } | null)?.type === "tool_result")
+  )
+    return [];
+  const typed = userTypedText({ role: "user", content: promptBlocks(entry.content) });
+  return [...typed.matchAll(SESSION_GRANT)].map((match) => ({
+    grant: match[1]?.toLowerCase().replace("secrets", "secret"),
+    on: match[2]?.toLowerCase() === "session",
+  }));
 }
 
 export function requestAllowTags(
@@ -464,6 +472,84 @@ function promptAllowTags(
   return tags;
 }
 
+// ── tags per turn ───────────────────────────────────────────────────────────
+// What a tag let through stays through. Each history item is masked under the
+// tags of the typed prompt it follows and the session grants held then, not
+// under the latest prompt's. On 10-14 an [allow-pii] read went upstream whole;
+// the next plain prompt withheld it again, and the agent, its own answer now
+// contradicted by its history, called that answer made up. Taking a turn back
+// hides nothing (the provider has it) and rewrites the cached prefix from it.
+// Images keep earlier turns as sent the same way (withholdImages).
+const CONTENT_TAGS = new Set(["all", "pii", "secret"]);
+
+// The tags each item of the request's history is masked under, or undefined
+// when the request has no such history or comes from a client the proxy
+// cannot name (nothing it sends lifts masking). An item before any typed
+// prompt (a summary request's) takes the request's tags.
+export function turnTags(
+  format: Format,
+  body: Record<string, unknown>,
+  tags: Set<string>,
+  session?: string | null,
+): Array<Set<string>> | undefined {
+  const list = format === "responses" ? body.input : body.messages;
+  if (!Array.isArray(list) || session === null) return undefined;
+  const kept = [...tags].filter((tag) => !CONTENT_TAGS.has(tag));
+  const grants = session ? grantsByTurn(list, session) : undefined;
+  let prompt: Set<string> | undefined;
+  return list.map((item, i) => {
+    prompt = promptTags(item) ?? prompt;
+    if (prompt === undefined) return tags;
+    const out = new Set([...kept, ...prompt]);
+    for (const grant of grants?.[i] ?? []) for (const tag of GRANT_OPENS[grant]!) out.add(tag);
+    if (out.has("all")) for (const tag of GRANT_OPENS.all!) out.add(tag);
+    return out;
+  });
+}
+
+// The content tags of the prompt one item holds, or undefined when it holds
+// none. A tool-result turn counts only with a tag of its own, as in
+// promptAllowTags.
+function promptTags(item: unknown): Set<string> | undefined {
+  if (!item || typeof item !== "object") return undefined;
+  const entry = item as { role?: unknown; content?: unknown };
+  if (entry.role !== "user") return undefined;
+  const blocks = promptBlocks(entry.content);
+  if (blocks.length === 0) return undefined;
+  const own = latestAllowTags([{ role: "user", content: blocks }]);
+  const results =
+    Array.isArray(entry.content) &&
+    entry.content.some((block) => (block as { type?: unknown } | null)?.type === "tool_result");
+  return results && own.size === 0 ? undefined : own;
+}
+
+// The session grants held at each item. The session's memory holds them as of
+// the end of this history, so a grant the history names starts from what its
+// first tag implies: one ended by :mask was held, one opened by :session was
+// not, and one first ended by [mask] is taken as not held, being unknown.
+function grantsByTurn(list: unknown[], session: string): Array<Set<string>> {
+  const items = list.map(typedGrants);
+  const decided = new Set<string>();
+  const held = new Set<string>();
+  for (const { grant, on } of items.flat()) {
+    if (grant === undefined) {
+      for (const name of Object.keys(GRANT_OPENS)) decided.add(name);
+    } else if (!decided.has(grant)) {
+      decided.add(grant);
+      if (!on) held.add(grant);
+    }
+  }
+  for (const grant of sessionGrants.get(session) ?? []) if (!decided.has(grant)) held.add(grant);
+  return items.map((tags) => {
+    for (const { grant, on } of tags) {
+      if (grant === undefined) held.clear();
+      else if (on) held.add(grant);
+      else held.delete(grant);
+    }
+    return new Set(held);
+  });
+}
+
 // Typed user prompts in a request, for the badges' per-turn count. Turns
 // holding tool results are not prompts, even with harness text beside them.
 export function typedPromptCount(format: Format, body: Record<string, unknown>): number {
@@ -524,6 +610,7 @@ function typed<T>(user: boolean, scan: () => T): T {
 function redactAnthropic(
   body: Record<string, unknown>,
   tags: Set<string>,
+  turns?: Array<Set<string>>,
 ): { value: Record<string, unknown>; hits: number } {
   const { messages, ...rest } = body;
   const top = redactValue(rest, tags, undefined, undefined, [], true);
@@ -532,9 +619,10 @@ function redactAnthropic(
   if (Array.isArray(messages)) {
     out.messages = messages.map((message, i) => {
       if (!message || typeof message !== "object") return message;
+      const at = turns?.[i] ?? tags;
       const { content, ...fields } = message as Record<string, unknown>;
       // Fields beside content (a name, an unknown extension) are scanned too.
-      const scanned = redactValue(fields, tags, undefined, undefined, ["messages", i], true);
+      const scanned = redactValue(fields, at, undefined, undefined, ["messages", i], true);
       hits += scanned.hits;
       const next = scanned.value as Record<string, unknown>;
       const user = fields.role === "user";
@@ -546,7 +634,7 @@ function redactAnthropic(
         const result = typed(user, () =>
           redactValue(
             content,
-            tags,
+            at,
             "content",
             message as Record<string, unknown>,
             ["messages", i, "content"],
@@ -561,7 +649,7 @@ function redactAnthropic(
           if (replayed !== undefined) return replayed;
           const text = user && (block as { type?: unknown } | null)?.type === "text";
           const result = typed(text, () =>
-            redactAnthropicBlock(block, tags, ["messages", i, "content", j]),
+            redactAnthropicBlock(block, at, ["messages", i, "content", j]),
           );
           hits += result.hits;
           return result.value;
@@ -569,7 +657,7 @@ function redactAnthropic(
       } else if (content !== undefined) {
         const result = redactValue(
           content,
-          tags,
+          at,
           "content",
           undefined,
           ["messages", i, "content"],
@@ -678,6 +766,7 @@ function redactOpenAi(
   format: Format,
   body: Record<string, unknown>,
   tags: Set<string>,
+  turns?: Array<Set<string>>,
 ): { value: Record<string, unknown>; hits: number } {
   const key = format === "responses" ? "input" : "messages";
   const { [key]: list, ...rest } = body;
@@ -686,13 +775,14 @@ function redactOpenAi(
   const out = top.value as Record<string, unknown>;
   if (Array.isArray(list)) {
     out[key] = list.map((item, i) => {
+      const at = turns?.[i] ?? tags;
       const record = item as Record<string, unknown> | null;
       if (
         record &&
         typeof record === "object" &&
         (record.role === "assistant" || record.type === "function_call")
       ) {
-        const replayed = replayOpenAiItem(record, tags, [key, i]);
+        const replayed = replayOpenAiItem(record, at, [key, i]);
         if (replayed) {
           hits += replayed.hits;
           return replayed.value;
@@ -700,9 +790,7 @@ function redactOpenAi(
       }
       const user =
         !!item && typeof item === "object" && (item as { role?: unknown }).role === "user";
-      const result = typed(user, () =>
-        redactValue(item, tags, undefined, undefined, [key, i], true),
-      );
+      const result = typed(user, () => redactValue(item, at, undefined, undefined, [key, i], true));
       hits += result.hits;
       return result.value;
     });
@@ -741,8 +829,9 @@ export function redactRequest(
   // Before anything is redacted: what the tools really returned.
   const strays = strayStandIns(format, body);
   const tags = requestAllowTags(format, body, session);
+  const turns = turnTags(format, body, tags, session);
   requestDirs.set(tags, requestCwd(format, body));
-  const label = conversationLabel(seenInHistory(format, body, tags), session);
+  const label = conversationLabel(seenInHistory(format, body, tags, turns), session);
   requestLabels.set(tags, label);
   rememberLiterals(format, body);
   // A new stand-in must not equal a word the conversation already holds:
@@ -750,7 +839,7 @@ export function redactRequest(
   let corpus: string | undefined;
   aliases().setCorpus(() => (corpus ??= JSON.stringify(body)));
   try {
-    const redacted = redactWithCorpus(format, body, tags, session);
+    const redacted = redactWithCorpus(format, body, tags, session, turns);
     noteHarnessChange(format, body, redacted.body);
     return { ...redacted, label, unguarded: unguardedTools(body.tools), strays };
   } finally {
@@ -810,6 +899,7 @@ function redactWithCorpus(
   body: Record<string, unknown>,
   tags: Set<string>,
   session?: string | null,
+  turns?: Array<Set<string>>,
 ): { body: Record<string, unknown>; hits: number; counts: Counts; tags: Set<string> } {
   // Each prompt's own tag, or the session's switch, decides its images; a
   // grant that opens them ([allow-all], with :session or not) lets all through.
@@ -817,7 +907,8 @@ function redactWithCorpus(
     ? { body, hits: 0, session: true }
     : withholdImages(format, body, session);
   if (images.session) tags.add("images");
-  if (tags.has("all"))
+  // An earlier turn sent masked stays masked under a later [allow-all].
+  if (tags.has("all") && (turns ?? []).every((turn) => turn.has("all")))
     return {
       body: explainBlocked(format, images.body),
       hits: images.hits,
@@ -825,7 +916,7 @@ function redactWithCorpus(
       tags,
     };
   const stripped = images.body;
-  const result = redactBody(format, stripped, tags);
+  const result = redactBody(format, stripped, tags, turns);
   return {
     body: explainBlocked(format, result.body),
     hits: result.hits + images.hits,
@@ -1062,17 +1153,20 @@ export function redactHeaders(
 }
 
 // One scan envelope per request. Split out so tests can set the allow tags.
+// turns: the tags each history item is masked under (turnTags); without
+// them, every item takes tags.
 export function redactBody(
   format: Format,
   body: Record<string, unknown>,
   tags: Set<string>,
+  turns?: Array<Set<string>>,
 ): { body: Record<string, unknown>; hits: number; counts: Counts } {
   return withScanBudget(() => {
-    const withheld = withholdSecretReads(format, body, tags);
+    const withheld = withholdSecretReads(format, body, tags, turns);
     const { result, values } = collectValues(() =>
       format === "anthropic"
-        ? redactAnthropic(withheld.body, tags)
-        : redactOpenAi(format, withheld.body, tags),
+        ? redactAnthropic(withheld.body, tags, turns)
+        : redactOpenAi(format, withheld.body, tags, turns),
     );
     const counts = {
       masked: values,
@@ -1211,27 +1305,46 @@ function secretCalls(
   list: unknown[],
   tags: Set<string>,
   cwd: string,
+  turns?: Array<Set<string>>,
 ): Map<string, string> {
   const secret = new Map<string, string>();
-  for (const call of toolCalls(format, list)) {
-    const notice = readsSecret(call.name, call.input, tags, cwd);
+  for (const { call, tags: at } of callsWithTags(format, list, tags, turns)) {
+    const notice = readsSecret(call.name, call.input, at, cwd);
     if (notice) secret.set(String(call.id), notice);
   }
   return secret;
 }
 
+// Each tool call with the tags of the turn that made it: its result is let
+// through or withheld as it was the first time it went.
+function callsWithTags(
+  format: Format,
+  list: unknown[],
+  tags: Set<string>,
+  turns?: Array<Set<string>>,
+): Array<{ call: ToolCall; tags: Set<string> }> {
+  return list.flatMap((item, i) =>
+    toolCalls(format, [item]).map((call) => ({ call, tags: turns?.[i] ?? tags })),
+  );
+}
+
 // What the conversation's tool calls show, for its labels (trust.ts): an
 // outside read; a secret file the model saw (its output let through by a
 // tag) or a shell call copied; subagent answers.
-function seenInHistory(format: Format, body: Record<string, unknown>, tags: Set<string>): Seen {
+function seenInHistory(
+  format: Format,
+  body: Record<string, unknown>,
+  tags: Set<string>,
+  turns?: Array<Set<string>>,
+): Seen {
   const seen: Seen = { outside: false, secret: false, subagents: [] };
   const list = format === "responses" ? body.input : body.messages;
   if (!Array.isArray(list)) return seen;
   const cwd = requestDirs.get(tags) ?? process.env.HOME ?? process.cwd();
-  for (const call of toolCalls(format, list)) {
+  for (const { call, tags: at } of callsWithTags(format, list, tags, turns)) {
     seen.outside ||= readsOutside(call.name, call.input);
     if (!seen.secret && readsSecret(call.name, call.input, NO_TAGS, cwd))
-      seen.secret = !readsSecret(call.name, call.input, tags, cwd) || copiesData(call.input);
+      seen.secret = !readsSecret(call.name, call.input, at, cwd) || copiesData(call.input);
     if (SUBAGENT_TOOLS.has(call.name)) seen.subagents.push(String(call.id));
   }
   return seen;
@@ -1348,12 +1461,13 @@ function withholdSecretReads(
   format: Format,
   body: Record<string, unknown>,
   tags: Set<string>,
+  turns?: Array<Set<string>>,
 ): { body: Record<string, unknown>; hits: number; files: number } {
   const list = format === "responses" ? body.input : body.messages;
   if (!Array.isArray(list)) return { body, hits: 0, files: 0 };
   const cwd = requestCwd(format, body);
   const listed = secretListing(cwd);
-  const secret = secretCalls(format, list, tags, cwd);
+  const secret = secretCalls(format, list, tags, cwd, turns);
   const counter = { hits: 0, files: 0 };
   // A result is withheld whole, or has its secret-file search lines withheld.
   const result = (id: unknown, content: unknown): unknown => {
