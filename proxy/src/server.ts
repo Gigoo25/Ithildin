@@ -1028,7 +1028,9 @@ function ownRefusal(own: string, request: Request, url: URL): Response | undefin
 // One line in the journal: what was asked, what came back, what it cost, and
 // what was changed. scan= is the redaction time this proxy adds to each
 // request; allow= names the tags the user's latest prompt carried ([allow-pii]
-// → pii), so the journal shows when masking or a guard was lifted.
+// → pii), so the journal shows when masking or a guard was lifted. redacted=
+// counts distinct values, not spans: one value masked in a hundred places is
+// redacted=1, since what matters is how many things were held back.
 export function journalLine(
   route: string,
   rest: string,
