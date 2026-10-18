@@ -23,6 +23,7 @@ import {
   scanToSnapshot,
   setRuntimeInventory,
   type WindowCacheSnapshot,
+  windowPieces,
 } from "../engine/lib/rules.ts";
 
 export type ScanAsk =
@@ -86,10 +87,13 @@ export function warmTexts(body: unknown): string[] {
 }
 
 // Largest first onto the lightest batch, so one thread does not get every
-// long string while the others idle.
+// long string while the others idle. A string longer than a window goes as
+// its windows: one 1 MB file read was otherwise a single thread's work, with
+// the rest idle and the serving thread waiting on it.
 export function spread(texts: string[], count: number): string[][] {
   const batches = Array.from({ length: count }, () => ({ size: 0, texts: [] as string[] }));
-  for (const text of [...texts].sort((a, b) => b.length - a.length)) {
+  const pieces = texts.flatMap((text) => windowPieces(text));
+  for (const text of pieces.sort((a, b) => b.length - a.length)) {
     const lightest = batches.reduce((min, batch) => (batch.size < min.size ? batch : min));
     lightest.texts.push(text);
     lightest.size += text.length;

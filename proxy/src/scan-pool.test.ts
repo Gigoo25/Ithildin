@@ -115,6 +115,20 @@ describe("spread", () => {
     expect(batches.map((b) => b.join("").length)).toEqual([11, 11]);
     expect(spread(["only"], 3)).toEqual([["only"]]);
   });
+
+  it("splits one long string across threads, and its pieces warm the whole", () => {
+    const text = longText("split");
+    const batches = spread([text], 2);
+    expect(batches).toHaveLength(2);
+    clearWindowCache();
+    const direct = scanWindows(text);
+    clearWindowCache();
+    const snapshots = batches.map((batch) => scanToSnapshot(batch));
+    clearWindowCache();
+    for (const snapshot of snapshots) importWindowCache(snapshot);
+    expect(exportWindowCache().entries.length).toBe(batches.flat().length);
+    expect(scanWindows(text)).toEqual(direct);
+  });
 });
 
 describe("scanThreadCount", () => {

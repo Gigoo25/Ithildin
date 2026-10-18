@@ -2242,6 +2242,14 @@ export function importWindowCache(snapshot: unknown): number {
   return accepted;
 }
 
+// A text's windows as texts of their own. A window's result is keyed by its
+// slice alone, so scanning a piece by itself fills the same cache entry the
+// whole text would look up; this is what lets several scan threads share one
+// long string instead of one thread taking all of it.
+export function windowPieces(text: string): string[] {
+  return windowSlices(text.length).map((slice) => text.slice(slice.start, slice.end));
+}
+
 // Window bounds over a text, each overlapping the next by SCAN_WINDOW_OVERLAP.
 function windowSlices(length: number): WindowTrip[] {
   const step = SCAN_WINDOW_CHARS - SCAN_WINDOW_OVERLAP;
