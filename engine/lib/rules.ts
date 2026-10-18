@@ -755,6 +755,33 @@ const PLACEHOLDER_NAMES = new RegExp(
   "i",
 );
 
+// Whether a labeled match is a code assignment with an expression on the
+// right: `const user = msg.role === "user"`, `this.owner = pick(...)`,
+// `user = a ?? b`. A name in code is a string literal, so only an unquoted
+// value is read this way. One false hit renames a symbol everywhere after it.
+function codeAssignment(match: RegExpMatchArray | undefined): boolean {
+  if (!match?.input || match.index == null || /[:=]\s*["']/.test(match[0])) return false;
+  const before = match.input.slice(Math.max(0, match.index - 16), match.index);
+  if (/(?:\b(?:const|let|var|val|final|auto)\s+|[\w)\]]\.)$/.test(before)) return true;
+  const after = match.input.slice(match.index + match[0].length, match.index + match[0].length + 8);
+  return /^\s*(?:[=!]==?|&&|\|\||\?\??|[(\[])/.test(after);
+}
+
+// The fleet username is also an English word, so it counts only right after
+// an identity label (`username = "…"`, `User … logs in`, `ssh …`) or in front
+// of a host (`…@box`), not anywhere within the context window of one: `a
+// login can …` is a sentence, and the word was rewritten everywhere after it.
+function besideIdentityLabel(match: RegExpMatchArray | undefined): boolean {
+  if (!match?.input || match.index == null) return false;
+  const before = match.input.slice(Math.max(0, match.index - 24), match.index);
+  const after = match.input.slice(match.index + match[0].length);
+  return (
+    /\b(?:user(?:name)?|login|owner|account|author|email|ssh|home|host)\b[\s"'`=:/~]*$/i.test(
+      before,
+    ) || /^["'`]?@/.test(after)
+  );
+}
+
 const LOCAL_RULES: Rule[] = [
   {
     id: "generic-secret",
@@ -1402,7 +1429,8 @@ const LOCAL_RULES: Rule[] = [
     id: "pii-labeled-user",
     description: "Username in labeled assignment (generic)",
     // The value ends the phrase: `user: recursive delete` is prose and
-    // `user = await createUser()` is code.
+    // `user = await createUser()` is code, as is any other unquoted
+    // expression (see codeAssignment).
     regex: new RegExp(
       String.raw`(?:\buser(?:name)?|\blogin|` +
         String.raw`\bowner)\s*[:=]\s*["']?([A-Za-z0-9._-]{3,32})(?![A-Za-z0-9._-]|` +
@@ -1412,8 +1440,9 @@ const LOCAL_RULES: Rule[] = [
     secretGroup: 1,
     // Common username syntax: lowercase POSIX-style. This keeps display
     // names ("Jane") and booleans out without a per-word denylist.
-    validate: (value: string) =>
+    validate: (value: string, match?: RegExpMatchArray) =>
       /^[a-z0-9._][a-z0-9._-]*$/.test(value) &&
+      !codeAssignment(match) &&
       !/^(?:true|false|null|none|yes|no|on|off|test|demo|example|sample|default)$/.test(value) &&
       !PLACEHOLDER_NAMES.test(value) &&
       !TYPE_NAMES.test(value),
@@ -1425,24 +1454,30 @@ const LOCAL_RULES: Rule[] = [
     // Single-label values only: a dotted public name (HostName github.com)
     // is public knowledge, not PII, and the trailing guard stops the match
     // from firing on its first label. Internal FQDNs are already covered
-    // by pii-internal-host regardless of label.
+    // by pii-internal-host regardless of label. A value followed by a word
+    // is prose (`a via host: the endpoint`) unless that word is the next key
+    // (`host=db1 user=app`): a matched word is masked everywhere after it.
     regex: new RegExp(
       String.raw`(?:\bhost(?:name)?|\bserver|\bmachine)\s*[:=]\s*["']?([A-Za-z0-9][A-Za-z0-` +
-        String.raw`9-]{0,61}[A-Za-z0-9])(?![\w.\-(<\[])`,
+        String.raw`9-]{0,61}[A-Za-z0-9])(?![\w.\-(<\[])(?![ \t]+[A-Za-z](?![\w.-]*\s*[:=]))`,
       "gi",
     ),
     secretGroup: 1,
     // Two-character minimum drops Nix lambda params (`host: u:`). The stem
     // list drops English contractions (`host: don't`) and bare references,
     // TYPE_NAMES drops annotations, and the `<` / `[` guard drops generics.
-    validate: (value: string) =>
-      !TYPE_NAMES.test(value) && !HOST_STEMS.test(value) && !PLACEHOLDER_NAMES.test(value),
+    validate: (value: string, match?: RegExpMatchArray) =>
+      !TYPE_NAMES.test(value) &&
+      !HOST_STEMS.test(value) &&
+      !PLACEHOLDER_NAMES.test(value) &&
+      !codeAssignment(match),
     category: "pii",
   },
   {
     id: "pii-fleet-user-context",
     description: "Fleet username (short, requires identity label)",
     regex: /\brob\b/g,
+    validate: (_value: string, match?: RegExpMatchArray) => besideIdentityLabel(match),
     category: "pii",
     requireContext: true,
     contextWords: [
@@ -1988,7 +2023,7 @@ const IMPORTED_WINDOWS_MAX = 20_000;
 // Bump when detection semantics change without changing rule identity,
 // pattern, flags, or gating (a validator fix, for instance). Stale findings
 // must never hide a new detection.
-export const WINDOW_CACHE_VERSION = 1;
+export const WINDOW_CACHE_VERSION = 2;
 let rulesFingerprint: string | null = null;
 
 function categoryKey(categories: ReadonlySet<Category>): string {

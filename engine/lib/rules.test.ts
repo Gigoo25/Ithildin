@@ -236,6 +236,18 @@ describe("local rule additions", () => {
   it("does not fire fleet inventory on ordinary prose", () => {
     expect(scan("they rob banks").some((f) => f.ruleId === "pii-fleet-user-context")).toBe(false);
     expect(scan("mini pc review").some((f) => f.ruleId === "pii-fleet-host-short")).toBe(false);
+    // A context word within the window is not enough: the literal is an
+    // English verb, and only an identity label right before it names a user.
+    for (const text of [
+      "Sam tried to rob the account",
+      "a login can rob a login",
+      "login failed for rob tonight",
+    ]) {
+      expect(scan(text).some((f) => f.ruleId === "pii-fleet-user-context")).toBe(false);
+    }
+    for (const text of ["User rob logs in", "ssh rob@box", "owner: 'rob'"]) {
+      expect(scan(text).some((f) => f.ruleId === "pii-fleet-user-context")).toBe(true);
+    }
   });
 
   it("does not fire generic PII on public or non-identity text", () => {
@@ -288,9 +300,34 @@ describe("local rule additions", () => {
       "niriConfigs = lib.mapAttrsToList (host: u: {",
       "const host = normalizeHostname(identity.hostname);",
       "machine = readMachineName()",
+      "// names a via host: the endpoint suffix on",
+      "the server: one process per port",
+      "const server = app;",
     ]) {
       expect(scan(text).some((f) => f.ruleId === "pii-labeled-host")).toBe(false);
     }
+  });
+
+  it("takes a labeled host that is followed by the next key", () => {
+    const findings = scan("host=prod-02 user=app");
+    expect(
+      findings.some((f) => f.ruleId === "pii-labeled-host" && f.secretValue === "prod-02"),
+    ).toBe(true);
+  });
+
+  it("does not take a code expression for a labeled username", () => {
+    for (const text of [
+      'const user = msg.role === "user";',
+      "const owner = this.unalias(x);",
+      "this.login = pick;",
+      "user = a ?? b",
+      "if (login == other) {",
+      "user = rows[0]",
+    ]) {
+      expect(scan(text).some((f) => f.ruleId === "pii-labeled-user")).toBe(false);
+    }
+    // A quoted value is a literal, in code or not.
+    expect(scan('const user = "zqxops";').some((f) => f.ruleId === "pii-labeled-user")).toBe(true);
   });
 
   it("does not take type annotations for hosts or usernames", () => {
