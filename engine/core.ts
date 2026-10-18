@@ -65,7 +65,7 @@ import { isImagePayload, isPayloadMediaType } from "./lib/image-payload.ts";
 import { Recall } from "./lib/recall.ts";
 import { isSecretFile } from "./lib/secret-files.ts";
 
-// Larger strings skip regex scanning and are synthesized in full.
+// Larger strings are not scanned: they are withheld whole, behind a marker.
 export const MAX_SCAN_BYTES = 2_000_000;
 
 // Bounded memo so the context handler does not re-scan the whole transcript on
@@ -485,6 +485,26 @@ function omittedText(text: string, sourceLength: number, hits: number) {
   };
 }
 
+// A string past MAX_SCAN_BYTES, withheld whole and said so. It used to be
+// replaced by a synthetic value of the same length, which read to the model
+// as the file's content and was nowhere marked or logged.
+function tooLongToScan(value: string): { value: string; hits: number } {
+  reportRedaction({
+    sourceLength: value.length,
+    detections: [],
+    replacements: [],
+    omissions: [{ start: 0, end: value.length }],
+    coordinateSystem: "original",
+  });
+  process.stderr.write(
+    `ithildin: omitted a ${value.length}-char string, over the ${MAX_SCAN_BYTES}-char scan limit\n`,
+  );
+  return {
+    value: `[ithildin: omitted ${value.length} chars (over the ${MAX_SCAN_BYTES}-char scan limit)]`,
+    hits: 1,
+  };
+}
+
 // Structured document and assignment findings; throws on a JSON value that
 // does not parse, which the caller treats as an incomplete inspection.
 function documentFindings(
@@ -756,9 +776,7 @@ function redactString(
 ): { value: unknown; hits: number } {
   if (isImagePayload(value, key, parent) || isPayloadMediaType(value, key, parent))
     return { value, hits: 0 };
-  if (value.length > MAX_SCAN_BYTES) {
-    return { value: syntheticValue(value), hits: 1 };
-  }
+  if (value.length > MAX_SCAN_BYTES) return tooLongToScan(value);
   const cookieResult = redactCookieField(value, key, allowTags);
   if (cookieResult) return cookieResult;
   const { text, hits } = redactText(value, allowTags);

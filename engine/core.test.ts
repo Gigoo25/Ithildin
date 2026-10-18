@@ -207,12 +207,13 @@ describe("redactValue", () => {
     expect(result.hits).toBe(6);
   });
 
-  it("replaces a string too long to scan whole", () => {
+  it("withholds a string too long to scan, behind a marker", () => {
     const long = "x".repeat(MAX_SCAN_BYTES + 1);
     const result = redactValue(long, NONE);
     expect(result.hits).toBe(1);
-    expect(result.value).not.toBe(long);
-    expect((result.value as string).length).toBe(long.length);
+    expect(result.value).toBe(
+      `[ithildin: omitted ${long.length} chars (over the ${MAX_SCAN_BYTES}-char scan limit)]`,
+    );
   });
 
   it("scans a cookie header's values, unless secrets are allowed", () => {

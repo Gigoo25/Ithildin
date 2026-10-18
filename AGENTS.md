@@ -95,7 +95,8 @@ Check it before you finish, not after.
   open question (why some shaping steps miss the cache) and how to measure it.
 - `EventLog.scan` is bounded by per-rule deadlines and windows
   (`SCAN_WINDOW_CHARS` in `engine/lib/rules.ts`); a completed window is cached
-  by content digest. `MAX_SCAN_BYTES` skips regex scanning on very large strings.
+  by content digest. `MAX_SCAN_BYTES` withholds a longer string whole,
+  behind an `[ithildin: omitted …]` marker, instead of scanning it.
 
 ## Conventions
 
