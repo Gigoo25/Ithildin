@@ -649,6 +649,14 @@ describe("local rule additions", () => {
       expect(scan(text).some((f) => f.ruleId === id)).toBe(true);
     }
   });
+
+  it("masks a private IPv6 address with no context word, as private IPv4 is", () => {
+    const fires = (text: string) => scan(text).some((f) => f.ruleId === "pii-ipv6-private");
+    for (const text of ["peer fd12:3456:789a::7 up", "via fe80::1a2b%eth0", "fe80:0:0:0:1:2:3:4"])
+      expect([text, fires(text)]).toEqual([text, true]);
+    for (const text of ["link-local fe80::/10", "fd::read(x)", "let fdab = 1", "dead:fe80::1"])
+      expect([text, fires(text)]).toEqual([text, false]);
+  });
 });
 
 describe("bounded scanning", () => {

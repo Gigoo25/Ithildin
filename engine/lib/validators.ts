@@ -331,41 +331,47 @@ export function isReservedIpv4(ip: string): boolean {
   return false;
 }
 
-// IPv6 reserved / non-public ranges. Returns true for addresses that should
-// NOT be flagged as PII (loopback, unspecified, link-local, unique-local,
-// multicast, documentation). Properly handles both compressed (::) and
-// fully-expanded (0:0:0:0:0:0:0:1) forms. Used by pii-ipv6.
 // Each group must be 1–4 hex digits. Anything else is malformed.
 const isHexGroup = (g: string): boolean => /^[0-9a-f]{1,4}$/.test(g);
-export function isReservedIpv6(ip: string): boolean {
+// The eight 16-bit groups of an address, or null when it is malformed.
+// Handles both compressed (::) and fully-expanded (0:0:0:0:0:0:0:1) forms.
+function ipv6Groups(ip: string): number[] | null {
   const lower = ip.toLowerCase();
 
-  // Multiple :: is invalid — treat as reserved.
+  // Multiple :: is invalid.
   const halves = lower.split("::");
-  if (halves.length > 2) return true;
+  if (halves.length > 2) return null;
 
   // Split and expand :: notation into zero groups.
   let groups: number[];
   if (halves.length === 1) {
     const raw = lower.split(":");
-    if (raw.some((g) => !isHexGroup(g))) return true;
+    if (raw.some((g) => !isHexGroup(g))) return null;
     groups = raw.map((g) => Number.parseInt(g, 16));
   } else {
     const leftRaw = halves[0] ? halves[0].split(":") : [];
     const rightRaw = halves[1] ? halves[1].split(":") : [];
     if (leftRaw.some((g) => !isHexGroup(g)) || rightRaw.some((g) => !isHexGroup(g))) {
-      return true;
+      return null;
     }
     // Too many groups to fit in 128 bits — malformed. A "::" that compresses
     // zero groups (left + right === 8) is also invalid per RFC 4291 §2.2.
-    if (leftRaw.length + rightRaw.length >= 8) return true;
+    if (leftRaw.length + rightRaw.length >= 8) return null;
     const left = leftRaw.map((g) => Number.parseInt(g, 16));
     const right = rightRaw.map((g) => Number.parseInt(g, 16));
     const zeros = Array(8 - left.length - right.length).fill(0);
     groups = [...left, ...zeros, ...right];
   }
 
-  if (groups.length !== 8) return true; // malformed — treat as reserved
+  return groups.length === 8 ? groups : null;
+}
+
+// IPv6 reserved / non-public ranges. Returns true for addresses that should
+// NOT be flagged as PII (loopback, unspecified, link-local, unique-local,
+// multicast, documentation). Used by pii-ipv6.
+export function isReservedIpv6(ip: string): boolean {
+  const groups = ipv6Groups(ip);
+  if (groups === null) return true; // malformed — treat as reserved
 
   // Unspecified (::)
   if (groups.every((g) => g === 0)) return true;
@@ -381,6 +387,18 @@ export function isReservedIpv6(ip: string): boolean {
   if ((groups[0] ?? 0) === 0x2001 && (groups[1] ?? 0) === 0x0db8) return true;
 
   return false;
+}
+
+// Link-local fe80::/10 and unique-local fc00::/7: what a LAN or a tailnet
+// (fd7a:115c:a1e0::/48) hands out, so the IPv6 side of the private IPv4
+// ranges pii-ipv4 masks. A bare prefix (fe80::, fd00::) names a range in
+// prose, not a machine, and is left alone.
+export function isPrivateIpv6(ip: string): boolean {
+  const groups = ipv6Groups(ip);
+  if (groups === null) return false;
+  const [first = 0, ...rest] = groups;
+  if (rest.every((g) => g === 0)) return false;
+  return (first & 0xffc0) === 0xfe80 || (first & 0xfe00) === 0xfc00;
 }
 
 // ── Validator registry ───────────────────────────────────────────────────────
@@ -414,6 +432,7 @@ const VALIDATORS: Readonly<Record<string, (str: string) => boolean>> = {
   "resident-id-cn": validateChineseID,
   "public-ipv4": (ip: string) => !isReservedIpv4(ip),
   "public-ipv6": (ip: string) => !isReservedIpv6(ip),
+  "private-ipv6": isPrivateIpv6,
 };
 
 export function getValidator(name: string): ((str: string) => boolean) | undefined {

@@ -11,7 +11,7 @@ import {
   isProseAssignment,
   keyDescribesRatherThanHolds,
 } from "./shapes.ts";
-import { getValidator, isReservedIpv4 } from "./validators.ts";
+import { getValidator, isPrivateIpv6, isReservedIpv4 } from "./validators.ts";
 import { COMMON_SECOND_WORDS } from "./common-words.ts";
 import { FIRST_NAMES } from "./first-names.ts";
 import { ALIAS_LABEL } from "./aliases.ts";
@@ -966,6 +966,21 @@ const LOCAL_RULES: Rule[] = [
       "g",
     ),
     category: "pii",
+  },
+  // The IPv6 side of the ranges above: link-local and unique-local, tailnet
+  // addresses among them, masked without a context word as private IPv4 is.
+  // The first group is spelled out whole, so `fd::read` or a bare `fe80`
+  // never starts a match; the validator rejects a malformed address.
+  {
+    id: "pii-ipv6-private",
+    description: "IPv6 Address (link-local or unique-local)",
+    regex: new RegExp(
+      String.raw`(?<![0-9a-f:])(?:f[cd][0-9a-f]{2}|fe[89ab][0-9a-f])` +
+        String.raw`(?::[0-9a-f]{0,4}){1,7}(?![0-9a-f:])`,
+      "gi",
+    ),
+    category: "pii",
+    validate: isPrivateIpv6,
   },
   // Fleet inventory PII: exact host/user names from this repo's four hosts.
   // Single-label hostnames and bare login names have no safe generic shape

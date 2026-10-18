@@ -3,6 +3,7 @@ import {
   getValidator,
   isRealAwsKey,
   isRealCardNumber,
+  isPrivateIpv6,
   isReservedIpv4,
   isReservedIpv6,
   luhn,
@@ -172,6 +173,13 @@ describe("reserved addresses", () => {
     ]) {
       expect([ip, isReservedIpv6(ip)]).toEqual([ip, false]);
     }
+  });
+
+  it("isPrivateIpv6 takes link-local and unique-local hosts, not prefixes", () => {
+    for (const ip of ["fe80::1a2b", "FEBF::1", "fc00::1", "fd7a:115c:a1e0::ab12"])
+      expect([ip, isPrivateIpv6(ip)]).toEqual([ip, true]);
+    for (const ip of ["fe80::", "fd00::", "fec0::1", "fe80::1::2", "2001:4860::1", "ff02::1"])
+      expect([ip, isPrivateIpv6(ip)]).toEqual([ip, false]);
   });
 });
 
