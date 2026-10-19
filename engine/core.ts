@@ -755,6 +755,7 @@ export function redactValue(
     return { value, hits: 0 };
   }
   if (typeof value === "string") return redactString(value, allowTags, key, parent);
+  if (typeof value === "number") return redactNumber(value, allowTags);
   if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return { value, hits: 0 };
   if (typeof value === "object" && value !== null)
     return redactChildren(value, allowTags, location, providerPayload);
@@ -774,6 +775,21 @@ function redactString(
   if (cookieResult) return cookieResult;
   const { text, hits } = redactText(value, allowTags);
   return { value: text, hits };
+}
+
+// Tool arguments and results carry card and phone numbers as JSON numbers as
+// often as strings, and a skipped number went upstream whole. The digits are
+// scanned as text; a stand-in of digits goes back as a number, so the tool's
+// schema still holds, and any other shape stays a string rather than leak the
+// value. Below a million nothing is a candidate, which keeps counts and sizes
+// off the scanner.
+function redactNumber(value: number, allowTags: Set<string>): { value: unknown; hits: number } {
+  if (!Number.isInteger(value) || Math.abs(value) < 1e6 || Math.abs(value) >= 1e21)
+    return { value, hits: 0 };
+  const { text, hits } = redactText(String(value), allowTags);
+  if (hits === 0) return { value, hits: 0 };
+  const number = /^-?[1-9]\d*$/.test(text) ? Number(text) : NaN;
+  return { value: Number.isSafeInteger(number) ? number : text, hits };
 }
 
 // An array or object with every child redacted.

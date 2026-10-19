@@ -252,6 +252,16 @@ function walk(
   key?: string,
 ): unknown {
   if (typeof value === "string") return visit(value, key);
+  // The redactor masks long integers as digit stand-ins (redactNumber), so
+  // the model writes them back as numbers too.
+  if (typeof value === "number" && Number.isSafeInteger(value) && Math.abs(value) >= 1e6) {
+    const text = String(value);
+    const swapped = visit(text, key);
+    if (swapped === text) return value;
+    return /^-?[1-9]\d*$/.test(swapped) && Number.isSafeInteger(Number(swapped))
+      ? Number(swapped)
+      : swapped;
+  }
   if (Array.isArray(value))
     return value.map((item, index) =>
       typeof item === "string" ? visit(item, key, value, index) : walk(item, visit),

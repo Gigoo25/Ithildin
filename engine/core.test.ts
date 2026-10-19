@@ -128,6 +128,19 @@ describe("blocksInventoryAccess", () => {
 });
 
 describe("redactValue", () => {
+  it("scans a JSON number and keeps a digit stand-in a number", () => {
+    const card = 4532015112830366;
+    // A cold first scan can miss its deadline and come back as the omitted
+    // marker, a string; warm the scanner so this asserts the number path.
+    redactText(String(card), NONE);
+    const masked = redactValue({ card }, NONE).value as { card: unknown };
+    expect(typeof masked.card).toBe("number");
+    expect(masked.card).not.toBe(card);
+    expect(String(masked.card)).toHaveLength(String(card).length);
+    expect(redactValue(card, new Set(["all"]))).toEqual({ value: card, hits: 0 });
+    for (const plain of [999999, 4532015.5, 1e21]) expect(redactValue(plain, NONE).hits).toBe(0);
+  });
+
   it("passes opaque ciphertext and binary through", () => {
     expect(redactValue(TOKEN, NONE, "encrypted_content")).toEqual({ value: TOKEN, hits: 0 });
     expect(redactValue(TOKEN, NONE, "thoughtSignature")).toEqual({ value: TOKEN, hits: 0 });

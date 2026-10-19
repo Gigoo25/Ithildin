@@ -139,6 +139,18 @@ it("walks nested arguments and leaves non-strings alone", () => {
   expect(planSwapBack("read", 42, aliasBook, false).input).toBe(42);
 });
 
+it("swaps a digit stand-in back inside a JSON number", () => {
+  const aliasBook = book();
+  const standIn = aliasBook.standIn("pii-credit-card", "4532015112830366");
+  expect(standIn).toMatch(/^[1-9][0-9]{15}$/);
+  const swap = planSwapBack("form", { card: Number(standIn), n: 1700000000 }, aliasBook, false);
+  expect(swap.input).toEqual({ card: 4532015112830366, n: 1700000000 });
+  expect(swap.resolved).toHaveLength(1);
+  // Off the machine it stays the stand-in, still a number.
+  const web = planSwapBack("web_fetch", { card: Number(standIn) }, aliasBook, false);
+  expect(web.input).toEqual({ card: Number(standIn) });
+});
+
 it("checks an argv command as one command line, and a shell's script as its own", () => {
   const { aliasBook, host } = egressBook();
   const argv = (command: string[]) => planSwapBack("bash", { command }, aliasBook, false);
