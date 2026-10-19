@@ -128,6 +128,22 @@ describe("blocksInventoryAccess", () => {
 });
 
 describe("redactValue", () => {
+  it("withholds a subtree nested past the depth limit", () => {
+    let deep: unknown = "leaf";
+    for (let i = 0; i < 20_000; i++) deep = i % 2 ? { a: deep } : [deep];
+    const started = performance.now();
+    let result = redactValue(deep, NONE);
+    expect(performance.now() - started).toBeLessThan(1000);
+    expect(result.hits).toBe(1);
+    let levels = 0;
+    while (typeof result.value === "object") {
+      result = { value: Object.values(result.value as object)[0], hits: 1 };
+      levels++;
+    }
+    expect(levels).toBe(256);
+    expect(result.value).toMatch(/^\[ithildin: omitted an? (array|object) nested over 256 /);
+  });
+
   it("scans a JSON number and keeps a digit stand-in a number", () => {
     const card = 4532015112830366;
     // A cold first scan can miss its deadline and come back as the omitted

@@ -792,6 +792,18 @@ function redactNumber(value: number, allowTags: Set<string>): { value: unknown; 
   return { value: Number.isSafeInteger(number) ? number : text, hits };
 }
 
+// No real request nests this deep. Past it the recursion cost seconds (each
+// level copies its location) and then overflowed the stack; the subtree is
+// withheld instead, like an over-long string. The proxy refuses a body past
+// the same depth up front (JSON_DEPTH_MAX); this guards other callers.
+const MAX_DEPTH = 256;
+
+function tooDeepToScan(value: object): { value: string; hits: number } {
+  process.stderr.write(`ithildin: omitted a value nested over ${MAX_DEPTH} levels deep\n`);
+  const kind = Array.isArray(value) ? "array" : "object";
+  return { value: `[ithildin: omitted an ${kind} nested over ${MAX_DEPTH} levels deep]`, hits: 1 };
+}
+
 // An array or object with every child redacted.
 function redactChildren(
   value: object,
@@ -799,6 +811,7 @@ function redactChildren(
   location: readonly (string | number)[],
   providerPayload: boolean,
 ): { value: unknown; hits: number } {
+  if (location.length >= MAX_DEPTH) return tooDeepToScan(value);
   let hits = 0;
   if (Array.isArray(value)) {
     const out = value.map((item, index) => {
