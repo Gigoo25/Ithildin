@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { planRedaction } from "./redaction-spans.ts";
+import { occurrences, planRedaction } from "./redaction-spans.ts";
 import type { LocatedFinding } from "./rules.ts";
 
 function loc(
@@ -192,5 +192,27 @@ describe("redaction spans", () => {
       },
     });
     expect(out.text).toContain("omitted 11 chars (invalid scan offsets)");
+  });
+});
+
+describe("occurrences", () => {
+  // Every start, overlapping ones included, whichever search finds them.
+  const naive = (text: string, value: string): number[] => {
+    const found: number[] = [];
+    for (let at = text.indexOf(value); at >= 0; at = text.indexOf(value, at + 1)) found.push(at);
+    return found;
+  };
+
+  it("finds overlapping starts of a short and a long value alike", () => {
+    const unit = "abcabd".repeat(20);
+    const text = `x${unit.repeat(9)}y${unit.slice(0, 50)}`;
+    for (const value of ["abcab", unit.slice(0, 70), unit.repeat(2) + "a", "q".repeat(80)])
+      expect(occurrences(text, value, () => {})).toEqual(naive(text, value));
+  });
+
+  it("checks the budget at each one it finds", () => {
+    let checks = 0;
+    occurrences("ab".repeat(100), "ab".repeat(40), () => checks++);
+    expect(checks).toBe(61);
   });
 });

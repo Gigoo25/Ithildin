@@ -75,12 +75,7 @@ function collectRanges(input: PlanInput, check: () => void): PlanRange[] {
     // fragment replaces unrelated text. The exact finding is already covered by
     // the direct range above, so only propagate specific values.
     if (value.length < 2) continue;
-    let at = 0;
-    while (at < text.length) {
-      check();
-      const idx = text.indexOf(value, at);
-      if (idx < 0) break;
-      at = idx + 1; // overlapping equal occurrences must also participate
+    for (const idx of occurrences(text, value, check)) {
       const end = idx + value.length;
       if (
         f.category === "pii" &&
@@ -93,6 +88,39 @@ function collectRanges(input: PlanInput, check: () => void): PlanRange[] {
   }
   for (const t of input.trips) ranges.push({ ...t, members: [], omission: true });
   return ranges;
+}
+
+// Every start of `value` in `text`, overlapping ones included, since each
+// can stretch the masked span past the one before it. A short value is cheap to
+// find again from each start, so `indexOf` it. A long one is not: a finding can
+// be a whole 64K scan window, and in periodic text (base64 of repeated prose)
+// it recurs every few dozen characters, so a fresh search per start compared
+// billions of characters. Knuth-Morris-Pratt finds them all in one pass.
+export function occurrences(text: string, value: string, check: () => void): number[] {
+  const found: number[] = [];
+  if (value.length <= 64) {
+    for (let at = text.indexOf(value); at >= 0; at = text.indexOf(value, at + 1)) {
+      check();
+      found.push(at);
+    }
+    return found;
+  }
+  const fail = new Int32Array(value.length);
+  for (let i = 1, k = 0; i < value.length; i++) {
+    while (k > 0 && value[i] !== value[k]) k = fail[k - 1]!;
+    if (value[i] === value[k]) k++;
+    fail[i] = k;
+  }
+  for (let i = 0, k = 0; i < text.length; i++) {
+    while (k > 0 && text[i] !== value[k]) k = fail[k - 1]!;
+    if (text[i] === value[k]) k++;
+    if (k === value.length) {
+      check();
+      found.push(i - k + 1);
+      k = fail[k - 1]!;
+    }
+  }
+  return found;
 }
 
 // Values to find again elsewhere in the text, each with the finding that
