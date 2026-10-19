@@ -826,6 +826,24 @@ describe("old chat reasoning", () => {
     expect(first).toContain('"name":"ls"');
     expect(JSON.stringify(shapeRequest("chat", body)?.body)).toBe(first);
   });
+
+  it("keeps it on every turn of the loop the last user message started", () => {
+    // One user message, then a tool loop long enough for the cutoff to reach
+    // into it: DeepSeek refuses a turn there without its reasoning_content.
+    const loop = Array.from({ length: 30 }, (_, i) => [
+      reasoned({ content: null, tool_calls: [{ id: `l${i}`, function: { name: "ls" } }] }),
+      { role: "tool", tool_call_id: `l${i}`, content: i === 0 ? big() : "a.ts" },
+    ]).flat();
+    const before = [{ role: "user", content: "go" }, ...carried, reasoned({})];
+    const messages = [...before, { role: "user", content: "again" }, ...loop];
+    const shaped = shapeRequest("chat", { messages });
+    const out = shaped!.body.messages as Array<Record<string, unknown>>;
+    // The step is taken: the big result before the message is masked.
+    expect(String(out[2]!.content)).toContain("[masked");
+    expect(out[3]!.reasoning_content).toBeUndefined();
+    for (const turn of out.slice(5).filter((item) => item.role === "assistant"))
+      expect(turn.reasoning_content).toBe(reasoning);
+  });
 });
 
 describe("small old results", () => {

@@ -232,12 +232,13 @@ function sizes(format: Format, list: unknown[], from: Walk): Sized[] {
   const { retrieval, compacted } = from;
   const asOld: Walk = { calls: new Map(), outputs: new Map(), retrieval, compacted };
   const asNew: Walk = { calls: new Map(), outputs: new Map(), retrieval, compacted };
+  const asked = lastAsked(format, list);
   let turn = 0;
-  return list.map((item) => {
+  return list.map((item, at) => {
     for (const walk of [asOld, asNew]) remember(format, item, walk);
     if (isAssistant(format, item)) turn++;
-    const old = shapeEntry(format, item, asOld, true)?.saved ?? 0;
-    const recent = shapeEntry(format, item, asNew, false)?.saved ?? 0;
+    const old = shapeEntry(format, item, asOld, true, at > asked)?.saved ?? 0;
+    const recent = shapeEntry(format, item, asNew, false, at > asked)?.saved ?? 0;
     // Every byte, results included: this is what a rewrite sends again.
     const tokens = Math.ceil(JSON.stringify(item ?? null).length / 4);
     return { turn, tokens, gain: Math.max(0, Math.ceil((old - recent) / 4)) };
@@ -540,6 +541,7 @@ export function shapeRequest(
   const walk: Walk = { calls: new Map(), outputs: new Map(), retrieval, compacted: new Map() };
   const { cutoff, previous } = cutoffFor(format, list, walk, body);
   const kept = latestNotes(format, list, cutoff);
+  const asked = lastAsked(format, list);
   const totals: Counts = { masked: 0, compacted: 0, deduped: 0 };
   let turn = 0;
   let savedChars = 0;
@@ -558,7 +560,7 @@ export function shapeRequest(
     // its first turn.
     const old = cutoff > 0 && turn <= cutoff;
     const replaced = withNotes(item, old ? dropNotes(item, at, kept) : undefined, (entry) =>
-      shapeEntry(format, entry, walk, old),
+      shapeEntry(format, entry, walk, old, at > asked),
     );
     if (!replaced) return item;
     for (const kind of Object.keys(totals) as Kind[]) totals[kind] += replaced.counts[kind];
@@ -583,9 +585,10 @@ function shapeEntry(
   item: unknown,
   walk: Walk,
   old: boolean,
+  looping: boolean,
 ): Replacement | undefined {
   if (old) {
-    const call = shapeCall(format, item);
+    const call = shapeCall(format, item, looping);
     if (call) return call;
   }
   if (format === "anthropic") return shapeAnthropic(item, walk, old);
@@ -646,11 +649,11 @@ function maskedArguments(text: unknown): { value: string; saved: number } | unde
   return value.length < text.length ? { value, saved: text.length - value.length } : undefined;
 }
 
-function shapeCall(format: Format, item: unknown): Replacement | undefined {
+function shapeCall(format: Format, item: unknown, looping: boolean): Replacement | undefined {
   const entry = record(item);
   if (!entry) return;
   if (format === "anthropic") return shapeBlocks(entry);
-  if (format === "chat") return shapeChatCalls(entry);
+  if (format === "chat") return shapeChatCalls(entry, looping);
   const field = entry.type === "function_call" ? "arguments" : "input";
   if (entry.type !== "function_call" && entry.type !== "custom_tool_call") return;
   const next = field === "arguments" ? maskedArguments(entry.arguments) : maskedValue(entry.input);
@@ -700,6 +703,13 @@ function shapeBlocks(entry: Record_): Replacement | undefined {
 // reasoning_details. Unlike Anthropic's thinking nothing checks it, and it is
 // billed as input on every turn that re-sends it (a fifth of the prompt tokens
 // on an opencode Go session), so an old turn's is dropped the same way.
+//
+// Except in the tool loop the user's last message started: DeepSeek's thinking
+// mode refuses a turn there without its reasoning_content (400 "must be passed
+// back to the API"), and a long agent run is one loop of hundreds of turns, so
+// the cutoff reaches into it. Turns before that message take it dropped. The
+// next message moves the line, and the loop it closes loses its reasoning in
+// one rewrite, which costs the cache once per message, not once per step.
 const REASONING = ["reasoning_content", "reasoning", "reasoning_details"];
 
 // Whether a chat turn says or calls something: one that does not keeps its
@@ -710,7 +720,14 @@ function hasOutput(entry: Record_): boolean {
   return (typeof content === "string" || Array.isArray(content)) && content.length > 0;
 }
 
-function shapeChatCalls(entry: Record_): Replacement | undefined {
+// The index of the last user message in a chat conversation, -1 for none or
+// another format: the items after it are the loop it started.
+function lastAsked(format: Format, list: unknown[]): number {
+  if (format !== "chat") return -1;
+  return list.findLastIndex((item) => record(item)?.role === "user");
+}
+
+function shapeChatCalls(entry: Record_, looping: boolean): Replacement | undefined {
   if (entry.role !== "assistant") return;
   let saved = 0;
   let masked = 0;
@@ -725,7 +742,7 @@ function shapeChatCalls(entry: Record_): Replacement | undefined {
       masked++;
       return { ...typed, function: { ...fn, arguments: next.value } };
     });
-  if (hasOutput(entry))
+  if (!looping && hasOutput(entry))
     for (const field of REASONING) {
       const value = entry[field];
       if (value === undefined || value === null || value === "") continue;
