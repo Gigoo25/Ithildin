@@ -18,9 +18,10 @@
 // - nothing but the key and keyed hashes is written to disk (no table of
 //   real values),
 // - the model cannot reverse a stand-in without the key.
-// By default each session has its own key (next to its transcript), so a
-// provider cannot join stand-ins across sessions into a profile. Resuming a
-// session reuses its key; a fork inherits its parent's.
+// The proxy keeps one key for every session, so a stand-in survives resume,
+// fork and restart, and the prompt cache with it. The trade: a value has the
+// same stand-in in every session, so a provider can tell that two sessions
+// share one, though not what it is.
 // Because they look real, stand-ins are found for swap-back by what this
 // book minted, never by shape, and a new one is never a common word or a
 // word already in the conversation. Network values keep reserved space
@@ -29,18 +30,10 @@
 // those hold only three /24s, too few to keep one stand-in per subnet.
 
 import { createCipheriv, createHmac, randomBytes } from "node:crypto";
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { FIRST_NAMES } from "./first-names.ts";
-import { sessionFile as sessionPath, setting, stateDir } from "./names.ts";
+import { setting, stateDir } from "./names.ts";
 
 export type AliasKind =
   "host" | "user" | "email" | "user-at-host" | "home" | "ipv4" | "ipv6" | "mac" | "label";
@@ -428,25 +421,9 @@ export interface Resolved {
   ruleId: string;
 }
 
+// Where per-session keys lived, beside each transcript, before the proxy
+// kept one key for every session. One left behind is still refused to tools.
 export const SESSION_KEY_SUFFIX = ".ithildin-alias-key";
-
-// Per-session key file beside the transcript. A fork starts from its
-// parent's key, so the stand-ins it inherited keep resolving. No session
-// file (ephemeral sessions): a key that lives only in this process.
-export function sessionAliasKey(sessionFile: string | undefined, inheritFrom?: string): Buffer {
-  if (!sessionFile) return randomBytes(32);
-  const file = sessionPath(sessionFile, "alias-key");
-  if (inheritFrom && !existsSync(file)) {
-    try {
-      const parent = readFileSync(sessionPath(inheritFrom, "alias-key"), "utf8").trim();
-      if (/^[0-9a-f]{64}$/.test(parent))
-        writeFileSync(file, `${parent}\n`, { mode: 0o600, flag: "wx" });
-    } catch {
-      // No parent key (it predates per-session keys): start a fresh one.
-    }
-  }
-  return loadAliasKey(file);
-}
 
 // Letters that keep a stand-in pronounceable: a vowel stays a vowel and a
 // consonant a consonant, so a word-like value gets a word-like stand-in.

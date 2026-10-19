@@ -54,7 +54,9 @@ IPv4 address in 240.0.0.0/5, a space that is never assigned, and addresses in
 the same /24 stay together. A hostname becomes another word of the same
 length. A ticket key keeps its shape. They come from an HMAC under a key kept
 in `~/.local/state/ithildin`, so they stay the same across restarts and the
-provider's prompt cache stays warm. No table of real values is ever written
+provider's prompt cache stays warm. One key serves every session, so a value
+has the same stand-in in each: a provider can tell that two conversations
+share a host or a name, though not what it is. No table of real values is ever written
 to disk: a value the proxy learned in a session is kept across a restart as a
 keyed digest, and found again by hashing the text it next sees.
 
@@ -568,7 +570,6 @@ Settings are environment variables:
 | `ITHILDIN_CACHEMISS_KEEP`    | cache misses kept on disk, as redacted bodies (default 20, at most 14 days and 200 MB; 0 is off and deletes them) |
 | `ITHILDIN_GENERALIZE`        | generalize list file (default beside the config) |
 | `ITHILDIN_ALIASES`           | `stand-ins` or `tokens`; wins over the config    |
-| `ITHILDIN_ALIAS_KEY_SCOPE`   | `session` or `shared`; wins over the config      |
 | `ITHILDIN_ALIAS_KEY_FILE`    | stand-in key file                                |
 | `ITHILDIN_PROXY_KEY_FILE`    | the proxy's stand-in key file                    |
 

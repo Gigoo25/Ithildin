@@ -12,7 +12,6 @@ import {
   loadAliasKey,
   looksLikeAlias,
   registerAliasLabels,
-  sessionAliasKey,
 } from "./aliases.ts";
 
 const KEY = Buffer.alloc(32, 7);
@@ -189,25 +188,6 @@ it("creates a private key file once and reuses it", () => {
     } finally {
       warn.mockRestore();
     }
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-it("keeps one key per session, reuses it on resume, and inherits it on fork", () => {
-  const dir = mkdtempSync(join(tmpdir(), "session-keys-"));
-  try {
-    const [a, b, fork] = ["a.jsonl", "b.jsonl", "fork.jsonl"].map((name) => join(dir, name));
-    const keyA = sessionAliasKey(a);
-    expect(statSync(`${a}.ithildin-alias-key`).mode & 0o777).toBe(0o600);
-    expect(sessionAliasKey(a).equals(keyA)).toBe(true);
-    expect(sessionAliasKey(b).equals(keyA)).toBe(false);
-    expect(sessionAliasKey(fork, a).equals(keyA)).toBe(true);
-    // Different sessions, different stand-ins for the same value.
-    expect(new AliasBook(keyA).host("zqxbox")).not.toBe(
-      new AliasBook(sessionAliasKey(b)).host("zqxbox"),
-    );
-    expect(sessionAliasKey(undefined).equals(sessionAliasKey(undefined))).toBe(false);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

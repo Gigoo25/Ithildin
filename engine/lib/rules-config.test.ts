@@ -62,7 +62,6 @@ describe("readUserSettings", () => {
         rules,
         inventory: [{ id: "i" }],
         generalize: [{ id: "g" }],
-        aliasKey: "shared",
         aliases: "tokens",
         scanBudgetMs: 45000,
       },
@@ -73,7 +72,6 @@ describe("readUserSettings", () => {
       ruleConfigs: rules as RuleConfig[],
       inventory: [{ id: "i" }],
       generalize: [{ id: "g" }],
-      aliasKey: "shared",
       aliases: "tokens",
       scanBudgetMs: 45000,
     });
@@ -86,7 +84,6 @@ describe("readUserSettings", () => {
       ruleConfigs: [],
       inventory: [],
       generalize: [],
-      aliasKey: "session",
       aliases: "stand-ins",
       scanBudgetMs: null,
     };
@@ -102,7 +99,6 @@ describe("readUserSettings", () => {
         rules: {},
         inventory: "x",
         generalize: 1,
-        aliasKey: "global",
         aliases: "names",
         scanBudgetMs: "12ms",
       },
@@ -113,11 +109,10 @@ describe("readUserSettings", () => {
       ruleConfigs: [],
       inventory: [],
       generalize: [],
-      aliasKey: "session",
       aliases: "stand-ins",
       scanBudgetMs: null,
     });
-    expect(warnings).toHaveLength(7);
+    expect(warnings).toHaveLength(6);
     for (const warning of warnings) expect(warning).toMatch(/^ithildin: .*, ignoring\n$/);
     expect(readUserSettings({ contextWindow: 2.5 }, null).contextWindow).toBeNull();
   });

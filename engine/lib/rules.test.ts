@@ -1,7 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { redactText } from "../core.ts";
 import {
-  aliasKeyScope,
   beginScanBudget,
   withScanBudget,
   compileRule,
@@ -943,21 +942,4 @@ describe("rules added at runtime", () => {
       expect(result.hits).toBeGreaterThan(0);
     });
   }, 30_000);
-});
-
-describe("aliasKeyScope", () => {
-  it("takes the environment over the config file", () => {
-    const scope = process.env.ITHILDIN_ALIAS_KEY_SCOPE;
-    try {
-      process.env.ITHILDIN_ALIAS_KEY_SCOPE = "shared";
-      expect(aliasKeyScope()).toBe("shared");
-      process.env.ITHILDIN_ALIAS_KEY_SCOPE = "session";
-      expect(aliasKeyScope()).toBe("session");
-      process.env.ITHILDIN_ALIAS_KEY_SCOPE = "bogus";
-      expect(["session", "shared"]).toContain(aliasKeyScope());
-    } finally {
-      if (scope === undefined) delete process.env.ITHILDIN_ALIAS_KEY_SCOPE;
-      else process.env.ITHILDIN_ALIAS_KEY_SCOPE = scope;
-    }
-  });
 });

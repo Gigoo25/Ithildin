@@ -103,9 +103,6 @@ export interface EngineConfig {
   // "stand-ins" (default): meaningful, stable replacements for PII.
   // "tokens": the older __ITHILDIN_<TYPE>_<N>__ placeholders.
   aliases?: "stand-ins" | "tokens";
-  // "session" (default): a new stand-in key per session, so stand-ins cannot
-  // be linked across sessions. "shared": one key for every session.
-  aliasKey?: "session" | "shared";
   rules: RuleConfig[];
   inventory?: InventoryEntry[];
   generalize?: GeneralizeEntry[];
@@ -483,7 +480,6 @@ const pendingGeneralizeEntries: unknown[] = [];
 // order cannot leave the default in place.
 let configuredScanBudgetMs: number | null = null;
 let configuredAliases: "stand-ins" | "tokens" = "stand-ins";
-let configuredAliasKey: "session" | "shared" = "session";
 
 // A positive whole number of milliseconds, or null for "not configured".
 // `Number` rejects trailing junk that parseInt would silently drop.
@@ -497,7 +493,6 @@ export interface UserSettings {
   ruleConfigs: RuleConfig[];
   inventory: unknown[];
   generalize: unknown[];
-  aliasKey: "session" | "shared";
   aliases: "stand-ins" | "tokens";
   scanBudgetMs: number | null;
 }
@@ -515,11 +510,10 @@ export function readUserSettings(userConfig: unknown, envBudget: number | null):
     ruleConfigs: [],
     inventory: [],
     generalize: [],
-    aliasKey: "session",
     aliases: "stand-ins",
     scanBudgetMs: envBudget,
   };
-  const { contextWindow, rules, inventory, generalize, aliasKey, aliases, scanBudgetMs } = config;
+  const { contextWindow, rules, inventory, generalize, aliases, scanBudgetMs } = config;
   if (typeof contextWindow === "number" && Number.isInteger(contextWindow) && contextWindow >= 1) {
     settings.contextWindow = contextWindow;
   } else if (contextWindow != null) warn("invalid contextWindow in user config");
@@ -529,8 +523,6 @@ export function readUserSettings(userConfig: unknown, envBudget: number | null):
   else if (inventory != null) warn('"inventory" in user config must be an array');
   if (Array.isArray(generalize)) settings.generalize = generalize;
   else if (generalize != null) warn('"generalize" in user config must be an array');
-  if (aliasKey === "session" || aliasKey === "shared") settings.aliasKey = aliasKey;
-  else if (aliasKey != null) warn('aliasKey in user config must be "session" or "shared"');
   if (aliases === "tokens" || aliases === "stand-ins") settings.aliases = aliases;
   else if (aliases != null) warn('aliases in user config must be "stand-ins" or "tokens"');
   if (envBudget === null) {
@@ -570,7 +562,6 @@ function buildRules(): Rule[] {
   for (const rc of settings.ruleConfigs) pendingUserRuleConfigs.push(rc);
   for (const entry of settings.inventory) pendingInventoryEntries.push(entry);
   for (const entry of settings.generalize) pendingGeneralizeEntries.push(entry);
-  configuredAliasKey = settings.aliasKey;
   configuredAliases = settings.aliases;
   configuredScanBudgetMs = settings.scanBudgetMs;
   return defaultRules;
@@ -1599,13 +1590,6 @@ export function aliasStyle(): "stand-ins" | "tokens" {
   const env = setting("ALIASES");
   if (env === "tokens" || env === "stand-ins") return env;
   return configuredAliases;
-}
-
-// ITHILDIN_ALIAS_KEY_SCOPE wins over the config file.
-export function aliasKeyScope(): "session" | "shared" {
-  const env = setting("ALIAS_KEY_SCOPE");
-  if (env === "session" || env === "shared") return env;
-  return configuredAliasKey;
 }
 
 // Custom stand-in label for a rule id, when its config set one.

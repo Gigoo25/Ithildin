@@ -30,7 +30,6 @@ import {
   importWindowCache,
   windowCacheRevision,
   aliasStyle,
-  aliasKeyScope,
   ruleAliasLabel,
   ruleGeneralization,
   inventoryStandInValue,
@@ -38,13 +37,7 @@ import {
   GENERALIZE_PATH,
   escapeRegExp,
 } from "./lib/rules.ts";
-import {
-  AliasBook,
-  aliasKeyPath,
-  isAliasValue,
-  loadAliasKey,
-  SESSION_KEY_SUFFIX,
-} from "./lib/aliases.ts";
+import { AliasBook, aliasKeyPath, isAliasValue, SESSION_KEY_SUFFIX } from "./lib/aliases.ts";
 import { assert } from "./lib/assert.ts";
 import { FIRST_NAMES } from "./lib/first-names.ts";
 import { NAME, sessionFile as sessionPath, setting } from "./lib/names.ts";
@@ -203,14 +196,14 @@ export function syntheticValue(value: string): string {
 // tests) never touches the key file until a PII value needs a stand-in.
 let aliasBook: AliasBook | undefined;
 export function aliases(): AliasBook {
-  // Before any session starts (bench, tests): shared key if configured,
-  // otherwise one that lives only in this process.
-  aliasBook ??= new AliasBook(aliasKeyScope() === "shared" ? loadAliasKey() : randomBytes(32));
+  // Before the proxy installs its book (bench, tests): a key that lives only
+  // in this process.
+  aliasBook ??= new AliasBook(randomBytes(32));
   return aliasBook;
 }
 
 // The proxy is one long-lived process serving every session, so it
-// installs a book on its persistent key instead of the per-session one.
+// installs a book on its one persistent key.
 export function setAliasBook(book: AliasBook): void {
   aliasBook = book;
 }
