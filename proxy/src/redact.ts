@@ -386,11 +386,7 @@ function typedGrants(item: unknown): Array<{ grant: string | undefined; on: bool
   const entry = item as { role?: unknown; content?: unknown };
   if (entry.role !== "user") return [];
   // A tool-result turn is not a prompt, even with harness text beside it.
-  if (
-    Array.isArray(entry.content) &&
-    entry.content.some((block) => (block as { type?: unknown } | null)?.type === "tool_result")
-  )
-    return [];
+  if (hasToolResult(entry.content)) return [];
   const typed = userTypedText({ role: "user", content: promptBlocks(entry.content) });
   return [...typed.matchAll(SESSION_GRANT)].map((match) => ({
     grant: match[1]?.toLowerCase().replace("secrets", "secret"),
@@ -444,15 +440,14 @@ function promptAllowTags(
     if (blocks.length === 0) continue;
     // Anthropic tool results come back as user turns, often with harness text
     // beside them. Taken as the latest prompt, they cancelled the typed tag
-    // at the first tool call, so [allow-secrets] never reached a read. Such
-    // a turn decides only when it carries a tag of its own.
-    const results =
-      Array.isArray(content) &&
-      content.some((block) => (block as { type?: unknown } | null)?.type === "tool_result");
-    if (results && latestAllowTags([{ role: "user", content: blocks }]).size === 0) continue;
+    // at the first tool call, so [allow-secrets] never reached a read. Nor
+    // does a tag of their own count: which text beside a result the user
+    // typed is a guess (promptBlocks), and a wrapper it missed, echoing a
+    // file that holds [allow-all], sent the result's key upstream whole.
+    if (hasToolResult(content)) continue;
     // Typed text only: a system reminder quoting CLAUDE.md, or a pasted
     // fence, that mentions [allow-protected] is not the user asking for it.
-    if (!results) typed = userTypedText({ role: "user", content: blocks });
+    typed = userTypedText({ role: "user", content: blocks });
     users.push({ role: "user", content: blocks });
   }
   if (users.length === 0) return new Set(session ? sessionTags.get(session) : undefined);
@@ -508,19 +503,21 @@ export function turnTags(
 }
 
 // The content tags of the prompt one item holds, or undefined when it holds
-// none. A tool-result turn counts only with a tag of its own, as in
-// promptAllowTags.
+// none. A tool-result turn holds no prompt, as in promptAllowTags.
 function promptTags(item: unknown): Set<string> | undefined {
   if (!item || typeof item !== "object") return undefined;
   const entry = item as { role?: unknown; content?: unknown };
-  if (entry.role !== "user") return undefined;
+  if (entry.role !== "user" || hasToolResult(entry.content)) return undefined;
   const blocks = promptBlocks(entry.content);
   if (blocks.length === 0) return undefined;
-  const own = latestAllowTags([{ role: "user", content: blocks }]);
-  const results =
-    Array.isArray(entry.content) &&
-    entry.content.some((block) => (block as { type?: unknown } | null)?.type === "tool_result");
-  return results && own.size === 0 ? undefined : own;
+  return latestAllowTags([{ role: "user", content: blocks }]);
+}
+
+function hasToolResult(content: unknown): boolean {
+  return (
+    Array.isArray(content) &&
+    content.some((block) => (block as { type?: unknown } | null)?.type === "tool_result")
+  );
 }
 
 // The session grants held at each item. The session's memory holds them as of
