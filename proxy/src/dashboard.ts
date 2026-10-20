@@ -420,6 +420,8 @@ let lastWatch;
 const texts = new Map();
 // What each of those requests masked, from the proxy, by the same id.
 const values = new Map();
+// The thinking of each one's reply so far, and whether the reply is over.
+const replies = new Map();
 // What the reader opened or closed, turns and folds alike, where it differs
 // from how the page would set it: the view is rebuilt whenever a request
 // arrives, and a rebuild must not undo a click.
@@ -674,6 +676,7 @@ async function showSession() {
       const oldest = texts.keys().next().value;
       texts.delete(oldest);
       values.delete(oldest);
+      replies.delete(oldest);
     }
   }
   if (chosen !== known.id) return;
@@ -847,6 +850,7 @@ async function poll() {
       feed.length = 0;
       sessions.clear();
       texts.clear();
+      replies.clear();
       folds.clear();
       shownId = 0;
     }
@@ -869,11 +873,37 @@ async function poll() {
     renderSessions();
     if (firstPoll || data.entries.some((entry) => (entry.session || OTHER) === chosen))
       await showSession();
+    await readThinking();
     if (!firstPoll) notifyLeaks(data.entries);
     firstPoll = false;
   } catch (error) {
     setState('proxy not answering', 'down');
   }
+}
+
+// The shown request's reply thinking, read again each poll until the reply is
+// over, and laid out again when it grew.
+async function readThinking() {
+  const id = shownId;
+  const known = replies.get(id);
+  if (!id || (known && known.done)) return;
+  const response = await fetch('${REQUEST_PATH}?thinking&id=' + id, { cache: 'no-store' });
+  if (!response.ok) return;
+  const reply = await response.json();
+  replies.set(id, reply);
+  const grew = reply.text !== (known ? known.text : '');
+  if (id === shownId && reply.text && (grew || reply.done)) showText('keep');
+}
+
+// The reply's thinking after the request's own conversation, as the turn the
+// agent is on. The request holds only earlier turns' thinking, and only what
+// the agent sent back.
+function withReply(items, reply) {
+  if (!reply || !reply.text || items.length === 0) return items;
+  // The tools offered carry no place; every other item does.
+  const at = Math.max(-1, ...items.map((item) => item.at ?? -1)) + 1;
+  return [...items,
+    { who: 'assistant', kind: 'thinking', text: reply.text, at, live: !reply.done }];
 }
 
 // The request's conversation in order, as plain items to lay out: who said
@@ -1206,7 +1236,8 @@ function conversation(items, marks, needle, leaks) {
     } else if (item.kind === 'assistant') {
       put(item, said('reply', 'agent', item.text, model, needle));
     } else if (item.kind === 'thinking') {
-      put(item, fold('meta', 'Thinking', item.text, plain, needle, 'agent'));
+      const head = item.live ? 'Thinking \\u00b7 live' : 'Thinking';
+      put(item, fold('meta', head, item.text, plain, needle, 'agent'));
     } else if (item.kind === 'tool_call') {
       const result = item.id ? results.get(item.id) : undefined;
       if (result) paired.add(result);
@@ -1464,7 +1495,8 @@ function showText(place) {
   } catch {
     body = undefined;
   }
-  const items = body && typeof body === 'object' ? turns(body) : [];
+  const items = body && typeof body === 'object'
+    ? withReply(turns(body), replies.get(shownId)) : [];
   const raw = view === 'raw' || items.length === 0;
   byId('view_chat').disabled = items.length === 0;
   for (const button of document.querySelectorAll('.view'))

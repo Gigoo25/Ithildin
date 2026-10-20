@@ -18,6 +18,9 @@ export const SESSIONS_MAX = 20;
 // bytes). KEEP_MAX bodies at BODY_BYTES_MAX would be gigabytes; past this the
 // oldest go first, whatever the count allows.
 export const KEPT_CHARS_MAX = 128 * 1024 * 1024;
+// Longest reply thinking kept for one request, in characters. A reply thinks
+// far less than this; it bounds one that runs on.
+export const THINKING_CHARS_MAX = 1024 * 1024;
 const SESSION_CHARS = 8;
 
 export interface SentSummary {
@@ -49,9 +52,17 @@ export interface MaskedValue {
 // on what a request made of nothing else can hold.
 export const MASKED_PER_REQUEST_MAX = 100_000;
 
+// The thinking of a request's reply as it arrives, and whether the reply is
+// over: the page reads it again until it is.
+export interface ReplyThinking {
+  text: string;
+  done: boolean;
+}
+
 interface Sent extends SentSummary {
   text: string;
   masked: MaskedValue[];
+  reply: ReplyThinking;
 }
 
 const CLOSERS: Record<string, string> = { "{": "}", "[": "]" };
@@ -212,8 +223,8 @@ export class SentRequests {
     body: string,
     main = true,
     masked: MaskedValue[] = [],
-  ): void {
-    if (!this.enabled) return;
+  ): number | undefined {
+    if (!this.enabled) return undefined;
     const cut = body.length > BODY_BYTES_MAX;
     const text = cut ? clampToJson(body, BODY_BYTES_MAX) : body;
     this.chars += text.length;
@@ -230,9 +241,41 @@ export class SentRequests {
       cut,
       text,
       masked: masked.slice(0, MASKED_PER_REQUEST_MAX),
+      reply: { text: "", done: false },
     });
     if (this.kept.length > this.keep) this.drop();
     while (this.chars > this.charsMax && this.kept.length > 1) this.drop();
+    return this.lastId;
+  }
+
+  // More of a request's reply thinking. A break between two blocks is kept
+  // only once there is thinking before it. Past THINKING_CHARS_MAX the rest
+  // is dropped.
+  think(id: number, more: string): void {
+    const reply = this.find(id)?.reply;
+    if (!reply || reply.done || more === "" || (reply.text === "" && more.trim() === "")) return;
+    const room = THINKING_CHARS_MAX - reply.text.length;
+    const kept = more.length > room ? more.slice(0, Math.max(room, 0)) : more;
+    reply.text += kept;
+    this.chars += kept.length;
+  }
+
+  // The reply is over, however it ended.
+  ended(id: number): void {
+    const reply = this.find(id)?.reply;
+    if (reply) reply.done = true;
+  }
+
+  // A request's reply thinking so far.
+  thinking(id: number): ReplyThinking | undefined {
+    return this.find(id)?.reply;
+  }
+
+  // Newest last, and the one asked for is almost always among the newest.
+  private find(id: number): Sent | undefined {
+    for (let i = this.kept.length - 1; i >= 0; i--)
+      if (this.kept[i]!.id === id) return this.kept[i];
+    return undefined;
   }
 
   // The oldest request, unless it is its session's latest turn: each session
@@ -248,13 +291,13 @@ export class SentRequests {
     }
     const at = this.kept.findIndex((sent) => !latest.has(sent));
     const [gone] = this.kept.splice(at < 0 ? 0 : at, 1);
-    this.chars -= gone!.text.length;
+    this.chars -= gone!.text.length + gone!.reply.text.length;
   }
 
   // Newest first, without the text.
   list(): { enabled: boolean; keep: number; requests: SentSummary[] } {
     const requests = this.kept
-      .map(({ text: _text, masked: _masked, ...summary }) => summary)
+      .map(({ text: _text, masked: _masked, reply: _reply, ...summary }) => summary)
       .reverse();
     return { enabled: this.enabled, keep: this.keep, requests };
   }

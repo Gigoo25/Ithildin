@@ -572,6 +572,7 @@ describe("dashboard", () => {
         requests: [{ id: 7, session: "s1", main: true, time: 1, turn: 1 }],
       },
       "/dashboard/request?id=7": sent,
+      "/dashboard/request?thinking&id=7": { text: "Pondering the ask", done: false },
     };
     const fetch = async (url: string) => {
       const answer = answers[url];
@@ -608,6 +609,12 @@ describe("dashboard", () => {
       ["Before the first prompt", "", ""],
     ]);
     expect(shown.map((turn) => turn.open)).toEqual([true, false, false]);
+    // The reply's thinking so far tops the turn it is the agent's answer to.
+    const thought = shown[0]!.children[1]!;
+    expect(thought.children[0]!.children.map((part) => part.textContent)).toEqual([
+      "agent",
+      "Thinking \u00b7 live",
+    ]);
     // Inside a turn too: the reply, above the call, above the prompt.
     expect(shown[1]!.children.slice(1).map((step) => step.className)).toEqual([
       "step reply",
@@ -725,6 +732,30 @@ describe("dashboard", () => {
       { id: "", name: "Other traffic", last: 4, masked: 0, swapped: 0, held: 1, leaked: 0 },
     ]);
     expect([...leaks.keys()]).toEqual([4]);
+  });
+
+  it("puts the reply's thinking after the conversation, live until the reply ends", () => {
+    const source = /function withReply[\s\S]*?\n\}/.exec(DASHBOARD_HTML)![0];
+    const withReply = new Function(`${source}; return withReply;`)() as (
+      items: Array<{ kind: string; at?: number }>,
+      reply?: { text: string; done: boolean },
+    ) => Array<{ kind: string; at?: number; who?: string; live?: boolean; text?: string }>;
+    // The tools offered carry no place, so they do not decide the reply's.
+    const items = [{ kind: "tools" }, { kind: "user", at: 0 }, { kind: "assistant", at: 3 }];
+    expect(withReply(items, undefined)).toBe(items);
+    expect(withReply(items, { text: "", done: true })).toBe(items);
+    expect(withReply([], { text: "hm", done: false })).toEqual([]);
+    expect(withReply(items, { text: "hm", done: false }).at(-1)).toEqual({
+      who: "assistant",
+      kind: "thinking",
+      text: "hm",
+      at: 4,
+      live: true,
+    });
+    expect(withReply([{ kind: "tools" }], { text: "hm", done: true }).at(-1)).toMatchObject({
+      at: 0,
+      live: false,
+    });
   });
 
   it("lays out a request as a conversation in each format", () => {

@@ -69,6 +69,7 @@ import { type Miss, pruneMisses, saveMiss } from "./misses.ts";
 import { errorReply, readCapped } from "./reply.ts";
 import { type SelfTest, selfTest } from "./selftest.ts";
 import { createRewriter, formatSse, parseSseBlock, swapResponseBody } from "./streams.ts";
+import { thinkingOfBody, thinkingOfEvent } from "./thinking.ts";
 import type { Label } from "./trust.ts";
 import { allowHint } from "./protect.ts";
 
@@ -368,13 +369,23 @@ function refuse(status: number, message: string): Response {
   return errorReply(status, message, { [REFUSED_HEADER]: message });
 }
 
+// What a reply tells the rest of the proxy as it passes: the fields the cache
+// diagnosis reads (diagnose.ts), and the thinking the dashboard shows until the
+// reply ends.
+interface ReplyHooks {
+  listen: (value: unknown) => void;
+  think: (text: string) => void;
+  ended: () => void;
+}
+const NO_HOOKS: ReplyHooks = { listen: () => {}, think: () => {}, ended: () => {} };
+
 function rewriteSse(
   body: ReadableStream<Uint8Array>,
   format: Format,
   tags: Set<string>,
   done: (swapped: number, usage: Usage | undefined) => void,
   tap: (event: ActivityEvent) => unknown,
-  listen: (value: unknown) => void = () => {},
+  hooks: ReplyHooks = NO_HOOKS,
 ): ReadableStream<Uint8Array> {
   const rewriter = createRewriter(format, tags);
   let usage: Usage | undefined;
@@ -394,7 +405,9 @@ function rewriteSse(
       event.data.includes('"message_start"') ||
       event.data.includes('"input_transformations"')
     )
-      listen(parsedOr(event.data));
+      hooks.listen(parsedOr(event.data));
+    const thought = thinkingOfEvent(format, event.data);
+    if (thought) hooks.think(thought);
     const outs = observeActivity(tap, () => rewriter.push(event));
     for (const out of outs) controller.enqueue(encoder.encode(formatSse(out)));
   };
@@ -412,6 +425,7 @@ function rewriteSse(
         for (const out of observeActivity(tap, () => rewriter.flush()))
           controller.enqueue(encoder.encode(formatSse(out)));
         done(rewriter.swapped, usage);
+        hooks.ended();
       },
     }),
   );
@@ -730,7 +744,7 @@ async function forward(
     ...(session ? { sessionName: names.name(session.client, session.id) } : {}),
     turn: ++stores.turns,
   };
-  recordScan({ book, events, kept }, context, scanned, shaped.on, shaped);
+  const id = recordScan({ book, events, kept }, context, scanned, shaped.on, shaped);
   const broke = noteBreak(stores, context, format, scanned, shaped);
   const stopped = watchOutgoing(events, context, scanned, sent);
   if (stopped) return stopped;
@@ -759,8 +773,27 @@ async function forward(
   const answered = (usage: Usage | undefined) =>
     counted(usage) +
     (reached.asked ? stores.diagnoses.answer(thread!, !!shaped.step, heard, shaped.body) : "");
+  const hooks = replyHooks(kept, id, heard, request.signal);
+  const reply = await relayReply(upstream, { format, asked }, tags, line, tap, answered, hooks);
+  // A rewritten stream ends when it does (rewriteSse); any other reply is over.
+  if (!reply.headers.get("content-type")?.includes("text/event-stream")) hooks.ended();
+  return reply;
+}
+
+// The hooks for one request's reply: what it says for the cache diagnosis goes
+// in `heard`, and its thinking to the request the dashboard keeps. An agent
+// that hangs up ends the reply too, since the stream never finishes.
+function replyHooks(
+  kept: SentRequests,
+  id: number | undefined,
+  heard: Heard,
+  signal: AbortSignal,
+): ReplyHooks {
   const listen = (value: unknown) => Object.assign(heard, heardIn(value));
-  return relayReply(upstream, { format, asked }, tags, line, tap, answered, listen);
+  if (id === undefined) return { ...NO_HOOKS, listen };
+  const ended = () => kept.ended(id);
+  signal.addEventListener("abort", ended, { once: true });
+  return { listen, think: (text) => kept.think(id, text), ended };
 }
 
 // How long an upstream has to start its reply. A long non-streamed answer
@@ -1148,6 +1181,11 @@ function dashboard(
     return new Response(DASHBOARD_HTML, { headers: page });
   }
   if (own === "requests") return Response.json(kept.list(), { headers });
+  if (own === "request" && url.searchParams.has("thinking")) {
+    const thinking = kept.thinking(Number(url.searchParams.get("id")));
+    if (thinking === undefined) return errorReply(404, "no such request");
+    return Response.json(thinking, { headers });
+  }
   if (own === "request" && url.searchParams.has("masked")) {
     const masked = kept.masked(Number(url.searchParams.get("id")));
     if (masked === undefined) return errorReply(404, "no such request");
@@ -1278,7 +1316,7 @@ function recordScan(
   scanned: Scanned,
   shaping?: boolean,
   shaped: Forwarded = NOT_SHAPED,
-): void {
+): number | undefined {
   const { counts, prompts, tags, label, unguarded } = scanned;
   const trust = { ...label, unguarded: unguarded.length };
   if (counts)
@@ -1290,8 +1328,13 @@ function recordScan(
   for (const event of scanned.activity)
     if (stores.events.record(context, event, scanned.body, standIns)) fresh++;
   stores.events.request(context, scanned.scanMs, fresh, shaped);
-  if (scanned.body !== undefined)
-    stores.kept.record(context, scanned.body, isMainRequest(scanned.object), maskedIn(scanned));
+  if (scanned.body === undefined) return undefined;
+  return stores.kept.record(
+    context,
+    scanned.body,
+    isMainRequest(scanned.object),
+    maskedIn(scanned),
+  );
 }
 
 // Each value a request masked, once, as the dashboard marks it there.
@@ -1321,7 +1364,7 @@ async function relayReply(
   line: string,
   tap: (event: ActivityEvent) => unknown,
   counted: (usage: Usage | undefined) => string = () => "",
-  listen: (value: unknown) => void = () => {},
+  hooks: ReplyHooks = NO_HOOKS,
 ): Promise<Response> {
   // A client following a redirect resends its original, unredacted body to
   // the new URL, around the proxy: refuse it, and never pass its Location.
@@ -1341,14 +1384,15 @@ async function relayReply(
       tags,
       (swapped, usage) => log(`${line} swapped=${swapped}${counted(usage)} (stream)`),
       tap,
-      listen,
+      hooks,
     );
     return new Response(stream, init);
   }
   if (format && contentType.includes("json") && upstream.ok) {
     const parsed = await swapJsonReply(upstream, format, tags, tap);
     if (parsed instanceof Response) return parsed;
-    listen(parsed.body);
+    hooks.listen(parsed.body);
+    hooks.think(thinkingOfBody(format, parsed.body));
     log(`${line} swapped=${parsed.swapped}${counted(usageOf(format, parsed.body))}`);
     // Always re-serialized: a blocked call changes arguments without a swap.
     return new Response(JSON.stringify(parsed.body), init);
