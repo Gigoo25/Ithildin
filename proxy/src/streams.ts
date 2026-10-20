@@ -22,6 +22,7 @@ import {
 } from "./redact.ts";
 import { aliases } from "../engine/core.ts";
 import { recordOriginal } from "./replay.ts";
+import { nextGeminiCallId } from "./gemini.ts";
 
 export interface SseEvent {
   event?: string | undefined;
@@ -700,10 +701,116 @@ class ResponsesRewriter implements Rewriter {
   }
 }
 
+// ── Gemini ──────────────────────────────────────────────────────────────────
+// Each event holds candidates with the parts that are new. A call arrives
+// whole, so it is swapped where it is. Text is held per candidate as above,
+// and what is held goes out ahead of the next part that is not text and at
+// the candidate's finishReason, so the parts keep their order.
+
+type GeminiPart = { text?: unknown; thought?: unknown; functionCall?: Record<string, unknown> };
+type GeminiCandidate = {
+  index?: number;
+  content?: { parts?: GeminiPart[] };
+  finishReason?: unknown;
+};
+
+// A call's arguments swapped and guarded, under the id the next request will
+// give it (gemini.ts). Returns how many stand-ins went back.
+function swapGeminiCall(call: Record<string, unknown>, tags: Set<string>): number {
+  const id = nextGeminiCallId(tags, call);
+  const result = swapToolArguments(String(call.name ?? ""), call.args ?? {}, tags, id);
+  call.args = result.args;
+  return result.swapped;
+}
+
+// Text parts side by side made one, as the provider would have sent them: what
+// was held and what followed it. A part with more than text stays apart.
+function joinText(parts: GeminiPart[]): GeminiPart[] {
+  const plain = (part: GeminiPart | undefined) =>
+    typeof part?.text === "string" && Object.keys(part).length === 1;
+  return parts.reduce<GeminiPart[]>((out, part) => {
+    const last = out[out.length - 1];
+    if (plain(last) && plain(part)) out[out.length - 1] = { text: String(last!.text) + part.text };
+    else out.push(part);
+    return out;
+  }, []);
+}
+
+class GeminiRewriter implements Rewriter {
+  swapped = 0;
+  private readonly texts = new Map<number, TextHold>();
+  constructor(private readonly tags: Set<string>) {}
+
+  push(event: SseEvent): SseEvent[] {
+    const data = json(event);
+    if (!data || !Array.isArray(data.candidates)) return [event];
+    for (const candidate of data.candidates as GeminiCandidate[]) this.rewrite(candidate);
+    return [{ ...event, data: JSON.stringify(data) }];
+  }
+
+  flush(): SseEvent[] {
+    const candidates = [...this.texts.keys()].flatMap((index) => {
+      const parts = this.release(index);
+      return parts.length ? [{ index, content: { role: "model", parts } }] : [];
+    });
+    return candidates.length ? [{ data: JSON.stringify({ candidates }) }] : [];
+  }
+
+  private rewrite(candidate: GeminiCandidate): void {
+    const index = candidate.index ?? 0;
+    const parts = candidate.content?.parts;
+    const out: GeminiPart[] = [];
+    for (const part of Array.isArray(parts) ? parts : []) {
+      if (typeof part?.text === "string" && part.thought !== true) {
+        const hold = this.texts.get(index) ?? this.newHold(index);
+        const text = hold.push(part.text);
+        // A part with more than its text (a thought signature) goes on.
+        if (text !== "" || Object.keys(part).length > 1) out.push({ ...part, text });
+        continue;
+      }
+      out.push(...this.release(index));
+      if (part?.functionCall) this.swapped += swapGeminiCall(part.functionCall, this.tags);
+      out.push(part);
+    }
+    if (candidate.finishReason !== undefined) out.push(...this.release(index));
+    if (candidate.content && Array.isArray(parts)) candidate.content.parts = joinText(out);
+  }
+
+  private newHold(index: number): TextHold {
+    const hold = new TextHold(this.tags, (n) => {
+      this.swapped += n;
+    });
+    this.texts.set(index, hold);
+    return hold;
+  }
+
+  // What a candidate's text holds, as a part, and a new block after it.
+  private release(index: number): GeminiPart[] {
+    const text = this.texts.get(index)?.flush();
+    this.texts.delete(index);
+    return text ? [{ text }] : [];
+  }
+}
+
 export function createRewriter(format: Format, tags: Set<string>): Rewriter {
   if (format === "anthropic") return new AnthropicRewriter(tags);
   if (format === "chat") return new ChatRewriter(tags);
+  if (format === "gemini") return new GeminiRewriter(tags);
   return new ResponsesRewriter(tags);
+}
+
+function swapGeminiBody(body: Record<string, unknown>, tags: Set<string>): number {
+  let swapped = 0;
+  const candidates = Array.isArray(body.candidates) ? (body.candidates as GeminiCandidate[]) : [];
+  for (const part of candidates.flatMap((candidate) => candidate?.content?.parts ?? [])) {
+    if (typeof part?.text === "string" && part.thought !== true) {
+      const result = swapWholeText(part.text, tags);
+      part.text = result.text;
+      swapped += result.swapped;
+    }
+    if (part?.functionCall) swapped += swapGeminiCall(part.functionCall, tags);
+  }
+  return swapped;
 }
 
 // ── non-streaming bodies ────────────────────────────────────────────────────
@@ -713,6 +820,7 @@ export function swapResponseBody(
   body: Record<string, unknown>,
   tags: Set<string>,
 ): number {
+  if (format === "gemini") return swapGeminiBody(body, tags);
   let swapped = 0;
   if (format === "anthropic" && Array.isArray(body.content)) {
     for (const block of body.content as Array<{

@@ -79,8 +79,23 @@ import {
 } from "./trust.ts";
 import { BASH_TOOLS, LOCAL_TOOLS, shellCommand, writeTargets } from "./tools.ts";
 import { argsKey, initReplay, recordOriginal, replayOriginal, saveReplay } from "./replay.ts";
+import { geminiView, mapGeminiResults, noteGeminiCalls } from "./gemini.ts";
 
-export type Format = "anthropic" | "chat" | "responses";
+export type Format = "anthropic" | "chat" | "responses" | "gemini";
+
+// The key a request's conversation is under.
+function listKey(format: Format): "messages" | "input" | "contents" {
+  return format === "responses" ? "input" : format === "gemini" ? "contents" : "messages";
+}
+
+// The request as the history readers take it: a Gemini one through its
+// Anthropic-shaped view (gemini.ts), whose items line up with its turns.
+function readable(
+  format: Format,
+  body: Record<string, unknown>,
+): { format: Format; body: Record<string, unknown> } {
+  return format === "gemini" ? { format: "anthropic", body: geminiView(body) } : { format, body };
+}
 
 // Scan results survive a restart (which every rules change triggers): cold,
 // one long conversation costs seconds; loaded, tens of milliseconds. The file
@@ -550,6 +565,7 @@ function grantsByTurn(list: unknown[], session: string): Array<Set<string>> {
 // Typed user prompts in a request, for the badges' per-turn count. Turns
 // holding tool results are not prompts, even with harness text beside them.
 export function typedPromptCount(format: Format, body: Record<string, unknown>): number {
+  if (format === "gemini") return typedPromptCount("anthropic", geminiView(body));
   const list = format === "responses" ? body.input : body.messages;
   if (!Array.isArray(list)) return typeof list === "string" ? 1 : 0;
   return list.filter((item) => {
@@ -799,6 +815,97 @@ function redactOpenAi(
   return { value: out, hits };
 }
 
+// Gemini turns: the same walk, with the model's thought parts passed as they
+// came (signed, and the provider's own output, like Anthropic thinking), wire
+// names and ids kept, the model's text and arguments replayed as the provider
+// sent them, and the user's text scanned as typed.
+const GEMINI_KEPT_KEYS = new Set(["thoughtSignature", "name", "id", "mimeType"]);
+
+function redactGemini(
+  body: Record<string, unknown>,
+  tags: Set<string>,
+  turns?: Array<Set<string>>,
+): { value: Record<string, unknown>; hits: number } {
+  const { contents, ...rest } = body;
+  const top = redactValue(rest, tags, undefined, undefined, [], true);
+  let hits = top.hits;
+  const out = top.value as Record<string, unknown>;
+  if (!Array.isArray(contents)) {
+    const result = redactValue(contents, tags, "contents", undefined, ["contents"], true);
+    hits += result.hits;
+    if (contents !== undefined) out.contents = result.value;
+    return { value: out, hits };
+  }
+  out.contents = contents.map((turn, i) => {
+    const at = turns?.[i] ?? tags;
+    const record = turn as Record<string, unknown> | null;
+    if (!record || typeof record !== "object" || !Array.isArray(record.parts)) {
+      const result = redactValue(turn, at, undefined, undefined, ["contents", i], true);
+      hits += result.hits;
+      return result.value;
+    }
+    const { parts, ...fields } = record;
+    const scanned = redactValue(fields, at, undefined, undefined, ["contents", i], true);
+    hits += scanned.hits;
+    const user = record.role !== "model";
+    const next = (parts as unknown[]).map((part, j) => {
+      const result = redactGeminiPart(part, user, at, ["contents", i, "parts", j]);
+      hits += result.hits;
+      return result.value;
+    });
+    return { ...(scanned.value as Record<string, unknown>), parts: next };
+  });
+  return { value: out, hits };
+}
+
+function redactGeminiPart(
+  part: unknown,
+  user: boolean,
+  tags: Set<string>,
+  location: Array<string | number>,
+): { value: unknown; hits: number } {
+  if (!part || typeof part !== "object" || Array.isArray(part))
+    return redactValue(part, tags, undefined, undefined, location, true);
+  const record = part as Record<string, unknown>;
+  if (record.thought === true) return { value: part, hits: 0 };
+  const replayed = user ? undefined : replayGeminiPart(record);
+  if (replayed !== undefined) return { value: replayed, hits: 0 };
+  let hits = 0;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(record)) {
+    const at = [...location, key];
+    if (GEMINI_KEPT_KEYS.has(key) && typeof value === "string") {
+      out[key] = value;
+    } else if (key === "functionCall" || key === "functionResponse") {
+      const result = redactGeminiPart(value, false, tags, at);
+      hits += result.hits;
+      out[key] = result.value;
+    } else {
+      const text = user && key === "text";
+      const result = typed(text, () => redactValue(value, tags, key, record, at, true));
+      hits += result.hits;
+      out[key] = result.value;
+    }
+  }
+  return { value: out, hits };
+}
+
+// A model part as the provider sent it (replay.ts), or undefined when the
+// harness's copy is not a recorded one.
+function replayGeminiPart(record: Record<string, unknown>): unknown {
+  if (typeof record.text === "string") {
+    const text = replayOriginal("text", record.text);
+    return text === undefined ? undefined : { ...record, text };
+  }
+  const call = record.functionCall as { args?: unknown } | undefined;
+  if (!call || typeof call !== "object") return undefined;
+  const harness = argsKey(call.args);
+  const original = harness === undefined ? undefined : replayOriginal("args", harness);
+  return original === undefined
+    ? undefined
+    : { ...record, functionCall: { ...call, args: JSON.parse(original) } };
+}
+
 // What one request's redaction did, by kind, for the status badges: distinct
 // values masked (stand-ins and generalized words), tool results withheld as
 // protected-file reads, search lines withheld from protected files, and
@@ -824,13 +931,15 @@ export function redactRequest(
   strays?: Stray[];
 } {
   // Before anything is redacted: what the tools really returned.
-  const strays = strayStandIns(format, body);
-  const tags = requestAllowTags(format, body, session);
-  const turns = turnTags(format, body, tags, session);
-  requestDirs.set(tags, requestCwd(format, body));
-  const label = conversationLabel(seenInHistory(format, body, tags, turns), session);
+  const read = readable(format, body);
+  const strays = strayStandIns(read.format, read.body);
+  const tags = requestAllowTags(read.format, read.body, session);
+  const turns = turnTags(read.format, read.body, tags, session);
+  requestDirs.set(tags, requestCwd(read.format, read.body));
+  const label = conversationLabel(seenInHistory(read.format, read.body, tags, turns), session);
   requestLabels.set(tags, label);
-  rememberLiterals(format, body);
+  rememberLiterals(read.format, read.body);
+  if (format === "gemini" && Array.isArray(body.contents)) noteGeminiCalls(tags, body.contents);
   // A new stand-in must not equal a word the conversation already holds:
   // swap-back would turn that word into the real value.
   let corpus: string | undefined;
@@ -838,7 +947,7 @@ export function redactRequest(
   try {
     const redacted = redactWithCorpus(format, body, tags, session, turns);
     noteHarnessChange(format, body, redacted.body);
-    return { ...redacted, label, unguarded: unguardedTools(body.tools), strays };
+    return { ...redacted, label, unguarded: unguardedTools(read.body.tools), strays };
   } finally {
     aliases().setCorpus(undefined);
   }
@@ -857,7 +966,8 @@ export function noteHarnessChange(
   before: Record<string, unknown>,
   after: Record<string, unknown>,
 ): void {
-  const field = format === "responses" ? "instructions" : "system";
+  const field =
+    format === "responses" ? "instructions" : format === "gemini" ? "systemInstruction" : "system";
   for (const key of [field, "tools"]) {
     if (before[key] === undefined) continue;
     const was = JSON.stringify(before[key]);
@@ -1008,7 +1118,7 @@ export function egressBlocked(tokens: string[]): string {
 }
 
 function explainBlocked(format: Format, body: Record<string, unknown>): Record<string, unknown> {
-  const key = format === "responses" ? "input" : "messages";
+  const key = listKey(format);
   const list = body[key];
   if (!Array.isArray(list)) return body;
   if (blockedCalls.size === 0) return body;
@@ -1018,6 +1128,10 @@ function explainBlocked(format: Format, body: Record<string, unknown>): Record<s
     if (text) hits++;
     return text;
   };
+  if (format === "gemini") {
+    const replaced = mapGeminiResults(list, notice);
+    return hits === 0 ? body : { ...body, [key]: replaced };
+  }
   const replaced = list.map((item) => {
     if (!item || typeof item !== "object") return item;
     const record = item as Record<string, unknown>;
@@ -1163,7 +1277,9 @@ export function redactBody(
     const { result, values } = collectValues(() =>
       format === "anthropic"
         ? redactAnthropic(withheld.body, tags, turns)
-        : redactOpenAi(format, withheld.body, tags, turns),
+        : format === "gemini"
+          ? redactGemini(withheld.body, tags, turns)
+          : redactOpenAi(format, withheld.body, tags, turns),
     );
     const counts = {
       masked: values,
@@ -1425,6 +1541,12 @@ function mapToolResults(
   counter: { hits: number },
   result: (id: unknown, content: unknown) => unknown,
 ): unknown[] {
+  if (format === "gemini")
+    return mapGeminiResults(list, (id, content) => {
+      const before = counter.hits;
+      const out = result(id, content);
+      return counter.hits > before ? out : undefined;
+    });
   return list.map((item) => {
     if (!item || typeof item !== "object") return item;
     const record = item as Record<string, unknown>;
@@ -1460,11 +1582,13 @@ function withholdSecretReads(
   tags: Set<string>,
   turns?: Array<Set<string>>,
 ): { body: Record<string, unknown>; hits: number; files: number } {
-  const list = format === "responses" ? body.input : body.messages;
+  const list = body[listKey(format)];
   if (!Array.isArray(list)) return { body, hits: 0, files: 0 };
-  const cwd = requestCwd(format, body);
+  const read = readable(format, body);
+  const cwd = requestCwd(read.format, read.body);
   const listed = secretListing(cwd);
-  const secret = secretCalls(format, list, tags, cwd, turns);
+  const calls = read.body[listKey(read.format)] as unknown[];
+  const secret = secretCalls(read.format, calls, tags, cwd, turns);
   const counter = { hits: 0, files: 0 };
   // A result is withheld whole, or has its secret-file search lines withheld.
   const result = (id: unknown, content: unknown): unknown => {
@@ -1482,7 +1606,7 @@ function withholdSecretReads(
   const { hits, files } = counter;
   return hits === 0
     ? { body, hits, files }
-    : { body: { ...body, [format === "responses" ? "input" : "messages"]: replaced }, hits, files };
+    : { body: { ...body, [listKey(format)]: replaced }, hits, files };
 }
 
 // Search output names a file on each line (grep -rn, rg: "path:12:text",
@@ -1617,6 +1741,7 @@ export function shapingSwitch(
   // A request that reached the proxy unscanned (an empty body, a GET) has no
   // object to read, and no session to remember a switch for.
   if (!body || typeof body !== "object") return { on: undefined, session: false };
+  if (format === "gemini") return shapingSwitch("anthropic", geminiView(body), session);
   const key = format === "responses" ? "input" : "messages";
   const list = body[key];
   const id = session ?? undefined;
@@ -1668,6 +1793,8 @@ function isInlineData(value: unknown): boolean {
 // image_url, file and input_audio parts; Responses input_image and input_file.
 // engine/lib/image-payload.ts lets the same bytes through unscanned once allowed.
 function isOpaqueBlock(block: Record<string, unknown>): boolean {
+  // A Gemini part's inline bytes, which carry no type.
+  if (block.inlineData && typeof block.inlineData === "object") return true;
   const source = block.source as { type?: unknown; url?: unknown } | undefined;
   switch (block.type) {
     case "image":
@@ -1689,6 +1816,8 @@ function isOpaqueBlock(block: Record<string, unknown>): boolean {
 }
 
 function withheldImage(format: Format): Record<string, unknown> {
+  // A Gemini part is told apart by its one field, so it takes no type.
+  if (format === "gemini") return { text: IMAGE_NOTICE };
   return { type: format === "responses" ? "input_text" : "text", text: IMAGE_NOTICE };
 }
 
@@ -1723,11 +1852,12 @@ export function withholdImages(
   body: Record<string, unknown>,
   session?: string | null,
 ): { body: Record<string, unknown>; hits: number; session: boolean } {
-  const key = format === "responses" ? "input" : "messages";
+  const key = listKey(format);
   const list = body[key];
   if (!Array.isArray(list)) return { body, hits: 0, session: false };
+  const read = readable(format, body);
   // The typed prompt of each item, or none.
-  const prompts = list.map((item) => {
+  const prompts = (read.body[listKey(read.format)] as unknown[]).map((item) => {
     if (!item || typeof item !== "object") return [];
     const record = item as { role?: unknown; content?: unknown };
     // A tool-result turn is not a prompt, even with harness text beside it.

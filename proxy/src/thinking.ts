@@ -6,7 +6,8 @@
 //
 // What each format streams it as: Anthropic's thinking_delta, Responses'
 // reasoning summary and reasoning text deltas, and the chat providers'
-// reasoning_content or reasoning (DeepSeek, OpenRouter, opencode Go).
+// reasoning_content or reasoning (DeepSeek, OpenRouter, opencode Go), and
+// Gemini's text parts marked thought.
 
 import type { Format } from "./redact.ts";
 
@@ -52,10 +53,25 @@ function responsesEvent(data: Record<string, unknown>): string {
   return RESPONSES_DELTAS.has(String(data.type)) ? text(data.delta) : "";
 }
 
+// Gemini's thought parts, in an event or a whole reply alike.
+function geminiThought(data: Record<string, unknown>): string {
+  const candidates = Array.isArray(data.candidates) ? data.candidates : [];
+  return candidates
+    .flatMap((candidate) => {
+      const parts = record(record(candidate)?.content)?.parts;
+      return Array.isArray(parts) ? parts : [];
+    })
+    .filter((part) => record(part)?.thought === true)
+    .map((part) => text(record(part)!.text))
+    .join("");
+}
+
 // The thinking one stream event carries, "" for none. Most events carry none,
 // so one without the word is not parsed.
 export function thinkingOfEvent(format: Format, data: string): string {
-  if (!data.includes("thinking") && !data.includes("reasoning")) return "";
+  const word = format === "gemini" ? '"thought"' : undefined;
+  if (word ? !data.includes(word) : !data.includes("thinking") && !data.includes("reasoning"))
+    return "";
   let parsed: Record<string, unknown> | undefined;
   try {
     parsed = record(JSON.parse(data));
@@ -65,11 +81,13 @@ export function thinkingOfEvent(format: Format, data: string): string {
   if (!parsed) return "";
   if (format === "anthropic") return anthropicEvent(parsed);
   if (format === "chat") return chatEvent(parsed);
+  if (format === "gemini") return geminiThought(parsed);
   return responsesEvent(parsed);
 }
 
 // The thinking in a whole (non-streamed) reply, "" for none.
 export function thinkingOfBody(format: Format, body: Record<string, unknown>): string {
+  if (format === "gemini") return geminiThought(body);
   const parts: string[] = [];
   if (format === "anthropic" && Array.isArray(body.content)) {
     for (const block of body.content)

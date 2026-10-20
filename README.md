@@ -524,16 +524,18 @@ deadlines do not fire in time, so one long conversation hangs the proxy for
 minutes with nothing in the log. Two megabytes of messages scan in well under a
 second on 1.4.2 and were still running after four minutes on 1.3.14.
 
-It reads three wire formats, known by the path's ending: Anthropic Messages
-(`/v1/messages`), OpenAI Chat Completions (`/chat/completions`) and OpenAI
-Responses (`/responses`). That covers any host speaking one of them: OpenRouter,
-Groq, DeepSeek, Mistral, LiteLLM, vLLM, Ollama's `/v1`, Gemini's OpenAI-style
-`/v1beta/openai`, Azure's deployments. A harness's base URL is the route's name
-on the proxy plus whatever it would have put after the host, so one that adds
-only `/chat/completions` needs `/v1` in it. Other formats (Gemini's own
-`generateContent`, Ollama's `/api/chat`) are scanned going out, but a reply that
-could be a model's is refused rather than passed unread; Bedrock signs its body,
-so it cannot go through a proxy that rewrites it.
+It reads four wire formats, known by the path's ending: Anthropic Messages
+(`/v1/messages`), OpenAI Chat Completions (`/chat/completions`), OpenAI
+Responses (`/responses`) and Gemini's own (`:generateContent`,
+`:streamGenerateContent`), which opencode Go's Gemini models use. That covers
+any host speaking one of them: OpenRouter, Groq, DeepSeek, Mistral, LiteLLM,
+vLLM, Ollama's `/v1`, Gemini's OpenAI-style `/v1beta/openai`, Azure's
+deployments. A harness's base URL is the route's name on the proxy plus whatever
+it would have put after the host, so one that adds only `/chat/completions`
+needs `/v1` in it. Other formats (Ollama's `/api/chat`) are scanned going out,
+but a reply that could be a model's is refused rather than passed unread; a
+`via` host cannot take Gemini's own format, so a route with one refuses it too.
+Bedrock signs its body, so it cannot go through a proxy that rewrites it.
 
 The built-in routes are `anthropic`, `openai-codex` and `opencode-go`. Add
 local or LAN model servers in `~/.config/ithildin/routes.json`. A route is an

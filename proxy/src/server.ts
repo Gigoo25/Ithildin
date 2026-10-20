@@ -95,7 +95,7 @@ export const DEFAULT_ROUTES: Record<string, Route> = {
   // to base + /v1.
   "opencode-go": {
     upstream: "https://opencode.ai/zen/go",
-    rewrite: { "/chat/": "/v1/chat/", "/responses": "/v1/responses" },
+    rewrite: { "/chat/": "/v1/chat/", "/responses": "/v1/responses", "/models/": "/v1/models/" },
   },
 };
 
@@ -154,6 +154,8 @@ export function formatForPath(pathname: string): Format | undefined {
   if (/\/v1\/messages(?:\/count_tokens)?$/.test(pathname)) return "anthropic";
   if (pathname.endsWith("/chat/completions")) return "chat";
   if (pathname.endsWith("/responses")) return "responses";
+  // Gemini's own API, as opencode Go's Gemini models are called.
+  if (/\/models\/[^/]+:(?:generateContent|streamGenerateContent)$/.test(pathname)) return "gemini";
   return undefined;
 }
 
@@ -211,8 +213,8 @@ const VIA_SUFFIXES = [
 ];
 
 // The endpoint a via host serves for each wire format, for a path a rewrite
-// has left unrecognisable.
-const VIA_ENDPOINTS: Record<Format, string> = {
+// has left unrecognisable. Gemini's own API is not one it serves.
+const VIA_ENDPOINTS: Partial<Record<Format, string>> = {
   anthropic: "/v1/messages",
   chat: "/v1/chat/completions",
   responses: "/v1/responses",
@@ -587,7 +589,11 @@ function redactBody(
     noteStrays(redacted.strays);
     // Single-message side requests (titles, quota probes) are not the
     // conversation, so they do not set its badge.
-    const turns = Array.isArray(parsed.messages) ? parsed.messages : parsed.input;
+    const turns = Array.isArray(parsed.messages)
+      ? parsed.messages
+      : format === "gemini"
+        ? parsed.contents
+        : parsed.input;
     const conversation = Array.isArray(turns) && turns.length > 1;
     return {
       body: JSON.stringify(redacted.body),

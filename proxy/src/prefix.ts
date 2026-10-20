@@ -51,18 +51,27 @@ function digest(value: unknown, seen: WeakMap<object, string>): string {
 }
 
 function messages(format: Format, body: Fields): unknown[] {
-  const list = format === "responses" ? body.input : body.messages;
+  const list =
+    format === "responses" ? body.input : format === "gemini" ? body.contents : body.messages;
   return Array.isArray(list) ? list : [];
 }
 
 // The parts in the order the provider caches them.
 function parts(format: Format, body: Fields, seen: WeakMap<object, string>): string[] {
-  const system = format === "responses" ? body.instructions : body.system;
+  const system =
+    format === "responses"
+      ? body.instructions
+      : format === "gemini"
+        ? body.systemInstruction
+        : body.system;
+  // A Gemini request names its model in the path, and its thinking under
+  // generationConfig.
+  const thinking = (body.generationConfig as Fields | undefined)?.thinkingConfig;
   const head = [
     body.model,
     body.tools,
     system,
-    body.thinking ?? body.reasoning ?? body.reasoning_effort,
+    body.thinking ?? body.reasoning ?? body.reasoning_effort ?? thinking,
   ];
   return [...head, ...messages(format, body)].map((part) => digest(part, seen));
 }

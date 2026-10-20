@@ -57,6 +57,7 @@ function usageObject(format: Format, value: Fields): Fields | undefined {
 // carries none. A stream's figures arrive in parts; `merge` adds them up.
 export function usageOf(format: Format, value: unknown): Usage | undefined {
   const outer = fields(value);
+  if (format === "gemini") return geminiUsage(fields(outer?.usageMetadata));
   const usage = outer && usageObject(format, outer);
   if (!usage) return;
   if (format === "anthropic") {
@@ -86,6 +87,20 @@ export function usageOf(format: Format, value: unknown): Usage | undefined {
   };
 }
 
+// Gemini counts the cached part inside the prompt, and thinking apart from
+// the reply's own tokens.
+function geminiUsage(usage: Fields | undefined): Usage | undefined {
+  if (!usage) return;
+  const total = tokens(usage.promptTokenCount);
+  const cached = Math.min(tokens(usage.cachedContentTokenCount), total);
+  return {
+    input: total - cached,
+    cacheRead: cached,
+    cacheWrite: 0,
+    output: tokens(usage.candidatesTokenCount) + tokens(usage.thoughtsTokenCount),
+  };
+}
+
 // Parts of one reply's usage, combined. Field by field the larger wins: an
 // Anthropic message_delta repeats the running totals rather than adding to
 // them, and a field a part leaves out reads as zero.
@@ -110,7 +125,7 @@ export function merge(into: Usage | undefined, part: Usage): Usage {
 // The usage in one stream event's data. Most events are text deltas, so the
 // data is parsed only when it names usage at all.
 export function usageOfEvent(format: Format, data: string): Usage | undefined {
-  if (!data.includes('"usage"')) return;
+  if (!data.includes(format === "gemini" ? '"usageMetadata"' : '"usage"')) return;
   try {
     return usageOf(format, JSON.parse(data));
   } catch {
