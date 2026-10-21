@@ -4,6 +4,7 @@
 // missed is in it, and the page shows it as it is. Nothing is written to disk,
 // and a restart clears it. Off when ITHILDIN_KEEP_REQUESTS is 0.
 
+import { createHash } from "node:crypto";
 import { setting } from "../engine/lib/names.ts";
 import type { Context } from "./events.ts";
 
@@ -59,10 +60,51 @@ export interface ReplyThinking {
   done: boolean;
 }
 
+// An earlier turn's thinking, from the reply the proxy kept for the request
+// that turn answered: `at` is the turn's place in the later request's list.
+export interface EarlierThinking {
+  at: number;
+  text: string;
+}
+
+// Where a request's conversation ends: how many entries, and a digest of the
+// last. A later request whose entry at that place matches it carries this
+// request's reply as the next turn.
+interface Ends {
+  count: number;
+  last: string;
+}
+
 interface Sent extends SentSummary {
   text: string;
   masked: MaskedValue[];
   reply: ReplyThinking;
+  // Worked out when first asked, null when the body has no conversation.
+  ends?: Ends | null;
+}
+
+// A request's conversation: Messages and Chat `messages`, Responses `input`,
+// Gemini `contents`. Undefined for a body that is not one.
+function conversation(text: string): unknown[] | undefined {
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  if (!body || typeof body !== "object") return undefined;
+  const { messages, input, contents } = body as Record<string, unknown>;
+  const list = messages ?? input ?? contents;
+  return Array.isArray(list) ? list : undefined;
+}
+
+// One entry of a conversation, as a digest. The agent moves its cache marker
+// to the newest entry each request, so the marker is left out.
+function entryDigest(entry: unknown): string {
+  const text = JSON.stringify(entry, (key, value) => (key === "cache_control" ? undefined : value));
+  return createHash("sha1")
+    .update(text ?? "")
+    .digest("base64");
 }
 
 const CLOSERS: Record<string, string> = { "{": "}", "[": "]" };
@@ -269,6 +311,33 @@ export class SentRequests {
   // A request's reply thinking so far.
   thinking(id: number): ReplyThinking | undefined {
     return this.find(id)?.reply;
+  }
+
+  // The thinking of the turns in a request's conversation that came from
+  // replies kept here, which the agent often does not send back. Each is the
+  // reply of the newest earlier request in the session whose conversation
+  // ended right where that turn begins. Undefined for no such request.
+  earlier(id: number): EarlierThinking[] | undefined {
+    const sent = this.find(id);
+    if (!sent) return undefined;
+    const list = conversation(sent.text);
+    if (!list) return [];
+    const found = new Map<number, string>();
+    for (const before of this.kept) {
+      if (before.id >= id || before.session !== sent.session || before.reply.text === "") continue;
+      const ends = this.endsOf(before);
+      if (!ends || ends.count >= list.length) continue;
+      if (entryDigest(list[ends.count - 1]) === ends.last) found.set(ends.count, before.reply.text);
+    }
+    return [...found].map(([at, text]) => ({ at, text })).sort((a, b) => a.at - b.at);
+  }
+
+  private endsOf(sent: Sent): Ends | null {
+    if (sent.ends === undefined) {
+      const list = conversation(sent.text);
+      sent.ends = list?.length ? { count: list.length, last: entryDigest(list.at(-1)) } : null;
+    }
+    return sent.ends;
   }
 
   // Newest last, and the one asked for is almost always among the newest.

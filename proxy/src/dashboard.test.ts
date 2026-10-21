@@ -734,6 +734,36 @@ describe("dashboard", () => {
     expect([...leaks.keys()]).toEqual([4]);
   });
 
+  it("puts earlier turns' thinking before the rest of each turn, unless it is there", () => {
+    const source = /function withEarlier[\s\S]*?\n\}/.exec(DASHBOARD_HTML)![0];
+    const withEarlier = new Function(`${source}; return withEarlier;`)() as (
+      items: Array<{ kind: string; at?: number; text?: string }>,
+      found?: Array<{ at: number; text: string }>,
+    ) => Array<{ kind: string; at?: number; text?: string }>;
+    const items = [
+      { kind: "tools" },
+      { kind: "user", at: 0 },
+      { kind: "tool_call", at: 1 },
+      { kind: "thinking", at: 3, text: "sent back" },
+      { kind: "assistant", at: 3 },
+    ];
+    expect(withEarlier(items, undefined)).toBe(items);
+    expect(withEarlier(items, [])).toBe(items);
+    const found = [
+      { at: 1, text: "kept" },
+      { at: 3, text: "not twice" },
+      { at: 9, text: "gone" },
+    ];
+    expect(withEarlier(items, found).map((item) => item.text ?? item.kind)).toEqual([
+      "tools",
+      "user",
+      "kept",
+      "tool_call",
+      "sent back",
+      "assistant",
+    ]);
+  });
+
   it("puts the reply's thinking after the conversation, live until the reply ends", () => {
     const source = /function withReply[\s\S]*?\n\}/.exec(DASHBOARD_HTML)![0];
     const withReply = new Function(`${source}; return withReply;`)() as (

@@ -1192,6 +1192,11 @@ function dashboard(
     if (thinking === undefined) return errorReply(404, "no such request");
     return Response.json(thinking, { headers });
   }
+  if (own === "request" && url.searchParams.has("earlier")) {
+    const earlier = kept.earlier(Number(url.searchParams.get("id")));
+    if (earlier === undefined) return errorReply(404, "no such request");
+    return Response.json(earlier, { headers });
+  }
   if (own === "request" && url.searchParams.has("masked")) {
     const masked = kept.masked(Number(url.searchParams.get("id")));
     if (masked === undefined) return errorReply(404, "no such request");

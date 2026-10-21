@@ -112,6 +112,55 @@ describe("a request's reply thinking, kept", () => {
   });
 });
 
+describe("earlier turns' thinking, from the replies kept", () => {
+  const session = { route: "anthropic", endpoint: "/v1/messages", session: "s1" };
+  const ask = { role: "user", content: "hello" };
+  const call = { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "Bash" }] };
+  const result = { role: "user", content: [{ type: "tool_result", tool_use_id: "t1" }] };
+  const body = (messages: unknown[]) => data({ messages });
+
+  it("finds the request each turn answered, by where its conversation ended", () => {
+    const kept = new SentRequests();
+    // The agent marks the newest entry for the cache, and moves the mark on.
+    const first = kept.record(session, body([{ ...ask, cache_control: { type: "ephemeral" } }]))!;
+    kept.think(first, "Plan the call");
+    const second = kept.record(session, body([ask, call, result]))!;
+    kept.think(second, "Read the result");
+    // A retry of the first that thought differently: the newest wins.
+    const retry = kept.record(session, body([ask]))!;
+    kept.think(retry, "Plan again");
+    const last = kept.record(session, body([ask, call, result, { role: "assistant" }, ask]))!;
+    expect(kept.earlier(last)).toEqual([
+      { at: 1, text: "Plan again" },
+      { at: 3, text: "Read the result" },
+    ]);
+    expect(kept.earlier(second)).toEqual([{ at: 1, text: "Plan the call" }]);
+    expect(kept.earlier(99)).toBeUndefined();
+  });
+
+  it("skips another session, another conversation, a reply without thinking, and non-JSON", () => {
+    const kept = new SentRequests();
+    kept.think(kept.record({ ...session, session: "s2" }, body([ask]))!, "Elsewhere");
+    kept.think(kept.record(session, body([{ role: "user", content: "other" }]))!, "Other");
+    kept.record(session, body([ask]));
+    kept.think(kept.record(session, "not JSON")!, "Odd");
+    kept.think(kept.record(session, body([]))!, "Empty");
+    const last = kept.record(session, body([ask, call, result]))!;
+    expect(kept.earlier(last)).toEqual([]);
+    expect(kept.earlier(kept.record(session, '"text"')!)).toEqual([]);
+  });
+
+  it("reads Responses input and Gemini contents too", () => {
+    const kept = new SentRequests();
+    kept.think(kept.record(session, data({ input: [ask] }))!, "Responses");
+    kept.think(kept.record(session, data({ contents: [{ role: "user", parts: [] }] }))!, "Gemini");
+    const responses = kept.record(session, data({ input: [ask, call, result] }))!;
+    expect(kept.earlier(responses)).toEqual([{ at: 1, text: "Responses" }]);
+    const gemini = kept.record(session, data({ contents: [{ role: "user", parts: [] }, call] }))!;
+    expect(kept.earlier(gemini)).toEqual([{ at: 1, text: "Gemini" }]);
+  });
+});
+
 describe("the dashboard's reply thinking", () => {
   const ask = () =>
     new Request("http://127.0.0.1/anthropic/v1/messages", {
@@ -172,6 +221,27 @@ describe("the dashboard's reply thinking", () => {
     expect(await read(handler, 1)).toEqual({ text: "Whole", done: true });
     const gone = await handler(new Request("http://127.0.0.1/dashboard/request?thinking&id=9"));
     expect(gone.status).toBe(404);
+  });
+
+  it("serves earlier turns' thinking, and a 404 for a request not kept", async () => {
+    const answer = { content: [{ type: "thinking", thinking: "First" }] };
+    const handler = createHandler(DEFAULT_ROUTES, (async () =>
+      Response.json(answer)) as unknown as typeof fetch);
+    await (await handler(ask())).text();
+    const next = data({
+      model: "claude-x",
+      messages: [
+        { role: "user", content: "hello" },
+        { role: "assistant", content: "hi" },
+        { role: "user", content: "again" },
+      ],
+    });
+    const post = new Request(ask(), { body: next });
+    await (await handler(post)).text();
+    const earlier = (id: number) =>
+      handler(new Request(`http://127.0.0.1/dashboard/request?earlier&id=${id}`));
+    expect(await (await earlier(2)).json()).toEqual([{ at: 1, text: "First" }]);
+    expect((await earlier(9)).status).toBe(404);
   });
 
   it("ends when the agent hangs up mid-stream", async () => {

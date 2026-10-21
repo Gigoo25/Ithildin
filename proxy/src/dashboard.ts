@@ -422,6 +422,8 @@ const texts = new Map();
 const values = new Map();
 // The thinking of each one's reply so far, and whether the reply is over.
 const replies = new Map();
+// The thinking of earlier turns in each, from the replies the proxy kept.
+const earlier = new Map();
 // What the reader opened or closed, turns and folds alike, where it differs
 // from how the page would set it: the view is rebuilt whenever a request
 // arrives, and a rebuild must not undo a click.
@@ -677,6 +679,7 @@ async function showSession() {
       texts.delete(oldest);
       values.delete(oldest);
       replies.delete(oldest);
+      earlier.delete(oldest);
     }
   }
   if (chosen !== known.id) return;
@@ -851,6 +854,7 @@ async function poll() {
       sessions.clear();
       texts.clear();
       replies.clear();
+      earlier.clear();
       folds.clear();
       shownId = 0;
     }
@@ -885,6 +889,7 @@ async function poll() {
 // over, and laid out again when it grew.
 async function readThinking() {
   const id = shownId;
+  if (id && !earlier.has(id)) await readEarlier(id);
   const known = replies.get(id);
   if (!id || (known && known.done)) return;
   const response = await fetch('${REQUEST_PATH}?thinking&id=' + id, { cache: 'no-store' });
@@ -893,6 +898,30 @@ async function readThinking() {
   replies.set(id, reply);
   const grew = reply.text !== (known ? known.text : '');
   if (id === shownId && reply.text && (grew || reply.done)) showText('keep');
+}
+
+// Earlier turns' thinking, read once: those replies are over by the time the
+// request is sent.
+async function readEarlier(id) {
+  const response = await fetch('${REQUEST_PATH}?earlier&id=' + id, { cache: 'no-store' });
+  if (!response.ok) return;
+  const found = await response.json();
+  earlier.set(id, found);
+  if (id === shownId && found.length > 0) showText('keep');
+}
+
+// Earlier turns' thinking the agent did not send back, each before the rest
+// of the turn it came with. A turn that already has its thinking keeps it,
+// and one the request no longer holds gets none.
+function withEarlier(items, found) {
+  if (!found || found.length === 0) return items;
+  const out = items.slice();
+  for (const { at, text } of found) {
+    if (out.some((item) => item.at === at && item.kind === 'thinking')) continue;
+    const place = out.findIndex((item) => item.at >= at);
+    if (place >= 0) out.splice(place, 0, { who: 'assistant', kind: 'thinking', text, at });
+  }
+  return out;
 }
 
 // The reply's thinking after the request's own conversation, as the turn the
@@ -1496,7 +1525,7 @@ function showText(place) {
     body = undefined;
   }
   const items = body && typeof body === 'object'
-    ? withReply(turns(body), replies.get(shownId)) : [];
+    ? withReply(withEarlier(turns(body), earlier.get(shownId)), replies.get(shownId)) : [];
   const raw = view === 'raw' || items.length === 0;
   byId('view_chat').disabled = items.length === 0;
   for (const button of document.querySelectorAll('.view'))
