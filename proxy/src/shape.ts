@@ -66,6 +66,33 @@ export function shapingOn(env: Record<string, string | undefined> = process.env)
   return value !== "off" && value !== "raw" && value !== "false" && value !== "0";
 }
 
+// ITHILDIN_STRIP_THINKING=on is an experiment, off by default: on the 5.5
+// models, a step misses the cache when a typed user turn follows thinking the
+// API dropped (CACHING.md, "Step misses on the 5.5 models"). On, a shaped
+// request leaves out the thinking before its last typed user turn, so the
+// API has none there to drop.
+export function stripThinkingOn(env: Record<string, string | undefined> = process.env): boolean {
+  const value = setting("STRIP_THINKING", env)?.trim().toLowerCase();
+  return value === "on" || value === "true" || value === "1";
+}
+
+// The models whose thinking the API binds to the conversation before it, and
+// drops once shaping changes that: the 5.x family. Opus 4.8 never dropped any.
+const BOUND_THINKING = /^claude-[a-z]+-5-/;
+
+// The index of the last user message a person typed, not only tool results,
+// or -1. Claude Code's reminders ride in user turns as text and count too.
+function lastTyped(list: unknown[]): number {
+  return list.findLastIndex((item) => {
+    const entry = record(item);
+    if (entry?.role !== "user") return false;
+    const content = entry.content;
+    return (
+      !Array.isArray(content) || content.some((block) => record(block)?.type !== "tool_result")
+    );
+  });
+}
+
 export interface Shaped {
   body: Record<string, unknown>;
   // Results and call inputs replaced by a stub, results only compacted, and
@@ -237,8 +264,9 @@ function sizes(format: Format, list: unknown[], from: Walk): Sized[] {
   return list.map((item, at) => {
     for (const walk of [asOld, asNew]) remember(format, item, walk);
     if (isAssistant(format, item)) turn++;
-    const old = shapeEntry(format, item, asOld, true, at > asked)?.saved ?? 0;
-    const recent = shapeEntry(format, item, asNew, false, at > asked)?.saved ?? 0;
+    // Stripping thinking is left out: the cutoff is the same with it on or off.
+    const old = shapeEntry(format, item, asOld, true, at > asked, false)?.saved ?? 0;
+    const recent = shapeEntry(format, item, asNew, false, at > asked, false)?.saved ?? 0;
     // Every byte, results included: this is what a rewrite sends again.
     const tokens = Math.ceil(JSON.stringify(item ?? null).length / 4);
     return { turn, tokens, gain: Math.max(0, Math.ceil((old - recent) / 4)) };
@@ -540,6 +568,7 @@ export function shapeRequest(
   format: Format,
   body: Record<string, unknown>,
   retrieval?: Retrieval,
+  strip = stripThinkingOn(),
 ): Shaped | undefined {
   const list = conversation(format, body);
   if (!list) return;
@@ -547,6 +576,10 @@ export function shapeRequest(
   const { cutoff, previous } = cutoffFor(format, list, walk, body);
   const kept = latestNotes(format, list, cutoff);
   const asked = lastAsked(format, list);
+  // Only once something is old: the API drops nothing from an unshaped request.
+  const bound =
+    strip && format === "anthropic" && cutoff > 0 && BOUND_THINKING.test(String(body.model));
+  const typed = bound ? lastTyped(list) : -1;
   const totals: Counts = { masked: 0, compacted: 0, deduped: 0 };
   let turn = 0;
   let savedChars = 0;
@@ -565,7 +598,7 @@ export function shapeRequest(
     // its first turn.
     const old = cutoff > 0 && turn <= cutoff;
     const replaced = withNotes(item, old ? dropNotes(item, at, kept) : undefined, (entry) =>
-      shapeEntry(format, entry, walk, old, at > asked),
+      shapeEntry(format, entry, walk, old, at > asked, at < typed),
     );
     if (!replaced) return item;
     for (const kind of Object.keys(totals) as Kind[]) totals[kind] += replaced.counts[kind];
@@ -591,11 +624,14 @@ function shapeEntry(
   walk: Walk,
   old: boolean,
   looping: boolean,
+  unthought: boolean,
 ): Replacement | undefined {
   if (old) {
     const call = shapeCall(format, item, looping);
     if (call) return call;
   }
+  const entry = record(item);
+  if (unthought && entry?.role === "assistant") return shapeBlocks(entry, false);
   if (format === "anthropic") return shapeAnthropic(item, walk, old);
   if (format === "chat") return shapeChat(item, walk, old);
   return shapeResponses(item, walk, old);
@@ -657,7 +693,7 @@ function maskedArguments(text: unknown): { value: string; saved: number } | unde
 function shapeCall(format: Format, item: unknown, looping: boolean): Replacement | undefined {
   const entry = record(item);
   if (!entry) return;
-  if (format === "anthropic") return shapeBlocks(entry);
+  if (format === "anthropic") return shapeBlocks(entry, true);
   if (format === "chat") return shapeChatCalls(entry, looping);
   const field = entry.type === "function_call" ? "arguments" : "input";
   if (entry.type !== "function_call" && entry.type !== "custom_tool_call") return;
@@ -675,10 +711,11 @@ function shapeCall(format: Format, item: unknown, looping: boolean): Replacement
 // be cut, and the API takes a past turn without it (its own clear_thinking
 // context edit does the same). Only the latest turn of a tool loop must keep
 // its thinking, and an old turn is never that. A turn that is nothing but
-// thinking keeps it, since an empty turn is refused.
+// thinking keeps it, since an empty turn is refused. A recent turn's call
+// input stays whole (`inputs` false) when only its thinking goes.
 const THINKING = new Set(["thinking", "redacted_thinking"]);
 
-function shapeBlocks(entry: Record_): Replacement | undefined {
+function shapeBlocks(entry: Record_, inputs: boolean): Replacement | undefined {
   if (entry.role !== "assistant" || !Array.isArray(entry.content)) return;
   const blocks = entry.content as unknown[];
   const isThinking = (block: unknown) => THINKING.has(String(record(block)?.type));
@@ -692,7 +729,7 @@ function shapeBlocks(entry: Record_): Replacement | undefined {
       masked++;
       return [];
     }
-    const next = typed?.type === "tool_use" ? maskedValue(typed.input) : undefined;
+    const next = inputs && typed?.type === "tool_use" ? maskedValue(typed.input) : undefined;
     if (!next) return [block];
     saved += next.saved;
     masked++;

@@ -11,6 +11,9 @@ Open: some main-thread steps still read only the system prompt, and the
 kept pairs that would say why were lost before the fix; the next ones will
 not be. opencode's routes, with automatic caching and no markers, read back
 through their steps (see [opencode](#opencode-the-same-shaping-without-markers-2026-10-07-to-10-12)).
+Update 2026-10-23: the kept pairs point at a typed user turn after dropped
+thinking on the 5.5 models (see [Step misses on the 5.5
+models](#step-misses-on-the-55-models-2026-10-23)); not yet confirmed.
 
 ## The problem
 
@@ -534,6 +537,94 @@ journalctl --user -u ithildin --since today --no-pager -o short-iso \
   | grep 'opencode-ai/' | grep 'step=' | sed -E 's/scan=[^ ]+ (allow=[^ ]+ )?redacted=[^ ]+ //'
 ```
 
+## Step misses on the 5.5 models (2026-10-23)
+
+From the journal, Anthropic requests 2026-10-12 to 10-23: 30 of 80 steps
+that were not a session's first read back only the system prompt (11.5–13.5K).
+They wrote 4.7M tokens where hits would have written about 0.9M, ~3.8M of
+27.9M cache writes (~14%). The gate already prices every step as a full
+rewrite, so these steps still paid; a fix wins back most of the 14%.
+
+**Ruled out again:** in every kept miss the step matches the request it is
+compared with byte for byte up to a marker both carry; top-level fields and
+the system prompt are the same. No link to time since the last step (5–230
+min), the gap to the previous request, or the requests in between; steps hit
+entries written up to 230 minutes earlier.
+
+**The split is by model:**
+
+| Model | Thinking dropped on a step | Steps hit | Steps missed |
+|---|---|---|---|
+| Opus 4.8 | never | 7 | 0 |
+| Opus 5.5 | always | 30 | 19 |
+| Sonnet 5.5 | always | 13 | 11 |
+
+On the 5.5 models Anthropic's thinking binding drops every thinking block
+after the masked turns on a step (`thinking=dropped:N@<path>` in the
+journal). Dropping alone is harmless: 4064 of 6200 ordinary requests also
+drop thinking and read fine. This refines the "Anthropic dropping old
+thinking" row in [Step misses after the fix](#step-misses-after-the-fix-2026-10-09):
+the toys there never typed a message between tool loops.
+
+**Lead: a typed user turn after dropped thinking.** Of the 20 kept pairs, 11
+are later steps on Opus 5.5. All 4 misses, and none of the 7 hits, have a
+user turn with text (not only tool results) after the first dropped thinking
+block past the shared marker: in the step (13-03, 15-03, 17-19), or in the
+request it is compared with (13-11, 17-19). The two hits whose steps have a
+typed turn after the marker (13-38, 14-22) have it before the dropped
+blocks. Kept-pair names are UTC. 11 steps, mostly one session, so suggestive
+(4/4 against 0/7 is about 1 in 330 by chance), not proof.
+
+**Replays** (`replay.ts`, scratch, not kept): one kept pair sent straight to
+Anthropic, the earlier request then the step, each trial under a fresh
+nonce so no trial reads another's entry. `cN` is the body cut after
+message N; `b` removes thinking blocks before the last typed user turn.
+One trial each:
+
+| Pair | Earlier request : step | Read | Fits the lead |
+|---|---|---|---|
+| 17-19 (marker 120, typed at 138) | as sent : as sent | system only | yes |
+| | `c120`, `c123`, `c135` : `c120` | to 120 | yes |
+| | `c138` … `c151` : `c120` | system only | yes |
+| | `c138` : `c138` (same body twice) | system only | yes |
+| | as sent : `b` | system only | yes |
+| | `b` : `b` | to 120 | yes |
+| | `c135` : as sent | to 120 | **no** |
+| 13-20 (marker 299, a live hit) | as sent : as sent | to 299 | yes |
+| 15-03 (marker 1198, typed at 1306) | as sent : `c1198`, `c1300`, `c1303` | to 1198 | yes |
+| | as sent : `c1306` | system only | yes |
+| | as sent : `c1309` | to 1198 | **no** |
+
+Live steps miss ~40% of the time with no other pattern found, so single
+trials can disagree by chance. A replay test would be about 10 trials each
+of `as sent : as sent` against `b : b` on the 17-19 pair (~40K tokens a
+request). The thinking `b` leaves out is what the API drops anyway, so the
+model sees the same conversation either way.
+
+**Testing it on live use instead.** `ITHILDIN_STRIP_THINKING=on` makes the
+proxy send variant `b`: on a 5.x model, once shaping has masked anything,
+assistant turns before the last typed user turn go without their thinking
+(the turn's other blocks and call inputs stay whole). The cutoff is decided
+the same either way. The journal says `strip-thinking experiment on` at
+start. Turn it on with
+`systemctl --user set-environment ITHILDIN_STRIP_THINKING=on && systemctl --user restart ithildin`,
+and off with `unset-environment` and a restart. Then compare 5.x steps' read
+counts before and after the restart, with the step listing below. If the lead
+holds, steps stop reading back only the system prompt.
+
+What it may cost: a typed message strips the thinking of the loop before it,
+which every earlier request sent, so that request's prefix differs from the
+one before it at the first thinking after the cutoff and writes from there.
+If the API's own dropping already makes those turns miss, this costs nothing
+new; if not, it is a rewrite of the recent turns on each typed message. The
+same before-and-after comparison shows which, in `usage=` on the requests
+that are not steps.
+
+**Replaying costs.** A fresh nonce makes each request write its whole body.
+The 15-03 pair is ~190K a request; the session that ran these hit the
+user's five-hour limit in ten minutes of replays. Use the smallest pair,
+cap the tokens per run, and ask first.
+
 ## Instruments now in the proxy
 
 Both go into the journal (`journalctl --user -u ithildin`), which survives
@@ -635,7 +726,12 @@ little; a miss reads ~11K (the system prompt) and writes the rest.
   `--settings '{"env":{"ANTHROPIC_BASE_URL":"http://127.0.0.1:<port>"}}'`
   pointed at a local script that forwards to ithildin and reuses the headers
   of the first request in memory. Each test costs a little of the user's
-  usage; ask first.
+  usage; ask first. Since managed settings
+  (`/etc/claude-code/managed-settings.json`) set `ANTHROPIC_BASE_URL` to
+  ithildin, `--settings` no longer wins; the replays on 2026-10-23 read the
+  OAuth token from `~/.claude/.credentials.json` in memory instead, and
+  needed the agent's own `anthropic-beta` list (`inline-tools-…` and others
+  from the Claude Code binary) for the kept bodies to validate.
 - **`ITHILDIN_SHAPE`** is read from the service environment. Earlier on
   2026-10-07 the user turned shaping off with
   `systemctl --user set-environment ITHILDIN_SHAPE=off`, which outlives a

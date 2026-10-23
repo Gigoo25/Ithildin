@@ -34,7 +34,7 @@ import {
   typedPromptCount,
 } from "./redact.ts";
 import { ScanPool, scanThreadCount, warmTexts } from "./scan-pool.ts";
-import { type Retrieval, shapeRequest, shapingOn } from "./shape.ts";
+import { type Retrieval, shapeRequest, shapingOn, stripThinkingOn } from "./shape.ts";
 import { configHome, NAME } from "../engine/lib/names.ts";
 import { aliasStyle } from "../engine/lib/rules.ts";
 import { type ActivityEvent, observeActivity } from "../engine/lib/activity.ts";
@@ -1533,6 +1533,8 @@ export function start(
   scanPool?.close();
   scanPool = new ScanPool(scanThreadCount(), identityEntries(), log);
   if (scanPool.size > 0) log(`scanning on ${scanPool.size} threads`);
+  if (stripThinkingOn())
+    log("strip-thinking experiment on: thinking before the last typed turn is left out");
   if (aliasStyle() === "tokens")
     log("aliases are tokens: nothing is swapped back, tools run with the tokens the model wrote");
   const handler = createHandler(routes, fetchUpstream, REDACTORS, true);

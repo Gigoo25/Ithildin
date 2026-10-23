@@ -12,6 +12,7 @@ import {
   compactedHeld,
   shapingOn,
   shapeRequest,
+  stripThinkingOn,
 } from "./shape.ts";
 
 // A tool result big enough to be worth a stub.
@@ -805,6 +806,53 @@ describe("old thinking", () => {
     const early = [{ role: "assistant", content: [thought] }];
     const out = shapeRequest("anthropic", { messages: around(early, []) })!.body.messages;
     expect(at(out, 4).content).toEqual([thought]);
+  });
+});
+
+describe("stripping thinking before a typed turn", () => {
+  const thought = { type: "thinking", thinking: "t".repeat(2_000), signature: "sig" };
+  const used = { type: "tool_use", id: "u1", name: "Write", input: { content: "w".repeat(9_000) } };
+  const asked = { role: "user", content: [{ type: "text", text: "now this" }] };
+  const answered = {
+    role: "user",
+    content: [{ type: "tool_result", tool_use_id: "u1", content: "ok" }],
+  };
+  // A recent turn that thought, a typed turn after it, then a turn of the loop
+  // that turn started, which thought too.
+  const late = [
+    { role: "assistant", content: [thought, used] },
+    answered,
+    asked,
+    { role: "assistant", content: [thought, used] },
+    answered,
+  ];
+  const request = (model: string, strip: boolean) =>
+    shapeRequest("anthropic", { model, messages: around([], late) }, undefined, strip);
+
+  it("leaves out thinking before the last typed turn on a 5.x model, and keeps the loop's", () => {
+    const out = request("claude-opus-5-5", true)!.body.messages as Array<Record<string, unknown>>;
+    // The recent call's input stays whole: only its thinking goes.
+    expect(out.at(-5)?.content).toEqual([used]);
+    expect(out.at(-2)?.content).toEqual([thought, used]);
+  });
+
+  it("strips nothing when off, or on a model whose thinking is not bound", () => {
+    for (const shaped of [request("claude-opus-5-5", false), request("claude-opus-4-8", true)]) {
+      const out = shaped!.body.messages as Array<Record<string, unknown>>;
+      expect(out.at(-5)?.content).toEqual([thought, used]);
+    }
+  });
+
+  it("strips nothing from a conversation too short to shape", () => {
+    const body = { model: "claude-opus-5-5", messages: late };
+    const out = shapeRequest("anthropic", body, undefined, true)?.body.messages ?? late;
+    expect((out as Array<Record<string, unknown>>)[0]?.content).toEqual([thought, used]);
+  });
+
+  it("is read from ITHILDIN_STRIP_THINKING, off unless asked", () => {
+    expect(stripThinkingOn({})).toBe(false);
+    expect(stripThinkingOn({ ITHILDIN_STRIP_THINKING: " On " })).toBe(true);
+    expect(stripThinkingOn({ ITHILDIN_STRIP_THINKING: "off" })).toBe(false);
   });
 });
 
