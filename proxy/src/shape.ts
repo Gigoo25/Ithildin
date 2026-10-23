@@ -41,7 +41,7 @@ import { compact } from "./compact.ts";
 import { crushJson } from "./crush.ts";
 import { markBoundaries } from "./mark.ts";
 import { cacheReadPrice } from "./prices.ts";
-import type { Format } from "./redact.ts";
+import { asksForSummary, type Format } from "./redact.ts";
 
 // Ported from Pi's output-shaping extension (mask.ts), which could only shape
 // Pi's own message objects. The traversal is rewritten per wire format; the
@@ -285,7 +285,11 @@ function isSubagent(format: Format, body: Record<string, unknown>): boolean {
 }
 
 // The cutoff, and the cutoff as the request before this one had it: the one
-// decided just before the newest assistant turn, where that request ended.
+// decided just before the newest assistant turn, where that request ended. A
+// request asking for a summary keeps the previous cutoff: it is the request
+// before it plus the instruction, sent that way so the summary reads the whole
+// conversation from the cache, and a step there rewrote it all just before the
+// summary replaced it.
 function cutoffFor(
   format: Format,
   list: unknown[],
@@ -302,7 +306,8 @@ function cutoffFor(
   let tokens = 0;
   // Every point a request could have ended: just before each assistant turn,
   // and the end of the list.
-  for (let end = 0; end <= items.length; end++) {
+  const last = asksForSummary(list) ? items.length - 1 : items.length;
+  for (let end = 0; end <= last; end++) {
     const item = items[end];
     if (item === undefined || isAssistant(format, list[end])) {
       const due = dueAt(turns, tokens);

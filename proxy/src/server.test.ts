@@ -634,6 +634,8 @@ describe("provider blindness", () => {
       "<conversation>\n[User]: hi\n</conversation>",
       "# Conversation\n[User]: hi\n\n# Instructions",
       "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.\n\nYour task is to summarize",
+      "Stop working on the task and do not call any tools. Write a structured context " +
+        "checkpoint summary of the earlier part of the conversation above.",
       "Summarize it.\n\nThe following is the conversation history:\n\n[User]: hi",
       "The conversation history before this point was compacted into the following summary:",
       "The following is a summary of a branch that this conversation came back from:",

@@ -299,6 +299,25 @@ const PROTECTED_TAG = /\[allow-protected\]/i;
 const SEND_TAG = /\[allow-send\]/i;
 const ONCE_TAG = /\[allow-once:([0-9a-f]{8})\]/gi;
 
+// An instruction to summarize, sent as a user turn after the whole
+// conversation: Claude Code's compact instruction, and pi-cached-compaction's
+// (summaryInstruction), which resends the request before it byte for byte so
+// the summary reads it from the cache.
+const SUMMARY_ASKED_SOURCE =
+  "CRITICAL: Respond with TEXT ONLY\\. Do NOT call any tools\\." +
+  "|Stop working on the task and do not call any tools\\. " +
+  "Write a structured context checkpoint summary\\b";
+const SUMMARY_ASKED = new RegExp(`^\\s*(?:${SUMMARY_ASKED_SOURCE})`);
+
+// Whether the newest turn asks for the conversation before it to be
+// summarized. Such a request is the one before it plus that turn, and its
+// history is about to be replaced, so shaping must not rewrite it (shape.ts).
+export function asksForSummary(list: unknown[]): boolean {
+  const last = list.at(-1) as { role?: unknown; content?: unknown } | undefined;
+  if (!last || typeof last !== "object" || last.role !== "user") return false;
+  return textBlocks(last.content).some((block) => SUMMARY_ASKED.test(block.text));
+}
+
 // User text the user did not type: summaries and transcripts the agent
 // writes, which can quote tags (a tool's notice saying which to type). Claude
 // Code's and Pi's summaries (COMPACTION_SUMMARY_PREFIX, BRANCH_SUMMARY_PREFIX);
@@ -306,15 +325,15 @@ const ONCE_TAG = /\[allow-once:([0-9a-f]{8})\]/gi;
 // (buildPrompt, or a plugin prompt and "The following is the conversation
 // history:"); opencode v2's checkpoint and shell turns (to-llm-message.ts);
 // Pi's summary requests (generateSummary, generateTurnPrefixSummary,
-// generateBranchSummary), and Claude Code's compact instruction, sent after
-// the whole conversation.
+// generateBranchSummary), and the instructions sent after the whole
+// conversation (SUMMARY_ASKED).
 const AGENT_WRITTEN = new RegExp(
   "^\\s*(?:This session is being continued from a previous conversation\\b" +
     "|The conversation history before this point was compacted into the following summary:" +
     "|The following is a summary of a branch that this conversation came back from:" +
     "|Here is the conversation so far:\\s*<conversation>" +
     "|<conversation>\\n|# Conversation\\n" +
-    "|CRITICAL: Respond with TEXT ONLY\\. Do NOT call any tools\\." +
+    `|${SUMMARY_ASKED_SOURCE}` +
     "|<conversation-checkpoint>" +
     "|Shell command: " +
     "|Result of calling the \\S+ tool:)" +

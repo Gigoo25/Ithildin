@@ -191,6 +191,36 @@ describe("anthropic requests", () => {
     expect(shapeRequest("anthropic", { system: [7], messages: messages(2) })?.masked).toBe(2);
   });
 
+  it("never steps on a request asking for a summary", () => {
+    // Nineteen turns after the old result: the step falls on this request.
+    const list = (last: unknown): unknown[] => {
+      const out = weighed(140_000, 2).slice(0, -2);
+      out[out.length - 1] = { role: "user", content: last };
+      return out;
+    };
+    const step = (last: unknown) => shapeRequest("anthropic", { messages: list(last) })?.step;
+    expect(step("next")).toEqual({ from: 0, to: 10 });
+    const ask = [
+      "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.\n\nYour task is to summarize",
+      "Stop working on the task and do not call any tools. Write a structured context " +
+        "checkpoint summary of the earlier part of the conversation above.",
+    ];
+    for (const text of ask) {
+      expect(step(text)).toBeUndefined();
+      expect(
+        step([
+          { type: "tool_result", tool_use_id: "x", content: "ok" },
+          { type: "text", text },
+        ]),
+      ).toBeUndefined();
+    }
+    // Quoted, or in an assistant turn, it is not the request.
+    expect(step(`what does "${ask[0]}" mean?`)).toEqual({ from: 0, to: 10 });
+    const asked = list("next");
+    asked.push({ role: "assistant", content: ask[0] });
+    expect(shapeRequest("anthropic", { messages: asked })?.step).toBeUndefined();
+  });
+
   it("masks nothing in a short conversation", () => {
     expect(shapeRequest("anthropic", { messages: messages(1).slice(0, 8) })).toBeUndefined();
     expect(shapeRequest("anthropic", { messages: turns(3) })).toBeUndefined();
