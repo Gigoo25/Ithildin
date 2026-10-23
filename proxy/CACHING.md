@@ -601,8 +601,8 @@ of `as sent : as sent` against `b : b` on the 17-19 pair (~40K tokens a
 request). The thinking `b` leaves out is what the API drops anyway, so the
 model sees the same conversation either way.
 
-**Testing it on live use instead.** `ITHILDIN_STRIP_THINKING=on` makes the
-proxy send variant `b`: on a 5.x model, once shaping has masked anything,
+**Testing it on live use instead.** `ITHILDIN_STRIP_THINKING` (then off by
+default, `on` to try it) makes the proxy send variant `b`: on a 5.x model, once shaping has masked anything,
 assistant turns before the last typed user turn go without their thinking
 (the turn's other blocks and call inputs stay whole). The cutoff is decided
 the same either way. The journal says `strip-thinking experiment on` at
@@ -633,6 +633,21 @@ is stripped, the typed turn that started the stripped loop carries a
 marker. The request it started wrote an entry ending there, so the rewind
 reads that back and writes only the loop. It is marked only where a step
 leaves room, as the step's own markers come first.
+
+Second run, with the fix (2026-10-23 15:43-17:32, b039e025): steps from
+turn 80 to 140 and from 140 to 190 wrote 43.8K and 39.1K, and each next
+request wrote under 1K, so no step miss; at most a few thinking blocks in the
+newest loop were dropped. A typed message cost about the loop before it,
+2.8-33.5K. So it is on by default now; `ITHILDIN_STRIP_THINKING=off` turns
+it off.
+
+**Forks.** In the same session, Claude Code's forked agents cost more than
+any step: a fork carries the parent's whole history, and as a subagent it
+was never shaped, so each fork's first request wrote that history again on
+the 5m TTL, 344K a fork, about 1.4M for four at 17:30. A fork now keeps the
+cutoff its parent had where it forked (the user turn starting
+`<fork-boilerplate>`), never stepping, so its history matches the parent's
+shaped copy and reads from the parent's entries. Not yet seen live.
 
 **Replaying costs.** A fresh nonce makes each request write its whole body.
 The 15-03 pair is ~190K a request; the session that ran these hit the

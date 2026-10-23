@@ -192,6 +192,50 @@ describe("anthropic requests", () => {
     expect(shapeRequest("anthropic", { system: [7], messages: messages(2) })?.masked).toBe(2);
   });
 
+  it("shapes a fork as its parent was where it forked, and never steps it", () => {
+    const system = [
+      { type: "text", text: "x-anthropic-billing-header: cc_version=2.1; cc_is_subagent=true;" },
+    ];
+    const parent = weighed(140_000, 2);
+    const forked = (turns: number) => {
+      const list: unknown[] = [
+        ...parent,
+        {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "f1", name: "Agent", input: { prompt: "go" } }],
+        },
+        {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: "f1", content: "Fork started" },
+            { type: "text", text: "<fork-boilerplate>\nYou are a worker fork.</fork-boilerplate>" },
+          ],
+        },
+      ];
+      for (let i = 0; i < turns; i++)
+        list.push(
+          { role: "assistant", content: [{ type: "text", text: "z".repeat(2_000) }] },
+          {
+            role: "user",
+            content: `more ${i}`,
+          },
+        );
+      return shapeRequest("anthropic", { system, messages: list });
+    };
+    const shapedParent = shapeRequest("anthropic", { messages: parent })!.body
+      .messages as unknown[];
+    for (const turns of [0, 60]) {
+      const fork = forked(turns)!;
+      expect(fork.step).toBeUndefined();
+      const out = fork.body.messages as unknown[];
+      expect(resultText(out, 2)).toBe(resultText(shapedParent, 2));
+      expect(resultText(out, 2)).toContain("[masked to save context");
+    }
+    // Without the fork's turn it is a subagent like any other: nothing is old.
+    const fresh = shapeRequest("anthropic", { system, messages: parent });
+    expect(fresh?.masked ?? 0).toBe(0);
+  });
+
   it("never steps on a request asking for a summary", () => {
     // Nineteen turns after the old result: the step falls on this request.
     const list = (last: unknown): unknown[] => {

@@ -305,10 +305,30 @@ function pays(items: Sized[], step: Step, price: Price): boolean {
 // subagents took 36 steps that wrote 1.29M tokens, as much as its main thread's
 // 29, for nothing read back (CACHING.md). The header is the same on every
 // request of the conversation, so holding the cutoff at zero never moves it.
+//
+// A fork is a subagent too, but it starts from its parent's whole history,
+// so held at zero it went out raw while the parent's cached copy was shaped:
+// every fork wrote that history again, 344K a fork in one 2026-10-23
+// session. So a fork keeps the cutoff its parent had where it forked, the
+// same on every request it makes: shaped as the parent was, it reads that
+// history back from the parent's entries.
 function isSubagent(format: Format, body: Record<string, unknown>): boolean {
   if (format !== "anthropic" || !Array.isArray(body.system)) return false;
   const text = record(body.system[0])?.text;
   return typeof text === "string" && text.includes("cc_is_subagent=true");
+}
+
+// Where a Claude Code fork's own conversation starts: the user turn that tells
+// it it is a fork, after the history it inherited. -1 when there is none.
+function forkedAt(list: unknown[]): number {
+  return list.findIndex((item) => {
+    const entry = record(item);
+    if (entry?.role !== "user" || !Array.isArray(entry.content)) return false;
+    return entry.content.some((block) => {
+      const text = record(block)?.text;
+      return typeof text === "string" && text.startsWith("<fork-boilerplate>");
+    });
+  });
 }
 
 // The cutoff, and the cutoff as the request before this one had it: the one
@@ -323,7 +343,8 @@ function cutoffFor(
   walk: Walk,
   body: Record<string, unknown>,
 ): { cutoff: number; previous: number } {
-  if (isSubagent(format, body)) return { cutoff: 0, previous: 0 };
+  const forked = isSubagent(format, body) ? forkedAt(list) : -1;
+  if (isSubagent(format, body) && forked < 1) return { cutoff: 0, previous: 0 };
   const model = body.model;
   const items = sizes(format, list, walk);
   const write = cachePrice(format, model);
@@ -333,7 +354,7 @@ function cutoffFor(
   let tokens = 0;
   // Every point a request could have ended: just before each assistant turn,
   // and the end of the list.
-  const last = asksForSummary(list) ? items.length - 1 : items.length;
+  const last = forked > 0 ? forked : asksForSummary(list) ? items.length - 1 : items.length;
   for (let end = 0; end <= last; end++) {
     const item = items[end];
     if (item === undefined || isAssistant(format, list[end])) {
@@ -345,7 +366,8 @@ function cutoffFor(
     tokens += item.tokens;
     if (isAssistant(format, list[end])) turns++;
   }
-  return { cutoff, previous };
+  // A fork's cutoff never moves, so no request of it steps.
+  return forked > 0 ? { cutoff, previous: cutoff } : { cutoff, previous };
 }
 
 function remember(format: Format, item: unknown, walk: Walk): void {
