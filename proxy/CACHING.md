@@ -620,6 +620,20 @@ new; if not, it is a rewrite of the recent turns on each typed message. The
 same before-and-after comparison shows which, in `usage=` on the requests
 that are not steps.
 
+First live run (2026-10-23, session b039e025, opus-5-5): the step from turn
+30 to 80 wrote 59.7K as a step does, and the request after it read 96.5K
+and wrote 950, so no step miss; the only `thinking=dropped` was one block in
+the newest loop. But typed messages cost more than the guess above. After a
+short loop the rewind was 1-6K. After a long one the changed thinking sat
+more than 20 blocks behind the newest marker, past what Anthropic looks
+back for, and the read fell back to the boundary marker: 38K written twice
+(once more by a side request on the 5m TTL) and 88.7K once, about 140K
+extra in 15 minutes. Turned off at that point. The fix since: when thinking
+is stripped, the typed turn that started the stripped loop carries a
+marker. The request it started wrote an entry ending there, so the rewind
+reads that back and writes only the loop. It is marked only where a step
+leaves room, as the step's own markers come first.
+
 **Replaying costs.** A fresh nonce makes each request write its whole body.
 The 15-03 pair is ~190K a request; the session that ran these hit the
 user's five-hour limit in ten minutes of replays. Use the smallest pair,

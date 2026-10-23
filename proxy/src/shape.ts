@@ -580,6 +580,12 @@ export function shapeRequest(
   const bound =
     strip && format === "anthropic" && cutoff > 0 && BOUND_THINKING.test(String(body.model));
   const typed = bound ? lastTyped(list) : -1;
+  // Leaving out the last loop's thinking changes the conversation from the
+  // typed turn before it, and Anthropic looks only about 20 blocks back from
+  // the newest marker, so after a long loop the read fell back to the
+  // boundary and rewrote 40-90k. The request that turn started wrote an
+  // entry ending there, so a marker on it reads all of that back.
+  const loopStart = typed > 0 ? lastTyped(list.slice(0, typed)) : -1;
   const totals: Counts = { masked: 0, compacted: 0, deduped: 0 };
   let turn = 0;
   let savedChars = 0;
@@ -607,7 +613,11 @@ export function shapeRequest(
   });
   // Any count is a change: a request with only compaction is still shaped.
   if (totals.masked + totals.compacted + totals.deduped === 0) return;
-  const ats = [previous > 0 ? boundary : -1, cutoff > 0 ? current : -1].filter((at) => at >= 0);
+  // The step's markers first: a step rewrites from the boundary anyway, so
+  // the loop's start is marked only where there is room left.
+  const ats = [previous > 0 ? boundary : -1, cutoff > 0 ? current : -1, loopStart].filter(
+    (at) => at >= 0,
+  );
   const shaped = { ...body, [keyOf(format)]: out };
   const marked = format === "anthropic" ? markBoundaries(shaped, out, ats) : shaped;
   const step = cutoff > previous ? { step: { from: previous, to: cutoff } } : {};

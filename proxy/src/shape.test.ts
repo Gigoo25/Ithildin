@@ -836,6 +836,26 @@ describe("stripping thinking before a typed turn", () => {
     expect(out.at(-2)?.content).toEqual([thought, used]);
   });
 
+  it("marks the typed turn that started the stripped loop, where its entry ends", () => {
+    const system = [
+      { type: "text", text: "a", cache_control: { type: "ephemeral" } },
+      { type: "text", text: "b", cache_control: { type: "ephemeral" } },
+    ];
+    const typedAgain = { role: "user", content: [{ type: "text", text: "then that" }] };
+    const loop = [asked, ...late.slice(0, 2), typedAgain, ...late.slice(3)];
+    const messages = around([], loop);
+    const marks = (strip: boolean) => {
+      const body = { model: "claude-opus-5-5", system, messages };
+      const out = shapeRequest("anthropic", body, undefined, strip)!.body.messages as unknown[];
+      return out.flatMap((message, i) =>
+        JSON.stringify(message).includes("cache_control") ? [i] : [],
+      );
+    };
+    const start = messages.indexOf(asked);
+    expect(marks(true)).toContain(start);
+    expect(marks(false)).not.toContain(start);
+  });
+
   it("strips nothing when off, or on a model whose thinking is not bound", () => {
     for (const shaped of [request("claude-opus-5-5", false), request("claude-opus-4-8", true)]) {
       const out = shaped!.body.messages as Array<Record<string, unknown>>;
