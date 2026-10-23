@@ -869,10 +869,11 @@ describe("stripping thinking before a typed turn", () => {
     expect((out as Array<Record<string, unknown>>)[0]?.content).toEqual([thought, used]);
   });
 
-  it("is read from ITHILDIN_STRIP_THINKING, off unless asked", () => {
-    expect(stripThinkingOn({})).toBe(false);
+  it("is read from ITHILDIN_STRIP_THINKING, on unless turned off", () => {
+    expect(stripThinkingOn({})).toBe(true);
     expect(stripThinkingOn({ ITHILDIN_STRIP_THINKING: " On " })).toBe(true);
-    expect(stripThinkingOn({ ITHILDIN_STRIP_THINKING: "off" })).toBe(false);
+    expect(stripThinkingOn({ ITHILDIN_STRIP_THINKING: " Off " })).toBe(false);
+    expect(stripThinkingOn({ ITHILDIN_STRIP_THINKING: "0" })).toBe(false);
   });
 });
 

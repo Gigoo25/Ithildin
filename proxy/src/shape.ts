@@ -66,14 +66,13 @@ export function shapingOn(env: Record<string, string | undefined> = process.env)
   return value !== "off" && value !== "raw" && value !== "false" && value !== "0";
 }
 
-// ITHILDIN_STRIP_THINKING=on is an experiment, off by default: on the 5.5
-// models, a step misses the cache when a typed user turn follows thinking the
-// API dropped (CACHING.md, "Step misses on the 5.5 models"). On, a shaped
-// request leaves out the thinking before its last typed user turn, so the
-// API has none there to drop.
+// On the 5.5 models, a step misses the cache when a typed user turn follows
+// thinking the API dropped (CACHING.md, "Step misses on the 5.5 models"). So
+// a shaped request leaves out the thinking before its last typed user turn,
+// and the API has none there to drop. ITHILDIN_STRIP_THINKING=off sends it.
 export function stripThinkingOn(env: Record<string, string | undefined> = process.env): boolean {
   const value = setting("STRIP_THINKING", env)?.trim().toLowerCase();
-  return value === "on" || value === "true" || value === "1";
+  return value !== "off" && value !== "false" && value !== "0";
 }
 
 // The models whose thinking the API binds to the conversation before it, and

@@ -569,7 +569,7 @@ Settings are environment variables:
 | `ITHILDIN_SCAN_THREADS`      | threads that scan large bodies off the serving thread (default 2, or cores less one if fewer; at most 8; 0 is off) |
 | `ITHILDIN_KEEP_REQUESTS`     | requests the dashboard keeps (default 20, 0 is off) |
 | `ITHILDIN_SHAPE`             | `off` disables context shaping on every route    |
-| `ITHILDIN_STRIP_THINKING`    | `on` leaves out a 5.x Claude model's thinking before the last typed turn, once shaping has masked anything (an experiment, off by default; proxy/CACHING.md) |
+| `ITHILDIN_STRIP_THINKING`    | `off` sends a 5.x Claude model's thinking before the last typed turn, which shaping otherwise leaves out once it has masked anything, so a step does not miss (on by default; proxy/CACHING.md) |
 | `ITHILDIN_CACHEMISS_KEEP`    | cache misses kept on disk, as redacted bodies (default 20, at most 14 days and 200 MB; 0 is off and deletes them) |
 | `ITHILDIN_GENERALIZE`        | generalize list file (default beside the config) |
 | `ITHILDIN_ALIASES`           | `stand-ins` or `tokens`; wins over the config    |

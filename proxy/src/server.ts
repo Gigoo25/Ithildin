@@ -1533,8 +1533,8 @@ export function start(
   scanPool?.close();
   scanPool = new ScanPool(scanThreadCount(), identityEntries(), log);
   if (scanPool.size > 0) log(`scanning on ${scanPool.size} threads`);
-  if (stripThinkingOn())
-    log("strip-thinking experiment on: thinking before the last typed turn is left out");
+  if (!stripThinkingOn())
+    log("strip-thinking off: thinking before the last typed turn is sent as it came");
   if (aliasStyle() === "tokens")
     log("aliases are tokens: nothing is swapped back, tools run with the tokens the model wrote");
   const handler = createHandler(routes, fetchUpstream, REDACTORS, true);
