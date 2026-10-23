@@ -649,6 +649,20 @@ cutoff its parent had where it forked (the user turn starting
 `<fork-boilerplate>`), never stepping, so its history matches the parent's
 shaped copy and reads from the parent's entries. Not yet seen live.
 
+**Open: a restart rewrites each conversation (to troubleshoot).** After the
+17:40 restart (same shaping code before and after, strip-thinking on both
+sides) f519824f's first request read 14K, only the system and tools, and
+wrote 50K; the next read 64K. So its messages changed from the first one,
+with no step (`step=` unchanged). The 15:43 restart cost it 39K the same
+way. Kept across a restart, so not it: blocked calls, tags, shape and image
+switches, stand-ins, the scan cache; compaction is pure and a masked
+result's way back has no per-run id. Not kept: `[allow-…:session]` grants
+(cleared on purpose) and `seenLiterals`, neither an obvious fit. No miss pair
+was kept, as the previous request lived in memory. Next: send one body
+through a handler with a fake upstream, start a fresh process on the same
+state, send it again, and diff what goes upstream; no quota. Until then,
+restart while sessions are idle.
+
 **Replaying costs.** A fresh nonce makes each request write its whole body.
 The 15-03 pair is ~190K a request; the session that ran these hit the
 user's five-hour limit in ten minutes of replays. Use the smallest pair,
