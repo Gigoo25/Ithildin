@@ -5,6 +5,7 @@ import {
   gitRemoteOwner,
   identityFromGit,
   identityFromGitRemotes,
+  includedGitIdentities,
   identityFromNetworkFiles,
   identityFromRepos,
   identityFromSsh,
@@ -126,7 +127,72 @@ describe("identityFromGit", () => {
     );
     expect(got.gitName).toBe("Zzzxq Gitname");
     expect(got.gitEmail).toBe("zzzxqgit@zzzxq.test");
-    expect(identityFromGit(() => undefined)).toEqual({ gitName: undefined, gitEmail: undefined });
+    expect(
+      identityFromGit(
+        () => undefined,
+        () => undefined,
+      ),
+    ).toEqual({
+      gitName: undefined,
+      gitEmail: undefined,
+      gitIncluded: [],
+    });
+  });
+});
+
+describe("includedGitIdentities", () => {
+  // git config -z: origin NUL, key LF value NUL.
+  const listing = [
+    "file:/h/.config/git/config",
+    "includeif.gitdir:/h/Work/.path\n/h/.gitconfig-work",
+    "file:/h/.config/git/config",
+    "includeif.gitdir:/h/Mine dir/.path\n/h/.gitconfig-mine",
+    "file:/h/.config/git/config",
+    "include.path\nrelative-file",
+    "file:/h/.config/git/config",
+    "includeif.gitdir:/h/Again/.path\n/h/.gitconfig-work",
+    "file:/h/.config/git/config",
+    "include.path",
+    "",
+  ].join("\0");
+  const values: Record<string, Record<string, string>> = {
+    "/h/.gitconfig-work": { "user.name": "Zzzxq Worker", "user.email": "zzzxqw@zzzxq.test" },
+    "/h/.gitconfig-mine": { "user.email": "zzzxqm@zzzxq.test" },
+    "/h/.config/git/relative-file": {},
+  };
+  const reads: string[] = [];
+  const run = (_command: string, args: string[]) => {
+    if (args.includes("--global")) return listing;
+    const file = args[args.indexOf("--file") + 1]!;
+    reads.push(file);
+    return values[file]?.[args[args.length - 1]!];
+  };
+
+  it("reads each included file once, wherever its includeIf applies", () => {
+    expect(includedGitIdentities(run)).toEqual([
+      { name: "Zzzxq Worker", email: "zzzxqw@zzzxq.test" },
+      { name: undefined, email: "zzzxqm@zzzxq.test" },
+    ]);
+    expect([...new Set(reads)]).toEqual([
+      "/h/.gitconfig-work",
+      "/h/.gitconfig-mine",
+      "/h/.config/git/relative-file",
+    ]);
+  });
+
+  it("finds none without git or a global config", () => {
+    expect(includedGitIdentities(() => undefined)).toEqual([]);
+  });
+
+  it("covers an included identity beside the one git sees here", () => {
+    const ids = collectRuntimeIdentity({
+      gitName: "Zzzxq Here",
+      gitIncluded: [{ name: "Zzzxq Worker", email: "zzzxqw@qhvbtam.test" }, { name: "Zzzxq Here" }],
+    }).map((e) => `${e.id}=${e.literal}`);
+    expect(ids).toContain("runtime-git-name=Zzzxq Here");
+    expect(ids).toContain("runtime-git-name-2=Zzzxq Worker");
+    expect(ids).toContain("runtime-git-email-2=zzzxqw@qhvbtam.test");
+    expect(ids.filter((id) => id.endsWith("=Zzzxq Here"))).toHaveLength(1);
   });
 });
 

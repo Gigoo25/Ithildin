@@ -172,12 +172,19 @@ const EXAMPLE_LITERALS = new Set([
   "example team",
 ]);
 
+export interface GitIdentity {
+  name?: string | undefined;
+  email?: string | undefined;
+}
+
 export interface RuntimeIdentity {
   username?: string;
   hostname?: string;
   homedir?: string;
   gitName?: string | undefined;
   gitEmail?: string | undefined;
+  // user.name and user.email of each file the global git config includes.
+  gitIncluded?: GitIdentity[];
   // From ~/.ssh/config: Host aliases, HostName values, User values.
   sshHosts?: string[];
   sshHostNames?: string[];
@@ -285,11 +292,14 @@ function addInfraIdentity(
   // A work or personal domain sits under a public suffix, so no structural
   // rule sees git.acme.com; the domain of your own address names it. The id
   // avoids "email" so the stand-in is minted as a host.
-  const domain = mailDomain(identity.gitEmail);
-  if (domain) {
-    add("runtime-mail-host", domain);
-    add("runtime-mail-host-short", domain.slice(0, domain.indexOf(".")));
-  }
+  const emails = [identity.gitEmail, ...(identity.gitIncluded ?? []).map((g) => g.email)];
+  emails.forEach((email, i) => {
+    const domain = mailDomain(email);
+    if (!domain) return;
+    const n = i === 0 ? "" : `-${i + 1}`;
+    add(`runtime-mail-host${n}`, domain);
+    add(`runtime-mail-host-short${n}`, domain.slice(0, domain.indexOf(".")));
+  });
 }
 
 export function collectRuntimeIdentity(identity: RuntimeIdentity): InventoryEntry[] {
@@ -322,12 +332,19 @@ export function collectRuntimeIdentity(identity: RuntimeIdentity): InventoryEntr
     );
   }
 
-  const gitName = identity.gitName?.trim();
-  if (gitName && gitName.includes(" ")) add("runtime-git-name", gitName, "phrase");
-  else add("runtime-git-name", gitName);
-  const gitEmail = identity.gitEmail?.trim();
-  if (gitEmail && !gitEmail.toLowerCase().endsWith("@example.com"))
-    add("runtime-git-email", gitEmail);
+  const gits = [
+    { name: identity.gitName, email: identity.gitEmail },
+    ...(identity.gitIncluded ?? []),
+  ];
+  gits.forEach((git, i) => {
+    const n = i === 0 ? "" : `-${i + 1}`;
+    const gitName = git.name?.trim();
+    if (gitName && gitName.includes(" ")) add(`runtime-git-name${n}`, gitName, "phrase");
+    else add(`runtime-git-name${n}`, gitName);
+    const gitEmail = git.email?.trim();
+    if (gitEmail && !gitEmail.toLowerCase().endsWith("@example.com"))
+      add(`runtime-git-email${n}`, gitEmail);
+  });
 
   // Infrastructure names. Hostnames match case-insensitively (DNS does).
   const addCaseless = (id: string, literal: string) => {
@@ -358,8 +375,42 @@ export function collectRuntimeIdentity(identity: RuntimeIdentity): InventoryEntr
 
 export function identityFromGit(
   get: (key: string) => string | undefined = readGitConfig,
-): Pick<RuntimeIdentity, "gitName" | "gitEmail"> {
-  return { gitName: get("user.name"), gitEmail: get("user.email") };
+  run: RunCommand = runCommand,
+): Pick<RuntimeIdentity, "gitName" | "gitEmail" | "gitIncluded"> {
+  return {
+    gitName: get("user.name"),
+    gitEmail: get("user.email"),
+    gitIncluded: includedGitIdentities(run),
+  };
+}
+
+// An includeIf "gitdir:..." applies only inside its tree, and the proxy runs
+// from home, outside them all: plain git config there sees none of a work or
+// personal identity. So each included file is read whole instead.
+export function includedGitIdentities(run: RunCommand = runCommand): GitIdentity[] {
+  const regexp = "^include(if\\..*)?\\.path$";
+  const listed = run("git", [
+    ...["config", "--global", "-z", "--show-origin", "--type=path"],
+    ...["--get-regexp", regexp],
+  ]);
+  // -z: origin NUL, then key LF value NUL, so a path may hold spaces.
+  const fields = (listed ?? "").split("\0");
+  const files = new Set<string>();
+  for (let i = 0; i + 1 < fields.length; i += 2) {
+    const origin = fields[i]!.replace(/^file:/, "");
+    const entry = fields[i + 1]!;
+    const at = entry.indexOf("\n");
+    if (at < 0 || at === entry.length - 1) continue;
+    files.add(path.resolve(path.dirname(origin), entry.slice(at + 1)));
+  }
+  const found: GitIdentity[] = [];
+  for (const file of [...files].slice(0, MAX_PER_SOURCE)) {
+    const get = (key: string) =>
+      run("git", ["config", "--file", file, "--get", key])?.trim() || undefined;
+    const identity = { name: get("user.name"), email: get("user.email") };
+    if (identity.name || identity.email) found.push(identity);
+  }
+  return found;
 }
 
 function readGitConfig(key: string): string | undefined {
