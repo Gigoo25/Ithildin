@@ -1045,17 +1045,28 @@ function wantIndex(wants) {
   return index;
 }
 
+// A stand-in is marked only where it stands whole, as the engine matches a
+// value: a short one is inside plenty of words, and marking those reads as if
+// the word had been masked.
+const WORD_CHAR = /[\\p{L}\\p{N}_]/u;
+function standsWhole(text, at, length) {
+  const word = (char) => char !== undefined && WORD_CHAR.test(char);
+  const end = at + length;
+  return !(word(text[at - 1]) && word(text[at])) && !(word(text[end - 1]) && word(text[end]));
+}
+
 // Where the stand-ins are in a text: the earliest first, the longest of
-// those starting at the same place, none inside another.
+// those starting at the same place, none inside another or inside a word.
 function standInsIn(text, wants) {
   const index = wantIndex(wants);
   const found = [];
+  const fits = (want, at) =>
+    text.startsWith(want.text, at) && standsWhole(text, at, want.text.length);
   for (let at = 0; at < text.length; at++) {
     let hit = (index.byPrefix.get(text.slice(at, at + PREFIX_CHARS)) || [])
-      .find((want) => text.startsWith(want.text, at));
+      .find((want) => fits(want, at));
     for (const want of index.short)
-      if (text.startsWith(want.text, at) && want.text.length > (hit ? hit.text.length : 0))
-        hit = want;
+      if (fits(want, at) && want.text.length > (hit ? hit.text.length : 0)) hit = want;
     if (!hit) continue;
     const end = at + hit.text.length;
     found.push({ at, end, type: hit.type, title: hit.title, back: hit.back });

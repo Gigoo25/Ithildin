@@ -151,6 +151,31 @@ function isStringQuote(text: string, at: number): boolean {
   return slashes % 2 === 0;
 }
 
+// A stand-in is marked only where it stands whole, as the engine matches a
+// value: a short one ("abc") is inside plenty of words ("abcess"), and marking
+// those reads as if the word had been masked.
+const WORD_CHAR = /[\p{L}\p{N}_]/u;
+function isWordChar(char: string | undefined): boolean {
+  return char !== undefined && WORD_CHAR.test(char);
+}
+
+function standsWhole(text: string, at: number, length: number): boolean {
+  const end = at + length;
+  return (
+    !(isWordChar(text[at - 1]) && isWordChar(text[at])) &&
+    !(isWordChar(text[end - 1]) && isWordChar(text[end]))
+  );
+}
+
+// The same in JSON as sent, where the character before may end an escape: the
+// "n" of "\n" is a line break, and "\u00e9" an é.
+function standsWholeInJson(sent: string, at: number, length: number): boolean {
+  const escape = /\\(?:u([0-9a-fA-F]{4})|[^u])$/.exec(sent.slice(Math.max(0, at - 6), at));
+  if (!escape || !isStringQuote(sent, at - escape[0].length)) return standsWhole(sent, at, length);
+  const before = escape[1] === undefined ? " " : String.fromCharCode(parseInt(escape[1], 16));
+  return standsWhole(before + sent.slice(at, at + length + 1), 1, length);
+}
+
 // JSON escapes read back as the text they stand for, when the piece allows.
 function unescaped(piece: string): string {
   try {
@@ -170,8 +195,11 @@ export function around(
   standIn: string,
   others: string[] = [],
 ): { parts?: Part[] } {
-  const at = sent === undefined || standIn === "" ? -1 : sent.indexOf(standIn);
-  if (sent === undefined || at < 0) return {};
+  if (sent === undefined || standIn === "") return {};
+  let at = sent.indexOf(standIn);
+  while (at >= 0 && !standsWholeInJson(sent, at, standIn.length))
+    at = sent.indexOf(standIn, at + 1);
+  if (at < 0) return {};
   const end = at + standIn.length;
   const marker = markerFor(others);
   // Read wider than shown, so a stand-in at the edge is whole before it is cut.
@@ -264,9 +292,14 @@ function markerFor(standIns: string[]): Marker {
 function standInAt(text: string, at: number, marker: Marker): string | undefined {
   let found = marker.byPrefix
     .get(text.slice(at, at + PREFIX_CHARS))
-    ?.find((standIn) => text.startsWith(standIn, at));
+    ?.find((standIn) => text.startsWith(standIn, at) && standsWhole(text, at, standIn.length));
   for (const standIn of marker.short)
-    if (text.startsWith(standIn, at) && standIn.length > (found?.length ?? 0)) found = standIn;
+    if (
+      text.startsWith(standIn, at) &&
+      standIn.length > (found?.length ?? 0) &&
+      standsWhole(text, at, standIn.length)
+    )
+      found = standIn;
   return found;
 }
 

@@ -290,6 +290,28 @@ describe("dashboard", () => {
     ]);
   });
 
+  it("finds a stand-in where it stands whole, not inside a word", () => {
+    const sent = JSON.stringify({
+      system: "the qzxrounding code qzxfaces",
+      messages: [{ role: "user", content: "line\nqzx ab and abcess, then qzx." }],
+    });
+    expect(around(sent, "qzx", ["ab"]).parts).toEqual([
+      { text: "line\n" },
+      { text: "qzx", mark: "this" },
+      { text: " " },
+      { text: "ab", mark: "other" },
+      { text: " and abcess, then qzx." },
+    ]);
+    // Escapes as sent: a letter, a dash, and a backslash before a plain "n".
+    expect(around('{"content":"\\u00e9qzx, only"}', "qzx")).toEqual({});
+    expect(around('{"content":"\\u2014qzx"}', "qzx").parts?.[1]).toEqual({
+      text: "qzx",
+      mark: "this",
+    });
+    expect(around('{"content":"a\\\\nqzx"}', "qzx")).toEqual({});
+    expect(around(JSON.stringify({ content: "qzxfaces" }), "qzx")).toEqual({});
+  });
+
   it("marks short stand-ins too, and stays quick with thousands in a request", () => {
     const sent = JSON.stringify({ content: "ab and abc at ann@x.io" });
     expect(around(sent, "ann@x.io", ["ab", "abc", "ab"]).parts).toEqual([
@@ -929,8 +951,9 @@ describe("dashboard", () => {
       constant("PREFIX_CHARS"),
       "const wantIndexes = new WeakMap();",
       constant("SHOWN_FIELDS"),
+      constant("WORD_CHAR"),
       "let unmarked = {};",
-      ...["wantIndex", "standInsIn", "outside", "markInto"].map(pick),
+      ...["wantIndex", "standsWhole", "standInsIn", "outside", "markInto"].map(pick),
     ].join("\n");
     const page = new Function(
       "document",
@@ -949,6 +972,30 @@ describe("dashboard", () => {
     expect(outside(undefined, wants)).toEqual([]);
     markInto(node, "Qzxv ".repeat(1005), wants, "");
     expect(unmarked()).toEqual({ masked: 5 });
+  });
+
+  it("marks a stand-in only where it stands whole, not inside a word", () => {
+    const pick = (name: string) =>
+      new RegExp(`function ${name}[\\s\\S]*?\\n\\}`).exec(DASHBOARD_HTML)![0];
+    const constant = (name: string) =>
+      new RegExp(`const ${name} = [^;]*;`).exec(DASHBOARD_HTML)![0];
+    const source = [
+      constant("PREFIX_CHARS"),
+      constant("WORD_CHAR"),
+      "const wantIndexes = new WeakMap();",
+      ...["wantIndex", "standsWhole", "standInsIn"].map(pick),
+    ].join("\n");
+    const standInsIn = new Function(`${source}; return standInsIn;`)() as (
+      text: string,
+      wants: Array<{ text: string; type: string }>,
+    ) => Array<{ at: number; end: number }>;
+    const wants = [
+      { text: "qzx", type: "masked" },
+      { text: "/home/qzx", type: "masked" },
+    ];
+    const text = "qzxes, éqzx and qzx_1 stay; qzx, (qzx) and /home/qzx/a are marked";
+    const found = standInsIn(text, wants).map((hit) => text.slice(hit.at, hit.end));
+    expect(found).toEqual(["qzx", "qzx", "/home/qzx"]);
   });
 
   it("says a size in the largest unit that keeps it at least one", () => {
