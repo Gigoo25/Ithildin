@@ -2,7 +2,7 @@ import { describe, expect, it, spyOn } from "bun:test";
 import { markerText } from "./mark.ts";
 import { cacheTrail, createHandler, DEFAULT_ROUTES } from "./server.ts";
 import { PrefixWatch } from "./prefix.ts";
-import { merge, usageOf, usageOfEvent, usageText, writtenText } from "./usage.ts";
+import { merge, usageOf, usageOfEvent, usageText, writtenText, type Usage } from "./usage.ts";
 
 describe("usage from a reply", () => {
   it("reads Anthropic's split as it is", () => {
@@ -69,6 +69,20 @@ describe("usage from a reply", () => {
     const total = merge(merge(undefined, start), delta);
     expect(total).toEqual({ input: 10, cacheRead: 500, cacheWrite: 0, output: 30 });
     expect(usageText(total)).toBe("10/500/0/30");
+  });
+
+  it("counts a Gemini stream's cached tokens once, though its first chunks name none", () => {
+    const meta = (cached?: number) =>
+      JSON.stringify({
+        usageMetadata: {
+          promptTokenCount: 230000,
+          candidatesTokenCount: 5,
+          ...(cached !== undefined && { cachedContentTokenCount: cached }),
+        },
+      });
+    const parts = [meta(), meta(), meta(229261)].map((d) => usageOfEvent("gemini", d)!);
+    const total = parts.reduce<Usage | undefined>((u, part) => merge(u, part), undefined)!;
+    expect(usageText(total)).toBe("739/229261/0/5");
   });
 
   it("reads how long Anthropic keeps what it wrote, and names it when it wrote", () => {

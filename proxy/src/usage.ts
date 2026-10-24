@@ -103,9 +103,15 @@ function geminiUsage(usage: Fields | undefined): Usage | undefined {
 
 // Parts of one reply's usage, combined. Field by field the larger wins: an
 // Anthropic message_delta repeats the running totals rather than adding to
-// them, and a field a part leaves out reads as zero.
+// them, and a field a part leaves out reads as zero. Input is what is left of
+// the larger prompt once the cache's parts are out: Gemini's first chunks
+// count the prompt with no cached part, so their input is the whole prompt,
+// and the larger input would count every cached token twice.
 export function merge(into: Usage | undefined, part: Usage): Usage {
   if (!into) return { ...part };
+  const prompt = (u: Usage) => u.input + u.cacheRead + u.cacheWrite;
+  const cacheRead = Math.max(into.cacheRead, part.cacheRead);
+  const cacheWrite = Math.max(into.cacheWrite, part.cacheWrite);
   const written =
     into.written && part.written
       ? {
@@ -114,9 +120,9 @@ export function merge(into: Usage | undefined, part: Usage): Usage {
         }
       : (into.written ?? part.written);
   return {
-    input: Math.max(into.input, part.input),
-    cacheRead: Math.max(into.cacheRead, part.cacheRead),
-    cacheWrite: Math.max(into.cacheWrite, part.cacheWrite),
+    input: Math.max(0, Math.max(prompt(into), prompt(part)) - cacheRead - cacheWrite),
+    cacheRead,
+    cacheWrite,
     output: Math.max(into.output, part.output),
     ...(written && { written }),
   };
