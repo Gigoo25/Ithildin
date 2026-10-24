@@ -61,7 +61,11 @@ import {
   identityFromToolConfigs,
   identityFromWifi,
 } from "../engine/lib/runtime-inventory.ts";
-import { type InventoryEntry, scan as scanRules } from "../engine/lib/rules.ts";
+import {
+  compileInventoryEntry,
+  type InventoryEntry,
+  scan as scanRules,
+} from "../engine/lib/rules.ts";
 import { planSwapBack, reachesNetwork } from "../engine/lib/swap-back.ts";
 import { allowHint, protectedBlocked, protectedFinding, shellWrites } from "./protect.ts";
 import { SPELLED_BLOCKED, spellsMasked, UNMASK_BLOCKED, unmasksText } from "./unmask.ts";
@@ -183,6 +187,45 @@ function collectIdentity(): InventoryEntry[] {
 const knownIdentity = new Map<string, InventoryEntry>();
 export const IDENTITY_ENTRIES_MAX = 1000;
 
+// Kept across a restart too, for the same reason: a proxy started before the
+// network was up missed the LAN's search domain until its first refresh, and
+// one started on another network forgot every value it had seen on this one.
+// Either way the turns naming them were redacted another way and the whole
+// conversation was written to the cache again. Unlike the rest of the state
+// this holds the values themselves, since each is a rule's literal; they are
+// this machine's own, read from its files and commands, and the directory is
+// the user's alone (0700) and refused to the model's tools.
+let identityFile: string | undefined;
+
+function saveIdentity(): void {
+  if (!identityFile) return;
+  try {
+    writeFileSync(`${identityFile}.tmp`, JSON.stringify(identityEntries()), { mode: 0o600 });
+    renameSync(`${identityFile}.tmp`, identityFile);
+  } catch {
+    // Not kept: one not collected after a restart rewrites the conversations naming it.
+  }
+}
+
+// Saved entries that still compile; a damaged one is dropped, not fatal.
+function loadIdentity(file: string): InventoryEntry[] {
+  let saved: unknown;
+  try {
+    saved = JSON.parse(readFileSync(file, "utf8"));
+  } catch {
+    return []; // Absent or unreadable: collected afresh.
+  }
+  if (!Array.isArray(saved)) return [];
+  return saved.filter((entry): entry is InventoryEntry => {
+    try {
+      compileInventoryEntry(entry);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
+
 // Merges fresh entries into the known ones and returns whether any joined.
 // A new literal whose id is taken gets the next free number on that id,
 // which keeps the id's kind (host, ip, ssid) for its stand-in.
@@ -225,6 +268,7 @@ export function identityEntries(): InventoryEntry[] {
 // anything joined. Unchanged, the rules and every scan cache stay as they are.
 export function refreshIdentity(collect: () => InventoryEntry[] = collectIdentity): boolean {
   if (!mergeIdentity(knownIdentity, collect())) return false;
+  saveIdentity();
   setRuntimeInventory([...knownIdentity.values()]);
   registerAliasLabels(aliasLabels());
   seedStandIns();
@@ -246,13 +290,19 @@ function seedStandIns(): void {
 export function initEngine(
   keyFile = setting("PROXY_KEY_FILE") ?? path.join(path.dirname(aliasKeyPath()), "proxy-alias-key"),
 ): void {
+  scanCacheBase = path.join(path.dirname(keyFile), "proxy");
+  identityFile = `${scanCacheBase}-identity.json`;
+  // Saved first, so a value keeps the id (and so the stand-in) it had.
+  const saved = loadIdentity(identityFile);
+  mergeIdentity(knownIdentity, saved);
   mergeIdentity(knownIdentity, collectIdentity());
   setRuntimeInventory([...knownIdentity.values()]);
   registerAliasLabels(aliasLabels());
+  // Makes the state directory on a first start, so saved after it.
   const aliasKey = loadAliasKey(keyFile);
+  if (saved.length !== knownIdentity.size) saveIdentity();
   const book = new AliasBook(aliasKey);
   setAliasBook(book);
-  scanCacheBase = path.join(path.dirname(keyFile), "proxy");
   book.loadCounters(`${scanCacheBase}-standins.json`);
   initReplay(
     createHmac("sha256", aliasKey).update("replay").digest(),

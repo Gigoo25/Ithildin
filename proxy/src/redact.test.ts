@@ -1,4 +1,6 @@
 import { beforeAll, describe, expect, it, spyOn } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { type InventoryEntry, scan, withScanBudget } from "../engine/lib/rules.ts";
 import {
@@ -212,6 +214,54 @@ describe("identity refresh", () => {
     expect(refreshIdentity(() => [entry("runtime-ssid-1", "ZqxRefreshNet")])).toBe(false);
     expect(refreshIdentity(() => [])).toBe(false);
     expect(found()).toBe(true);
+  });
+
+  // A proxy started before the network was up, or on another network, no
+  // longer collects a value it had: the saved inventory still covers it.
+  it("keeps what it collected across a restart, and drops a damaged entry", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ithildin-identity-"));
+    const file = path.join(dir, "proxy-identity.json");
+    const bogus = { id: "has space", literal: "ZqxBogus", match: "token" };
+    writeFileSync(file, JSON.stringify([entry("runtime-ssid-1", "ZqxSavedNet"), bogus, "x"]));
+    const found = (value: string) => scan(`joined ${value}`).some((f) => f.secretValue === value);
+    try {
+      initEngine(path.join(dir, "proxy-alias-key"));
+      expect(found("ZqxSavedNet")).toBe(true);
+      expect(found("ZqxBogus")).toBe(false);
+      refreshIdentity(() => [entry("runtime-search-domain-host-1", "zqxlan.local", false)]);
+      const saved = (JSON.parse(readFileSync(file, "utf8")) as InventoryEntry[]).map(
+        (e) => e.literal,
+      );
+      expect(saved).toContain("ZqxSavedNet");
+      expect(saved).toContain("zqxlan.local");
+      expect(saved).not.toContain("ZqxBogus");
+      expect(statSync(file).mode & 0o777).toBe(0o600);
+    } finally {
+      initEngine();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("saves what it collects on a first start, into the directory it makes", () => {
+    const dir = path.join(mkdtempSync(path.join(tmpdir(), "ithildin-identity-")), "state");
+    try {
+      initEngine(path.join(dir, "proxy-alias-key"));
+      expect(statSync(path.join(dir, "proxy-identity.json")).isFile()).toBe(true);
+    } finally {
+      initEngine();
+      rmSync(path.dirname(dir), { recursive: true, force: true });
+    }
+  });
+
+  it("starts from what it collects when the saved inventory is not a list", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ithildin-identity-"));
+    writeFileSync(path.join(dir, "proxy-identity.json"), "{}");
+    try {
+      expect(() => initEngine(path.join(dir, "proxy-alias-key"))).not.toThrow();
+    } finally {
+      initEngine();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
