@@ -649,19 +649,50 @@ cutoff its parent had where it forked (the user turn starting
 `<fork-boilerplate>`), never stepping, so its history matches the parent's
 shaped copy and reads from the parent's entries. Not yet seen live.
 
-**Open: a restart rewrites each conversation (to troubleshoot).** After the
-17:40 restart (same shaping code before and after, strip-thinking on both
-sides) f519824f's first request read 14K, only the system and tools, and
-wrote 50K; the next read 64K. So its messages changed from the first one,
-with no step (`step=` unchanged). The 15:43 restart cost it 39K the same
-way. Kept across a restart, so not it: blocked calls, tags, shape and image
-switches, stand-ins, the scan cache; compaction is pure and a masked
-result's way back has no per-run id. Not kept: `[allow-…:session]` grants
-(cleared on purpose) and `seenLiterals`, neither an obvious fit. No miss pair
-was kept, as the previous request lived in memory. Next: send one body
-through a handler with a fake upstream, start a fresh process on the same
-state, send it again, and diff what goes upstream; no quota. Until then,
-restart while sessions are idle.
+**A restart rewrote conversations: the identity inventory (2026-10-23).**
+After the 17:40 restart (same shaping code before and after, strip-thinking
+on both sides) f519824f's first request read 14K, only the system and tools,
+and wrote 50K; the 15:43 restart cost it 39K the same way. Stand-ins, the
+scan cache and compaction were ruled out: one body through a handler, then a
+fresh process on the same state, sends the same bytes. What did differ was
+the runtime identity inventory, collected at start and every five minutes
+and kept only in memory. A start before the network is up misses the
+search domain; a value the machine no longer sees (another network, an
+offline peer) drops out. Either way the rules change, a value in an old
+turn is masked by another rule or not at all, and every turn naming it is
+rewritten: `on the <domain> network` went out unmasked from a fresh process
+and masked from one five minutes older. The inventory is now kept in the
+state directory (`proxy-identity.json`) and only ever joins, and the
+service waits for the network (`nm-online`) before starting. The journal
+for those two restarts is gone, so this is the likely cause, not a proven
+one; check the first request after the next restart.
+
+**Strip-thinking by default, first evening (2026-10-23, 21:37-22:31, b7dbbd01,
+opus-5-5).** Before it, 5.5 steps that were not a session's first missed 12
+of 29 (10-13 to 10-22; Opus 4.8 0 of 4). Since: 4 of 4 hit (two in b039e025,
+30>70 and 70>130 here, each next request reading ~53K and ~78K). At a 41%
+miss rate four hits in a row is about 1 in 8 by chance, so it holds the lead
+up, not proves it. The cost moved to typed messages: five here rewrote the
+loop before them, 1.4-18K each, 0.44% of the day's input against 0.62% for
+steps. Writes beyond each request's growth, as a share of Anthropic input:
+
+| Day | Hit | Steps | Typed-message rewrites | Agent edits | Other |
+|---|---|---|---|---|---|
+| 10-17 | 98.3% | 0.54 | - | 0.03 | 0.23 |
+| 10-18 | 98.5% | 0.48 | - | 0.32 | 0.00 |
+| 10-20 | 94.7% | 0.87 | - | 0.53 | 0.96 |
+| 10-23 | 96.6% | 0.62 | 0.44 | 0.01 | 0.16 |
+
+Next: a few more days. Strip-thinking pays if steps keep hitting and typed
+rewrites stay under what missed steps cost (0.3-0.5% a day). If they do not,
+the variant to try strips only on a step, which rewrites from the cutoff
+anyway, and holds the stripped set still between steps.
+
+**Reading hit rate.** A higher hit rate is not the goal. Shaping removes 2-3
+times what is sent (since 10-13: ~553M tokens from 561M sent on anthropic),
+so the new turns, which are never cached, are a larger share of a smaller
+prompt. Unshaped, the same traffic would read ~98.8% from cache and cost far
+more. The number to lower is excess writes, above.
 
 **Replaying costs.** A fresh nonce makes each request write its whole body.
 The 15-03 pair is ~190K a request; the session that ran these hit the
