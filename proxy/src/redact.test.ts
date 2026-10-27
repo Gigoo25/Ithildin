@@ -135,6 +135,52 @@ describe("secret reads", () => {
   });
 });
 
+describe("a call's reads, kept", () => {
+  // A glob names files only once expanded, so the verdict depends on the
+  // directory; it is taken the first time the call is seen and kept, which
+  // spares a listing per request and per call.
+  const glob = (dir: string, id: string) => ({
+    input: [
+      {
+        type: "function_call",
+        call_id: id,
+        name: "bash",
+        arguments: JSON.stringify({ command: `cat ${dir}/id_*` }),
+      },
+      { type: "function_call_output", call_id: id, output: "out" },
+    ],
+  });
+  const output = (body: Record<string, unknown>) =>
+    (body.input as Array<Record<string, unknown>>)[1]!.output;
+
+  it("keeps a call's verdict, so a file made later does not change it", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ithildin-reads-"));
+    try {
+      expect(output(redactRequest("responses", glob(dir, "g1")).body)).toBe("out");
+      writeFileSync(path.join(dir, "id_" + "ed25519"), "");
+      expect(output(redactRequest("responses", glob(dir, "g1")).body)).toBe("out");
+      // A new call looks again.
+      expect(output(redactRequest("responses", glob(dir, "g2")).body)).toBe(WITHHELD_NOTICE);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("still applies the tags of the turn to a kept verdict", () => {
+    const body = (tag: string) => ({
+      input: [
+        { role: "user", content: tag + "read it" },
+        { type: "function_call", call_id: "k1", name: "bash", arguments: readKey },
+        { type: "function_call_output", call_id: "k1", output: "key material" },
+      ],
+    });
+    expect(output2(redactRequest("responses", body("")).body)).toBe(WITHHELD_NOTICE);
+    expect(output2(redactRequest("responses", body("[allow-secrets] ")).body)).toBe("key material");
+  });
+  const output2 = (body: Record<string, unknown>) =>
+    (body.input as Array<Record<string, unknown>>)[2]!.output;
+});
+
 describe("swapToolJson", () => {
   it("blocks arguments it cannot parse: no guard has read them", () => {
     expect(swapToolJson("bash", "{not json", new Set())).toEqual({

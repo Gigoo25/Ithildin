@@ -1266,6 +1266,16 @@ function swappedFindings(text: string): LocatedFinding[] {
   return out;
 }
 
+// The tags that let a protected read through, apart from what the read names,
+// for a caller that keeps the second (the proxy, per tool call).
+export function secretReadAllowed(allowTags: Set<string>): boolean {
+  return allowTags.has("secret");
+}
+
+export function inventoryReadAllowed(allowTags: Set<string>): boolean {
+  return allowTags.has("pii") || allowTags.has("all");
+}
+
 export function blocksSecretAccess(
   toolName: string,
   command: string,
@@ -1273,7 +1283,7 @@ export function blocksSecretAccess(
   allowTags: Set<string>,
   cwd: string,
 ): boolean {
-  if (allowTags.has("secret")) return false;
+  if (secretReadAllowed(allowTags)) return false;
   return (
     (toolName === "bash" &&
       (commandReadsSecretFile(command, cwd) || commandSendsCookies(command))) ||
@@ -1290,7 +1300,7 @@ export function blocksInventoryAccess(
   allowTags: Set<string>,
   cwd: string,
 ): boolean {
-  if (allowTags.has("pii") || allowTags.has("all")) return false;
+  if (inventoryReadAllowed(allowTags)) return false;
   return (
     (toolName === "bash" && commandReadsOwnInventory(command, cwd)) ||
     targets.some((target) => isOwnInventory(target, cwd))

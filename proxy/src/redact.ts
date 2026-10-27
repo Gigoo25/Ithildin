@@ -19,6 +19,8 @@ import {
   collectValues,
   blocksInventoryAccess,
   blocksSecretAccess,
+  inventoryReadAllowed,
+  secretReadAllowed,
   candidatePaths,
   flushScanCache,
   isSecretPath,
@@ -1434,12 +1436,8 @@ export function requestCwd(format: Format, body: Record<string, unknown>): strin
 }
 
 // The notice for a call that read something protected, or undefined.
-function readsSecret(
-  name: string,
-  input: unknown,
-  tags: Set<string>,
-  cwd: string,
-): string | undefined {
+function readsSecret(call: ToolCall, tags: Set<string>, cwd: string): string | undefined {
+  const { name, input } = call;
   if (!input || typeof input !== "object" || Array.isArray(input)) return;
   const record = input as Record<string, unknown>;
   // A shell-shaped call reads like one whatever its name (tools.ts).
@@ -1447,9 +1445,45 @@ function readsSecret(
   const tool = shell !== undefined || BASH_TOOLS.has(name) ? "bash" : name;
   const command = shell ?? "";
   const targets = candidatePaths(record);
-  if (blocksSecretAccess(tool, command, targets, tags, cwd)) return WITHHELD_NOTICE;
-  if (blocksInventoryAccess(tool, command, targets, tags, cwd)) return INVENTORY_NOTICE;
+  const reads = callReads(call, tool, command, targets, cwd);
+  if (reads.secret && !secretReadAllowed(tags)) return WITHHELD_NOTICE;
+  if (reads.inventory && !inventoryReadAllowed(tags)) return INVENTORY_NOTICE;
   return undefined;
+}
+
+// What each call in the history reads, worked out once, the first time a
+// request carries its result, and kept. Asked afresh, every request listed a
+// directory for each word with a glob character in every command the session
+// ever ran (regexes and heredoc code are full of them) and resolved every
+// word as a path: 2.5 s a request in a long Claude Code session, all of it
+// spent on calls whose answer had not changed. Kept, a result also cannot
+// turn withheld later because of a file made after its call ran. Known by the
+// call's id and all it named, so a reused id is asked again; tags still apply
+// on every request.
+const CALL_READS_MAX = 50_000;
+const callReadsKnown = new Map<string, { secret: boolean; inventory: boolean }>();
+function callReads(
+  call: ToolCall,
+  tool: string,
+  command: string,
+  targets: string[],
+  cwd: string,
+): { secret: boolean; inventory: boolean } {
+  const ask = () => ({
+    secret: blocksSecretAccess(tool, command, targets, NO_TAGS, cwd),
+    inventory: blocksInventoryAccess(tool, command, targets, NO_TAGS, cwd),
+  });
+  if (typeof call.id !== "string" || call.id === "") return ask();
+  const key = createHash("sha256")
+    .update([call.id, tool, cwd, command, ...targets].join("\0"))
+    .digest("base64");
+  const known = callReadsKnown.get(key);
+  if (known) return known;
+  const reads = ask();
+  if (callReadsKnown.size >= CALL_READS_MAX)
+    callReadsKnown.delete(callReadsKnown.keys().next().value!);
+  callReadsKnown.set(key, reads);
+  return reads;
 }
 
 function parseArgs(json: unknown): unknown {
@@ -1511,7 +1545,7 @@ function secretCalls(
 ): Map<string, string> {
   const secret = new Map<string, string>();
   for (const { call, tags: at } of callsWithTags(format, list, tags, turns)) {
-    const notice = readsSecret(call.name, call.input, at, cwd);
+    const notice = readsSecret(call, at, cwd);
     if (notice) secret.set(String(call.id), notice);
   }
   return secret;
@@ -1545,8 +1579,8 @@ function seenInHistory(
   const cwd = requestDirs.get(tags) ?? process.env.HOME ?? process.cwd();
   for (const { call, tags: at } of callsWithTags(format, list, tags, turns)) {
     seen.outside ||= readsOutside(call.name, call.input);
-    if (!seen.secret && readsSecret(call.name, call.input, NO_TAGS, cwd))
-      seen.secret = !readsSecret(call.name, call.input, at, cwd) || copiesData(call.input);
+    if (!seen.secret && readsSecret(call, NO_TAGS, cwd))
+      seen.secret = !readsSecret(call, at, cwd) || copiesData(call.input);
     if (SUBAGENT_TOOLS.has(call.name)) seen.subagents.push(String(call.id));
   }
   return seen;
