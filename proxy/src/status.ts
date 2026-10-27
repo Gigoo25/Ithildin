@@ -33,6 +33,7 @@
 // Subagents share their parent's session id, so while one runs its counts
 // show.
 
+import { type PlanLimits, planLimits } from "./limits.ts";
 import type { Counts } from "./redact.ts";
 
 export interface Status extends Counts {
@@ -115,6 +116,8 @@ export function badgeText(
 export function createStatusBook() {
   const sessions = new Map<string, Entry>();
   const routes = new Map<string, Status>();
+  // Plan usage is the account's, not the conversation's: one reading per route.
+  const plans = new Map<string, PlanLimits>();
 
   return {
     // prompts: typed user prompts in the request, which mark a new turn.
@@ -158,6 +161,17 @@ export function createStatusBook() {
       sessions.set(key, { status, prompts, total, baseline });
       if (sessions.size > MAX_SESSIONS) sessions.delete(sessions.keys().next().value!);
       routes.set(route, status);
+    },
+
+    // A subscription's 5-hour and weekly usage, from a reply's headers
+    // (limits.ts). A reply that names none leaves the last reading standing.
+    noteLimits(route: string, headers: Headers): void {
+      const limits = planLimits(headers);
+      if (limits) plans.set(route, limits);
+    },
+
+    limits(route: string | undefined): PlanLimits | undefined {
+      return route ? plans.get(route) : undefined;
     },
 
     lookup(session: string | undefined, route: string | undefined): Status | undefined {

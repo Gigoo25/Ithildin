@@ -205,6 +205,44 @@ describe("requests", () => {
     expect((await health()).badge).toBe("ITHILDIN ON · 1 masked (+1)");
   });
 
+  it("reports a plan's usage on /health, per route, the latest reading kept", async () => {
+    const limited = (percent: string) =>
+      Response.json(
+        {},
+        {
+          headers: {
+            "x-codex-primary-used-percent": percent,
+            "x-codex-primary-reset-at": "1793083173",
+            "x-codex-secondary-used-percent": "3",
+            "x-codex-secondary-reset-at": "1793669973",
+          },
+        },
+      );
+    const replies = [limited("12"), limited("15"), Response.json({}, { status: 500 })];
+    const up = fakeUpstream(() => replies.shift()!);
+    const handler = createHandler(DEFAULT_ROUTES, up.fetch);
+    const limits = async (route: string) =>
+      (
+        (await (await handler(new Request(`http://127.0.0.1/health?route=${route}`))).json()) as {
+          limits?: unknown;
+        }
+      ).limits;
+    expect(await limits("openai-codex")).toBeUndefined();
+    const ask = () =>
+      handler(post("openai-codex/codex/responses", { input: [{ role: "user", content: "hi" }] }));
+    await ask();
+    await ask();
+    const latest = {
+      five_hour: { used_percentage: 15, resets_at: 1793083173 },
+      seven_day: { used_percentage: 3, resets_at: 1793669973 },
+    };
+    expect(await limits("openai-codex")).toEqual(latest);
+    // A reply without them (an error here) leaves the last reading standing.
+    await ask();
+    expect(await limits("openai-codex")).toEqual(latest);
+    expect(await limits("anthropic")).toBeUndefined();
+  });
+
   it("shows the latest prompt's allow tags on the badge, and upstream as typed", async () => {
     const up = fakeUpstream(() => Response.json({}));
     const handler = createHandler(DEFAULT_ROUTES, up.fetch);

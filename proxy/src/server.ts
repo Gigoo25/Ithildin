@@ -735,11 +735,13 @@ function health(
     url.searchParams.get("session") ?? undefined,
     url.searchParams.get("route") ?? undefined,
   );
+  const limits = book.limits(url.searchParams.get("route") ?? status?.route);
   return Response.json({
     ok: true,
     routes: Object.keys(routes),
     badge: status?.badge ?? "ITHILDIN ON",
     status,
+    ...(limits ? { limits } : {}),
     selftest: proof,
   });
 }
@@ -790,7 +792,6 @@ async function forward(
   if (sent instanceof Response) return sent;
   const routed = routeFor(route, name, sent.rest, sent.search, headers, format);
   if (routed instanceof Response) return routed;
-  const { target } = routed;
   const context = {
     route: name,
     endpoint: sent.rest,
@@ -811,9 +812,10 @@ async function forward(
       ? threadOf(format, session.id, (shaped.object ?? scanned.object) as Record<string, unknown>)
       : undefined;
   const asking = { stores, thread, main, format };
-  const reached = await sendAsking(asking, fetchUpstream, target, request, headers, shaped);
+  const reached = await sendAsking(asking, fetchUpstream, routed.target, request, headers, shaped);
   if ("refused" in reached) return reached.refused;
   const { upstream } = reached;
+  book.noteLimits(name, upstream.headers);
   if (session && ask && upstream.ok) noteTitle(upstream.clone(), ask, session.id, names, renamed);
 
   const line =
