@@ -36,6 +36,7 @@ import {
   typedPromptCount,
 } from "./redact.ts";
 import { ScanPool, scanThreadCount, warmTexts } from "./scan-pool.ts";
+import type { HiddenAt } from "./hidden.ts";
 import { type Retrieval, shapeRequest, shapingOn, stripThinkingOn } from "./shape.ts";
 import { configHome, NAME } from "../engine/lib/names.ts";
 import { aliasStyle } from "../engine/lib/rules.ts";
@@ -368,6 +369,23 @@ function noteStrays(strays: Stray[] | undefined): void {
   }
 }
 
+// Hidden text revealed in a request (hidden.ts), said once per place in a
+// session: every later request carries the same turn.
+const HIDDEN_SEEN_MAX = 1000;
+const hiddenSeen = new Set<string>();
+
+function noteHidden(found: HiddenAt[] | undefined, session: string | null): void {
+  for (const { where, runs } of found ?? []) {
+    const key = `${session ?? ""}\0${where}`;
+    if (hiddenSeen.has(key) || hiddenSeen.size >= HIDDEN_SEEN_MAX) continue;
+    hiddenSeen.add(key);
+    log(
+      `hidden text in ${where} (${runs} run${runs === 1 ? "" : "s"}): shown to the model ` +
+        `marked as hidden, and the conversation is untrusted`,
+    );
+  }
+}
+
 function refuse(status: number, message: string): Response {
   log(`refused (${status}): ${message}`);
   return errorReply(status, message, { [REFUSED_HEADER]: message });
@@ -635,6 +653,7 @@ function redactBody(
     const scanMs = Math.round(performance.now() - started);
     noteUnguarded(redacted.unguarded);
     noteStrays(redacted.strays);
+    noteHidden(redacted.hidden, session);
     // Single-message side requests (titles, quota probes) are not the
     // conversation, so they do not set its badge.
     const turns = Array.isArray(parsed.messages)

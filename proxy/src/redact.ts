@@ -84,6 +84,7 @@ import {
 import { BASH_TOOLS, LOCAL_TOOLS, shellCommand, writeTargets } from "./tools.ts";
 import { argsKey, initReplay, recordOriginal, replayOriginal, saveReplay } from "./replay.ts";
 import { geminiView, mapGeminiResults, noteGeminiCalls } from "./gemini.ts";
+import { type HiddenAt, revealHidden } from "./hidden.ts";
 
 export type Format = "anthropic" | "chat" | "responses" | "gemini";
 
@@ -978,12 +979,14 @@ function replayGeminiPart(record: Record<string, unknown>): unknown {
 // What one request's redaction did, by kind, for the status badges: distinct
 // values masked (stand-ins and generalized words), tool results withheld as
 // protected-file reads, search lines withheld from protected files, and
-// inline images withheld. hits counts findings instead, per text scanned.
+// inline images withheld, and runs of hidden text revealed (hidden.ts). hits
+// counts findings instead, per text scanned.
 export interface Counts {
   masked: number;
   files: number;
   lines: number;
   images: number;
+  hidden?: number;
 }
 
 export function redactRequest(
@@ -998,14 +1001,20 @@ export function redactRequest(
   label: Label;
   unguarded: string[];
   strays?: Stray[];
+  hidden?: HiddenAt[];
 } {
+  // Before anything reads the request: text no one could see, made visible.
+  const revealed = revealHidden(format, body);
+  body = revealed.body;
   // Before anything is redacted: what the tools really returned.
   const read = readable(format, body);
   const strays = strayStandIns(read.format, read.body);
   const tags = requestAllowTags(read.format, read.body, session);
   const turns = turnTags(read.format, read.body, tags, session);
   requestDirs.set(tags, requestCwd(read.format, read.body));
-  const label = conversationLabel(seenInHistory(read.format, read.body, tags, turns), session);
+  const seen = seenInHistory(read.format, read.body, tags, turns);
+  seen.outside ||= revealed.found.length > 0;
+  const label = conversationLabel(seen, session);
   requestLabels.set(tags, label);
   rememberLiterals(read.format, read.body);
   if (format === "gemini" && Array.isArray(body.contents)) noteGeminiCalls(tags, body.contents);
@@ -1016,7 +1025,15 @@ export function redactRequest(
   try {
     const redacted = redactWithCorpus(format, body, tags, session, turns);
     noteHarnessChange(format, body, redacted.body);
-    return { ...redacted, label, unguarded: unguardedTools(read.body.tools), strays };
+    const hidden = revealed.found.reduce((sum, at) => sum + at.runs, 0);
+    if (hidden > 0) redacted.counts.hidden = hidden;
+    return {
+      ...redacted,
+      label,
+      unguarded: unguardedTools(read.body.tools),
+      strays,
+      hidden: revealed.found,
+    };
   } finally {
     aliases().setCorpus(undefined);
   }

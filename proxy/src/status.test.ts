@@ -21,6 +21,9 @@ describe("badge text", () => {
       "ITHILDIN ON · 41 masked (+6) · \u26a0 untrusted · \u26a0 private · " +
         "\u26a0 2 unguarded tools · +pii · shaping off",
     );
+    expect(badgeText({ ...none, hidden: 2 }, 0, 0, [], { untrusted: true })).toBe(
+      "ITHILDIN ON · nothing masked · \u26a0 untrusted · \u26a0 2 hidden",
+    );
     expect(badgeText({ ...none, masked: 1 }, 0, 1, [], { unguarded: 1 }, true)).toBe(
       "ITHILDIN ON · 1 masked · \u26a0 1 unguarded tool",
     );

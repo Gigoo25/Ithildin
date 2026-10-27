@@ -13,6 +13,8 @@
 //              machine, so commands that send data off it are blocked (trust.ts)
 //   \u26a0 private    the model has seen a secret file, or a command copied
 //              one: sends are blocked the same way
+//   \u26a0 N hidden   runs of invisible text in what came in, shown to the
+//              model marked (hidden.ts); they make it untrusted too
 //   \u26a0 N unguarded tools  tools the agent offers that act but that no
 //              guard reads
 //   +pii       allow tags the user's latest prompt carries (+pii, +secrets,
@@ -107,6 +109,7 @@ export function badgeText(
   const tools = trust.unguarded ?? 0;
   if (trust.untrusted) parts.push("\u26a0 untrusted");
   if (trust.private) parts.push("\u26a0 private");
+  if (counts.hidden) parts.push(`\u26a0 ${counts.hidden} hidden`);
   if (tools > 0) parts.push(`\u26a0 ${tools} unguarded tool${tools === 1 ? "" : "s"}`);
   if (allowed.length > 0) parts.push(allowed.map((tag) => `+${tag}`).join(" "));
   if (shaping === false) parts.push("shaping off");

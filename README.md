@@ -156,6 +156,22 @@ outside reads:
 - `curl`, `wget`, `httpie`/`xh` and text browsers
 - `gh issue`, `gh pr`, `gh api` and other `gh` reads
 
+**Hidden text.** A skill, a pasted prompt or a file can carry instructions in
+characters that render as nothing: Unicode tag characters spelling ASCII,
+bytes encoded in runs of variation selectors or zero-width characters, and
+direction overrides that show a reviewer one order of the text while the
+model reads another. Before anything else reads a request, each such run in
+the system prompt, tools, prompts and tool results is made visible. Tag
+characters and variation selectors are decoded to what they spell, inside
+`[ithildin: hidden text: "…"]`. Other runs become a marker counting them, and
+direction overrides are dropped. The secret rules then scan the decoded text
+like any other. A conversation that carried hidden text is untrusted, the
+footer shows `⚠ N hidden`, and the journal says where it was. Emoji
+selectors and joiners, flag sequences, a lone BOM or zero-width space, and
+direction marks in right-to-left text pass as they are. The model's own turns
+are not rewritten, and the same text is always revealed the same way, so the
+prompt cache holds.
+
 A conversation is *private* once the model has seen a secret file (output let
 through by `[allow-secrets]`), or a shell call copied one (`cp`, `tee`, a `>`
 redirect). A read whose output was withheld doesn't count: the model never saw
