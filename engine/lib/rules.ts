@@ -1594,20 +1594,15 @@ export function aliasStyle(): "stand-ins" | "tokens" {
 
 // Custom stand-in label for a rule id, when its config set one.
 export function ruleAliasLabel(ruleId: string): string | undefined {
-  return activeRules().find((rule) => rule.id === ruleId)?.label;
+  return ruleById(ruleId)?.label;
 }
 
 export function ruleGeneralization(ruleId: string): string | undefined {
-  return ruleId.startsWith(GENERALIZE_ID_PREFIX)
-    ? activeRules().find((rule) => rule.id === ruleId)?.generalize
-    : undefined;
+  return ruleId.startsWith(GENERALIZE_ID_PREFIX) ? ruleById(ruleId)?.generalize : undefined;
 }
 
 export function isPromptOnlyRule(ruleId: string): boolean {
-  return (
-    ruleId.startsWith(GENERALIZE_ID_PREFIX) &&
-    activeRules().find((rule) => rule.id === ruleId)?.generalizeScope === "prompts"
-  );
+  return ruleId.startsWith(GENERALIZE_ID_PREFIX) && ruleById(ruleId)?.generalizeScope === "prompts";
 }
 
 // `caseSensitive` and `token` say how the rule matches the literal: whether
@@ -1638,7 +1633,7 @@ export function inventoryLiterals(): Array<{
 // its literal and takes the literal's stand-in, so both spellings of one
 // value read as the same thing and swap back to the real value.
 export function inventoryStandInValue(ruleId: string, value: string): string {
-  const literal = activeRules().find((rule) => rule.id === ruleId)?.inventoryLiteral;
+  const literal = ruleById(ruleId)?.inventoryLiteral;
   return literal === undefined || value.length === literal.length ? value : literal;
 }
 
@@ -1646,8 +1641,54 @@ export function aliasLabels(): string[] {
   return activeRules().flatMap((rule) => (rule.label === undefined ? [] : [rule.label]));
 }
 
+// The built-in rules and the inventory's, built once and kept until either
+// list changes. These are asked per finding (a rule's label, its
+// generalization), and building the list and searching it each time cost
+// half a second a request on a body with 20,000 findings (proxy/sim). RULES is
+// changed in place only by tests, which push, splice and restore it: its
+// length and its ends tell a change.
+let active:
+  | {
+      rules: Rule[];
+      byId: Map<string, Rule>;
+      inventory: Rule[];
+      length: number;
+      first: Rule | undefined;
+      last: Rule | undefined;
+    }
+  | undefined;
+
+function activeList(): NonNullable<typeof active> {
+  const kept = active;
+  if (
+    kept &&
+    kept.inventory === runtimeInventoryRules &&
+    kept.length === RULES.length &&
+    kept.first === RULES[0] &&
+    kept.last === RULES.at(-1)
+  )
+    return kept;
+  const rules = RULES.concat(runtimeInventoryRules);
+  const byId = new Map<string, Rule>();
+  // The first rule with an id wins, as a search of the list found it.
+  for (const rule of rules) if (!byId.has(rule.id)) byId.set(rule.id, rule);
+  active = {
+    rules,
+    byId,
+    inventory: runtimeInventoryRules,
+    length: RULES.length,
+    first: RULES[0],
+    last: RULES.at(-1),
+  };
+  return active;
+}
+
 function activeRules(): Rule[] {
-  return runtimeInventoryRules.length === 0 ? RULES : RULES.concat(runtimeInventoryRules);
+  return activeList().rules;
+}
+
+function ruleById(id: string): Rule | undefined {
+  return activeList().byId.get(id);
 }
 
 // Enough of a value to say which one was found, and no more.
