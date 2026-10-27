@@ -296,6 +296,21 @@ describe("redactText", () => {
     expect(result.text).not.toContain("123456789012");
   });
 
+  it("masks a bare secret that starts with a slash, and leaves a path of names", () => {
+    // Read as a path, a token starting with `/` (one base64 string in 64) went
+    // out as it was.
+    const secret = "/Kq7vXbN2pLmZ9wRt4YcHs8D";
+    const masked = redactText(`token:\n${secret}\ndone\n`).text;
+    expect(masked).not.toContain(secret);
+    const paths = [
+      "~/Projects/Personal/ithildin/proxy/src/server.ts",
+      "/nix/store/4djmw03xg7m9bsbq3mq1pfq54b2xpg7s-giflib-6.1.3",
+      "~/Projects/Work/mib-repository/HMS/HMS024R13.MIB",
+      "/usr/share/Avtech/TC1000v2",
+    ];
+    for (const path of paths) expect(redactText(`at:\n${path}\n`).text).toBe(`at:\n${path}\n`);
+  });
+
   it("masks a PEM private key whole, every line of it, however the text carries it", () => {
     // Base64 lines, one starting with "/": alone on its line that read as a
     // path, so a key with one sent that line as it was.
