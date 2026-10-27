@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import { createHandler, DEFAULT_ROUTES, shapeOutgoing, type Scanned } from "./server.ts";
 import { shapeRequest, shapingOn } from "./shape.ts";
 import type { Counts } from "./redact.ts";
@@ -170,10 +170,28 @@ describe("the request path shapes what it forwards", () => {
       unguarded: [],
       activity: [],
     };
-    const forwarded = shapeOutgoing(scanned, "anthropic", "w8");
-    expect(forwarded.body).toBe(redacted);
-    expect(forwarded.masked).toBe(0);
-    expect(forwarded.compacted).toBe(0);
+    const lines: string[] = [];
+    const spy = spyOn(process.stderr, "write").mockImplementation(((line: string) => {
+      lines.push(line);
+      return true;
+    }) as never);
+    try {
+      const forwarded = shapeOutgoing(scanned, "anthropic", "w8");
+      expect(forwarded.body).toBe(redacted);
+      expect(forwarded.masked).toBe(0);
+      expect(forwarded.compacted).toBe(0);
+      // Said, once a session: a session that never shapes is otherwise
+      // indistinguishable in the journal from one too short to.
+      shapeOutgoing(scanned, "anthropic", "w8");
+      shapeOutgoing(scanned, "anthropic", null);
+    } finally {
+      spy.mockRestore();
+    }
+    const failed = lines.filter((line) => line.includes("shaping failed"));
+    expect(failed).toEqual([
+      "ithildin: shaping failed for session w8: boom; sent unshaped\n",
+      "ithildin: shaping failed: boom; sent unshaped\n",
+    ]);
   });
 
   it("says shaping is off when the proxy turns it off, for any session", () => {

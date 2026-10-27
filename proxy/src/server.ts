@@ -1045,12 +1045,27 @@ export function shapeOutgoing(
       savedChars: result.savedChars,
       ...(result.step ? { step: result.step } : {}),
     };
-  } catch {
+  } catch (error) {
     // Shaping is an optimization. A request it cannot handle is forwarded as
     // redaction left it, never refused: refusing here would fail a turn over
-    // saved tokens.
+    // saved tokens. But said, since a session that never shapes otherwise
+    // looks the same in the journal as one too short to.
+    noteShapingFailed(error, session);
     return off;
   }
+}
+
+// A shaping failure, said once per session: every later request of it
+// carries the same history and would fail the same way.
+const SHAPING_FAILED_MAX = 1000;
+const shapingFailed = new Set<string>();
+
+function noteShapingFailed(error: unknown, session: string | null): void {
+  const key = session ?? "";
+  if (shapingFailed.has(key) || shapingFailed.size >= SHAPING_FAILED_MAX) return;
+  shapingFailed.add(key);
+  const message = error instanceof Error ? error.message : String(error);
+  log(`shaping failed${session ? ` for session ${session}` : ""}: ${message}; sent unshaped`);
 }
 
 export function createHandler(
