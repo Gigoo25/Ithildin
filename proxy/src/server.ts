@@ -805,7 +805,7 @@ async function forward(
 
   const scanned = await scanRequest(request, format, redact, session?.id ?? null);
   if (scanned instanceof Response) return scanned;
-  const { tags, scanMs } = scanned;
+  const { tags } = scanned;
   // Context shaping runs after redaction and after the request is recorded, so
   // the conversation the dashboard keeps is the one that arrived and only the
   // forwarded copy is shaped. It is pure and fails open: a request it cannot
@@ -842,7 +842,7 @@ async function forward(
   if (session && ask && upstream.ok) noteTitle(upstream.clone(), ask, session.id, names, renamed);
 
   const line =
-    journalLine(name, sent.rest, upstream.status, scanMs, tags, scanned.hits, shaped) +
+    scannedLine(name, sent.rest, upstream.status, scanned, shaped) +
     cacheTrail(format, context.session, asking.main, shaped.object ?? scanned.object) +
     broke;
   const tap = (event: ActivityEvent) => events.record(context, event);
@@ -1168,8 +1168,12 @@ export function journalLine(
   tags: ReadonlySet<string>,
   hits: number,
   shaped?: Forwarded,
+  withheld = 0,
 ): string {
   const allowed = tags.size > 0 ? ` allow=${[...tags].sort().join(",")}` : "";
+  // Characters sent as an "[ithildin: omitted …]" marker: a scan that ran out
+  // of time, or a string over the scan limit. Named only when there were some.
+  const held = withheld > 0 ? ` withheld=${withheld}` : "";
   // Shaping is named only when it changed the body, so the journal reads the
   // same as before on a request nothing was shaped on.
   const repeats = shaped?.deduped ? `${shaped.deduped}d` : "";
@@ -1180,7 +1184,8 @@ export function journalLine(
   // A step moves the cutoff, in turns; named from the body, so the journal
   // knows a step after a restart, when the proxy has no request to compare.
   const step = shaped?.step ? ` step=${shaped.step.from}>${shaped.step.to}` : "";
-  return `${route}${rest} ${status} scan=${scanMs}ms${allowed} redacted=${hits}${work}${step}`;
+  const scan = `scan=${scanMs}ms${allowed} redacted=${hits}${held}`;
+  return `${route}${rest} ${status} ${scan}${work}${step}`;
 }
 
 // The oldest Bun the engine's per-rule scan deadlines work on. Before this they
@@ -1439,6 +1444,19 @@ function recordScan(
     isMainRequest(scanned.object),
     maskedIn(scanned),
   );
+}
+
+// journalLine for a scanned request, with what its redaction withheld.
+function scannedLine(
+  route: string,
+  rest: string,
+  status: number,
+  scanned: Scanned,
+  shaped: Forwarded,
+): string {
+  const { scanMs, tags, hits, activity } = scanned;
+  const withheld = activity.reduce((sum, e) => sum + (e.type === "withheld" ? e.chars : 0), 0);
+  return journalLine(route, rest, status, scanMs, tags, hits, shaped, withheld);
 }
 
 // Each value a request masked, once, as the dashboard marks it there.

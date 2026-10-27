@@ -1770,6 +1770,10 @@ describe("routes", () => {
     expect(journalLine("anthropic", "/v1/messages", 200, 7, new Set(["pii", "all"]), 0)).toBe(
       "anthropic/v1/messages 200 scan=7ms allow=all,pii redacted=0",
     );
+    // withheld= counts characters sent as an omitted marker, when any were.
+    expect(journalLine("anthropic", "/v1/messages", 200, 7, new Set(), 1, undefined, 4096)).toBe(
+      "anthropic/v1/messages 200 scan=7ms redacted=1 withheld=4096",
+    );
   });
 
   // What a request seen upstream asked about the cache, if anything.

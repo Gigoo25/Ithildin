@@ -449,6 +449,8 @@ export class EventLog {
       });
       return true;
     }
+    // Counted on the request's journal line (server.ts), not listed.
+    if (event.type === "withheld") return false;
     if (event.type === "swapped") {
       const isText = event.tool === REPLY_TEXT;
       if (isText) this.stats.swappedText++;

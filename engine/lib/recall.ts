@@ -29,6 +29,9 @@ export interface KeptShape {
 interface Kept extends KeptShape {
   digest: string;
   tag: number;
+  // The generation the value was learned in (core.ts swappedFindings); absent
+  // from a file written before generations were kept.
+  since?: number;
 }
 
 // One shape's spans: the lengths and tags any kept value of it has.
@@ -89,11 +92,22 @@ export class Recall {
     return fnv(this.seed, lower, 0, lower.length) & 0xffff;
   }
 
+  // A text's key for the map of when each was first seen (core.ts): keyed, as
+  // that map is written beside this one.
+  textKey(text: string): string {
+    return createHmac("sha256", this.key)
+      .update("seen\0")
+      .update(text)
+      .digest("base64")
+      .slice(0, 22);
+  }
+
   // What to write for a value still in memory.
-  entry(value: string, ruleId: string): Record<string, unknown> | undefined {
+  entry(value: string, ruleId: string, since?: number): Record<string, unknown> | undefined {
     const shape = shapeOf(value, ruleId);
     if (!shape) return undefined;
-    return { ...shape, digest: this.digest(value), tag: this.tag(value) };
+    const kept = { ...shape, digest: this.digest(value), tag: this.tag(value) };
+    return since === undefined ? kept : { ...kept, since };
   }
 
   // Values not yet found again, as written, so a second restart keeps them.
@@ -114,6 +128,7 @@ export class Recall {
       if (typeof kept?.digest !== "string" || typeof kept.ruleId !== "string") continue;
       if (![kept.runs, kept.length, kept.lead, kept.trail, kept.tag].every(Number.isInteger))
         continue;
+      if (kept.since !== undefined && !Number.isInteger(kept.since)) continue;
       this.kept.set(kept.digest, { ...kept });
     }
     this.reshape();
@@ -132,7 +147,7 @@ export class Recall {
 
   // Kept values this text holds, each with the rule that found it; each is
   // dropped from what is kept, since the caller remembers it again.
-  find(text: string): { value: string; ruleId: string }[] {
+  find(text: string): { value: string; ruleId: string; since: number }[] {
     if (this.kept.size === 0) return [];
     const lower = text.toLowerCase();
     const id = `${text.length}:${fnv(this.seed, lower, 0, lower.length)}`;
@@ -155,8 +170,8 @@ export class Recall {
     lower: string,
     starts: number[],
     ends: number[],
-  ): { value: string; ruleId: string }[] {
-    const found: { value: string; ruleId: string }[] = [];
+  ): { value: string; ruleId: string; since: number }[] {
+    const found: { value: string; ruleId: string; since: number }[] = [];
     for (let i = 0; i < starts.length; i++) {
       for (const shape of this.shapes) {
         const j = i + shape.runs - 1;
@@ -170,7 +185,7 @@ export class Recall {
         const kept = this.kept.get(this.digest(value));
         if (!kept) continue;
         this.kept.delete(kept.digest);
-        found.push({ value, ruleId: kept.ruleId });
+        found.push({ value, ruleId: kept.ruleId, since: kept.since ?? 0 });
       }
     }
     return found;

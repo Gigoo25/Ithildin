@@ -43,6 +43,21 @@ describe("Recall", () => {
     expect(JSON.parse(text)[0]).toMatchObject({ ruleId: "pii-host", runs: 2, length: 17 });
   });
 
+  it("keeps the generation a value was learned in, and keys texts by the key", () => {
+    const file = join(dir(), "swapped.json");
+    const writer = new Recall(key);
+    writer.save(file, [writer.entry("zqxvelmarx-build9", "pii-host", 4)!]);
+    const recall = new Recall(key);
+    recall.load(file);
+    expect(recall.find("on zqxvelmarx-build9 now")).toEqual([
+      { value: "zqxvelmarx-build9", ruleId: "pii-host", since: 4 },
+    ]);
+    // A text's key holds nothing of it and depends on the key.
+    expect(recall.textKey("abc")).not.toContain("abc");
+    expect(recall.textKey("abc")).not.toBe(new Recall(Buffer.alloc(32, 9)).textKey("abc"));
+    expect(recall.textKey("abc")).toBe(writer.textKey("abc"));
+  });
+
   it("finds a kept value again in any case, with its rule, once", () => {
     const { recall } = kept([
       ["zqxvelmarx-build7", "pii-host"],
@@ -52,9 +67,9 @@ describe("Recall", () => {
     expect(recall.size).toBe(3);
     const text = "ssh ZQXVELMARX-build7 then mail kwvrt.olmsby@example.invalid from ~/qorvant/ ok";
     expect(recall.find(text)).toEqual([
-      { value: "ZQXVELMARX-build7", ruleId: "pii-host" },
-      { value: "kwvrt.olmsby@example.invalid", ruleId: "pii-email" },
-      { value: "~/qorvant/", ruleId: "pii-path" },
+      { value: "ZQXVELMARX-build7", ruleId: "pii-host", since: 0 },
+      { value: "kwvrt.olmsby@example.invalid", ruleId: "pii-email", since: 0 },
+      { value: "~/qorvant/", ruleId: "pii-path", since: 0 },
     ]);
     // Found values are the caller's to remember; they are no longer kept.
     expect(recall.size).toBe(0);
@@ -118,7 +133,7 @@ describe("Recall", () => {
     const line = "the build at host-1x.corp-1 ran 42 steps in /srv/app/src_2 and wrote it\n";
     const text = line.repeat(Math.ceil(1_000_000 / line.length)) + values[1_500]![0];
     const started = performance.now();
-    expect(recall.find(text)).toEqual([{ value: values[1_500]![0], ruleId: "pii-host" }]);
+    expect(recall.find(text)).toEqual([{ value: values[1_500]![0], ruleId: "pii-host", since: 0 }]);
     expect(performance.now() - started).toBeLessThan(1_000);
   });
 });

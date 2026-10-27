@@ -17,7 +17,7 @@
 // confidentiality boundary.
 
 import { createHash, randomBytes } from "node:crypto";
-import { readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { readdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import {
   type LocatedFinding,
@@ -315,9 +315,12 @@ export function clearCaches(): void {
   lastScanCacheRevision = -1;
   aliasBook?.clear();
   SWAPPED.clear();
+  COMPLETE.clear();
+  completeBytes = 0;
   SWAPPED_SINCE.clear();
   TEXT_SEEN.clear();
   swapGeneration = 0;
+  seenChanged = false;
   recall = undefined;
 }
 
@@ -466,6 +469,7 @@ function redactPrePasses(text: string, allowTags: Set<string>): PrePassed {
 
 // The whole text withheld, when a scan cannot vouch for any of it.
 function omittedText(text: string, sourceLength: number, hits: number) {
+  withheldChars += sourceLength;
   reportRedaction({
     sourceLength,
     detections: [],
@@ -485,6 +489,7 @@ function omittedText(text: string, sourceLength: number, hits: number) {
 // replaced by a synthetic value of the same length, which read to the model
 // as the file's content and was nowhere marked or logged.
 function tooLongToScan(value: string): { value: string; hits: number } {
+  reportActivity({ type: "withheld", chars: value.length });
   reportRedaction({
     sourceLength: value.length,
     detections: [],
@@ -571,10 +576,68 @@ function tooShortForPii(finding: LocatedFinding): boolean {
   return finding.category === "pii" && [...finding.secretValue].length < 3;
 }
 
+// Each text's last complete redaction, by its allow tags. A request whose scan
+// runs out of time withholds what it could not vouch for; a text that was
+// redacted completely before gets that answer instead. Its bytes are the ones
+// a full scan gives (an old text keeps its bytes as values are learned:
+// swappedFindings), so nothing goes out that a full scan would not send. Without
+// it, a text sent whole was withheld on a request scanned short of time and
+// whole again on the next: two cache writes from that point each time, found
+// under a starved scan budget (ITHILDIN_SIM_STARVE, proxy/sim). Only on such a
+// request: elsewhere the work is done each time, as the dashboard counts it.
+const COMPLETE = new Map<string, { text: string; hits: number }>();
+const COMPLETE_MAX_BYTES = 32_000_000;
+let completeBytes = 0;
+
+const completeKey = (source: string, allowTags: Set<string>) =>
+  `${[...allowTags].sort().join(",")}\0${source}`;
+
+function keepComplete(key: string, out: { text: string; hits: number }): void {
+  const cost = (key.length + out.text.length) * 2;
+  if (cost > COMPLETE_MAX_BYTES) return;
+  const old = COMPLETE.get(key);
+  if (old) completeBytes -= (key.length + old.text.length) * 2;
+  COMPLETE.delete(key);
+  while (completeBytes + cost > COMPLETE_MAX_BYTES) {
+    const [oldest, value] = COMPLETE.entries().next().value!;
+    COMPLETE.delete(oldest);
+    completeBytes -= (oldest.length + value.text.length) * 2;
+  }
+  COMPLETE.set(key, out);
+  completeBytes += cost;
+}
+
 export function redactText(
   source: string,
   allowTags: Set<string> = new Set(),
 ): { text: string; hits: number } {
+  // Nothing to scan, so nothing to withhold: a starved request sent a chat
+  // turn's empty content as "[ithildin: omitted 0 chars …]", a cache write
+  // from that turn on (proxy/sim, ITHILDIN_SIM_STARVE).
+  if (source === "") return { text: "", hits: 0 };
+  const key = completeKey(source, allowTags);
+  const outer = withheldChars;
+  withheldChars = 0;
+  try {
+    const out = redactWhole(source, allowTags);
+    if (withheldChars === 0) {
+      keepComplete(key, out);
+      return out;
+    }
+    const kept = COMPLETE.get(key);
+    if (kept) return kept;
+    reportActivity({ type: "withheld", chars: withheldChars });
+    return out;
+  } finally {
+    withheldChars = outer;
+  }
+}
+
+// What the text being redacted withheld so far, for redactText to report or
+// replace (it is set aside around each call, as redaction can nest).
+let withheldChars = 0;
+
+function redactWhole(source: string, allowTags: Set<string>): { text: string; hits: number } {
   const pre = redactPrePasses(source, allowTags);
   const text = pre.text;
   const { findings: raw, trips } = cachedScan(text);
@@ -625,6 +688,10 @@ export function redactText(
     }
   }
   reportPlanned(source.length, pre, findings, planned.edits);
+  // Everything the plan withheld: the trips' spans, or the whole text when the
+  // budget ran out while the edits were planned.
+  for (const e of planned.edits)
+    if (e.replacement.startsWith("[ithildin: omitted")) withheldChars += e.end - e.start;
   const found = uniqueFindings.length + trips.length;
   return { text: planned.text, hits: pre.hits + found + (planned.text !== text && !found ? 1 : 0) };
 }
@@ -1157,9 +1224,12 @@ export function rememberSwapped(value: string, ruleId: string): void {
 // sent with; new text that echoes the value is masked as before.
 //
 // Generations, not times: each value learned is the next one, and a text is
-// stamped with the generation it was first seen in. A value recalled from
-// before a restart is generation 0, as it was masked in the history before
-// the restart and has to be again.
+// stamped with the generation it was first seen in. All three are kept across
+// a restart (saveSwapped): without them a recalled value was masked in every
+// text again, the clear copies sent before it was learned included, and the
+// first request after each restart rewrote those conversations to the cache
+// (proxy/sim/restart.ts found it). State from before generations were kept
+// recalls each value as generation 0: masked everywhere, as it was then.
 const SWAPPED_SINCE = new Map<string, number>();
 const TEXT_SEEN = new Map<string, number>();
 const TEXT_SEEN_MAX = 200_000;
@@ -1177,15 +1247,52 @@ function keepSwapped(value: string, ruleId: string, since: number): void {
   if (!SWAPPED_SINCE.has(value)) SWAPPED_SINCE.set(value, since);
 }
 
-// The generation a text was first seen in. A short text is its own key; a
-// long one goes by digest, so the map does not hold every body again.
+// The generation a text was first seen in. A text goes by a digest, keyed
+// when there is a memory to save it in (a short text is often a value itself,
+// and the file must not hold one in a form that can be guessed back), so the
+// map does not hold every body again either.
 function firstSeen(text: string): number {
-  const key = text.length <= 64 ? text : createHash("sha1").update(text).digest("base64");
+  const key = recall ? recall.textKey(text) : createHash("sha1").update(text).digest("base64");
   const known = TEXT_SEEN.get(key);
   if (known !== undefined) return known;
   if (TEXT_SEEN.size >= TEXT_SEEN_MAX) TEXT_SEEN.delete(TEXT_SEEN.keys().next().value!);
   TEXT_SEEN.set(key, swapGeneration);
+  seenChanged = true;
   return swapGeneration;
+}
+
+let seenChanged = false;
+
+// The generations beside the memory's file: the counter, and each text's.
+const seenFile = (file: string) => file.replace(/\.json$/, "") + "-seen.json";
+
+function loadSeen(file: string): void {
+  let saved: { generation?: unknown; seen?: unknown };
+  try {
+    saved = JSON.parse(readFileSync(seenFile(file), "utf8")) as typeof saved;
+  } catch {
+    return;
+  }
+  if (!Number.isInteger(saved.generation) || !Array.isArray(saved.seen)) return;
+  // Never backwards: a value learned in this process before the load keeps a
+  // generation above every text seen after it.
+  swapGeneration = Math.max(swapGeneration, saved.generation as number);
+  for (const entry of saved.seen as unknown[])
+    if (Array.isArray(entry) && typeof entry[0] === "string" && Number.isInteger(entry[1]))
+      if (!TEXT_SEEN.has(entry[0])) TEXT_SEEN.set(entry[0], entry[1] as number);
+}
+
+function saveSeen(file: string): void {
+  if (!seenChanged) return;
+  const saved = { generation: swapGeneration, seen: [...TEXT_SEEN] };
+  try {
+    writeFileSync(`${seenFile(file)}.tmp`, JSON.stringify(saved), { mode: 0o600 });
+    renameSync(`${seenFile(file)}.tmp`, seenFile(file));
+    seenChanged = false;
+  } catch {
+    // Lost, the next restart masks a recalled value everywhere: one cache
+    // write for the conversations that hold it in clear.
+  }
 }
 
 // The memory across a restart (lib/recall.ts): loaded at start, written with
@@ -1198,14 +1305,16 @@ export function loadSwapped(key: Buffer, file: string): void {
   recall = new Recall(key);
   recallFile = file;
   recall.load(file);
+  loadSeen(file);
 }
 
 export function saveSwapped(): void {
   if (!recall || !recallFile) return;
   const lines = [...SWAPPED]
-    .map(([value, ruleId]) => recall!.entry(value, ruleId))
+    .map(([value, ruleId]) => recall!.entry(value, ruleId, SWAPPED_SINCE.get(value)))
     .filter((line): line is Record<string, unknown> => line !== undefined);
   recall.save(recallFile, [...recall.entries(), ...lines].slice(-SWAPPED_MAX));
+  saveSeen(recallFile);
 }
 
 // Multi-word personal values already masked, found again in another case or
@@ -1279,7 +1388,8 @@ export function respelledFindings(text: string, raw: LocatedFinding[]): LocatedF
 
 function swappedFindings(text: string): LocatedFinding[] {
   const seen = firstSeen(text);
-  if (recall) for (const { value, ruleId } of recall.find(text)) keepSwapped(value, ruleId, 0);
+  if (recall)
+    for (const { value, ruleId, since } of recall.find(text)) keepSwapped(value, ruleId, since);
   if (SWAPPED.size === 0) return [];
   const lower = text.toLowerCase();
   const out: LocatedFinding[] = [];

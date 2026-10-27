@@ -12,7 +12,10 @@ export type ActivityEvent =
   | { type: "swapped"; ruleId: string; value: string; standIn: string; tool: string }
   // A guard stopped a tool call. The notice names no values. `call` is the
   // call's id, for the dashboard to find it in the conversation.
-  | { type: "blocked"; notice: string; call?: string };
+  | { type: "blocked"; notice: string; call?: string }
+  // Text sent as an "[ithildin: omitted …]" marker instead of itself: its scan
+  // ran out of time, or it is over the scan limit. `chars` is how much.
+  | { type: "withheld"; chars: number };
 
 // The tool name swap-back is given for reply text, which is no tool call.
 export const REPLY_TEXT = "reply-text";

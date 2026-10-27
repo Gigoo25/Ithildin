@@ -1,6 +1,6 @@
 // All direct and propagated occurrences share one coordinate system and union.
 import { assert } from "./assert.ts";
-import type { LocatedFinding } from "./rules.ts";
+import { ScanBudgetExceeded, type LocatedFinding } from "./rules.ts";
 
 export interface SpanEdit {
   start: number;
@@ -201,8 +201,11 @@ function editFor(input: PlanInput, r: PlanRange): SpanEdit {
 
 export function planRedaction(input: PlanInput): { text: string; edits: SpanEdit[] } {
   const { text } = input;
-  const omit = () => {
-    const replacement = `[ithildin: omitted ${text.length} chars (invalid scan offsets)]`;
+  // The whole text withheld: offsets the scan got wrong, or the scan budget
+  // running out while the edits were planned (checkBudget throws). Named for
+  // which, as a trip read "invalid scan offsets" in what the model was sent.
+  const omit = (why = "invalid scan offsets") => {
+    const replacement = `[ithildin: omitted ${text.length} chars (${why})]`;
     return {
       text: replacement,
       edits: [{ start: 0, end: text.length, replacement, secret: true }],
@@ -229,7 +232,7 @@ export function planRedaction(input: PlanInput): { text: string; edits: SpanEdit
       cursor = e.end;
     }
     return { text: out + text.slice(cursor), edits };
-  } catch {
-    return omit();
+  } catch (error) {
+    return omit(error instanceof ScanBudgetExceeded ? "scan budget exceeded" : undefined);
   }
 }

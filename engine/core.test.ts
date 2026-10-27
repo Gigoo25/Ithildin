@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { withScanBudget } from "./lib/rules.ts";
+import { type ActivityEvent, observeActivity } from "./lib/activity.ts";
 import { AliasBook } from "./lib/aliases.ts";
 import {
   aliases,
@@ -198,6 +199,33 @@ describe("redactValue", () => {
       input: [{ type: "message", role: "user", content: [{ type: "input_text" }] }, body.input[1]],
       tools: body.tools,
     });
+  });
+
+  it("gives a text it scanned whole before the same bytes under a starved budget", () => {
+    // A starved request withheld text the provider had whole the request
+    // before, then sent it whole again: two cache writes from that point. A
+    // text never scanned whole is still withheld, and says how much.
+    const seen = `the build log for ${TOKEN}, line ${"x".repeat(40)}`;
+    const fresh = `another log for ${TOKEN}, line ${"y".repeat(40)}`;
+    const full = redactText(seen).text;
+    const events: ActivityEvent[] = [];
+    const starved = (text: string) =>
+      observeActivity(
+        (event) => events.push(event),
+        () => withScanBudget(() => redactText(text).text, -1),
+      );
+    expect(starved(seen)).toBe(full);
+    expect(events.filter((e) => e.type === "withheld")).toEqual([]);
+    expect(starved(fresh)).toMatch(/^\[ithildin: omitted \d+ chars \(scan budget exceeded/);
+    expect(events.filter((e) => e.type === "withheld")).toEqual([
+      { type: "withheld", chars: fresh.length },
+    ]);
+    // An empty text has nothing to withhold, scanned whole before or not.
+    expect(withScanBudget(() => redactText("").text, -1)).toBe("");
+    // Under other allow tags a text is a different redaction, not reused.
+    expect(withScanBudget(() => redactText(seen, new Set(["secrets"])).text, -1)).toMatch(
+      /^\[ithildin: omitted/,
+    );
   });
 
   it("passes an inline image's media type through a starved budget", () => {
@@ -470,6 +498,29 @@ describe("values swapped into tool calls", () => {
     const masked = redactText(later).text;
     expect(masked).not.toContain(value);
     expect(redactText(later).text).toBe(masked);
+    clearCaches();
+  });
+
+  it("keeps text sent before a value was learned as it was sent across a restart", () => {
+    clearCaches();
+    const file = path.join(mkdtempSync(path.join(tmpdir(), "swapped-")), "swapped.json");
+    const key = Buffer.alloc(32, 5);
+    loadSwapped(key, file);
+    const [value, rule] = values[1]!;
+    const earlier = `Staging runs on ${value}.`;
+    const sent = redactText(earlier).text;
+    rememberSwapped(value, rule);
+    const later = `ping ${value} again`;
+    const masked = redactText(later).text;
+    saveSwapped();
+    expect(readFileSync(file.replace(/\.json$/, "-seen.json"), "utf8")).not.toContain(value);
+    clearCaches();
+    loadSwapped(key, file);
+    // The history, as the next request after the restart carries it.
+    expect(redactText(earlier).text).toBe(sent);
+    expect(redactText(later).text).toBe(masked);
+    // New text after the restart echoing it is masked.
+    expect(redactText(`and ${value} once more`).text).not.toContain(value);
     clearCaches();
   });
 });
