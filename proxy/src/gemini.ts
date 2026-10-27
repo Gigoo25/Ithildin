@@ -175,3 +175,60 @@ function withContent(result: Fields, content: unknown): Fields {
   const key = ["content", "output", "result"].find((name) => response?.[name] !== undefined);
   return key ? { ...response, [key]: content } : { name: result.name, content };
 }
+
+// ── shaping ─────────────────────────────────────────────────────────────────
+
+// The part a view block was read from, by its index in the turn. A symbol
+// rides along when shaping copies a block to replace it, and is never sent:
+// JSON leaves it out, so it does not count in the sizes shaping weighs.
+const PART = Symbol("part");
+
+function partIndex(block: unknown): number | undefined {
+  const at = (block as Record<symbol, unknown> | undefined)?.[PART];
+  return typeof at === "number" ? at : undefined;
+}
+
+// The conversation as `shape` left the view of it, written back into
+// Gemini's parts, or undefined when it shaped nothing. A block it replaced
+// rewrites the part it came from; one it left out drops it; a turn it did not
+// touch is the same object, so its bytes are the same.
+export function shapedGemini(
+  body: Fields,
+  shape: (view: Fields) => Fields | undefined,
+): unknown[] | undefined {
+  const contents = Array.isArray(body.contents) ? body.contents : [];
+  const view = geminiView(body);
+  const messages = view.messages as Array<{ content: Fields[] }>;
+  for (const message of messages)
+    message.content.forEach((block, at) => ((block as Record<symbol, unknown>)[PART] = at));
+  const shaped = shape(view)?.messages;
+  if (!Array.isArray(shaped)) return;
+  return contents.map((turn, index) => {
+    const before = messages[index]!.content;
+    const after = record(shaped[index])?.content;
+    if (after === before || !Array.isArray(after)) return turn;
+    const parts = partsOf(turn);
+    const kept = after.flatMap((block) => {
+      const at = partIndex(block);
+      return at === undefined
+        ? []
+        : [block === before[at] ? parts[at] : partFrom(parts[at], block)];
+    });
+    return { ...record(turn), parts: kept };
+  });
+}
+
+// A part with what shaping put in its block: a call's masked arguments, or a
+// result's masked or compacted content under the key it was read from.
+function partFrom(part: unknown, block: Fields): unknown {
+  const fields = record(part) ?? {};
+  const call = record(fields.functionCall);
+  if (call) return { ...fields, functionCall: { ...call, args: block.input } };
+  const result = record(fields.functionResponse);
+  if (result)
+    return {
+      ...fields,
+      functionResponse: { ...result, response: withContent(result, block.content) },
+    };
+  return part;
+}

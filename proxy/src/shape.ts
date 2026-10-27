@@ -39,6 +39,7 @@
 import { setting } from "../engine/lib/names.ts";
 import { compact } from "./compact.ts";
 import { crushJson } from "./crush.ts";
+import { shapedGemini } from "./gemini.ts";
 import { markBoundaries } from "./mark.ts";
 import { cacheReadPrice } from "./prices.ts";
 import { asksForSummary, type Format } from "./redact.ts";
@@ -116,13 +117,23 @@ function record(item: unknown): Record_ | undefined {
   return item && typeof item === "object" && !Array.isArray(item) ? (item as Record_) : undefined;
 }
 
-// The turns a cutoff counts: an assistant message, or its Responses spelling.
-function isAssistant(format: Format, item: unknown): boolean {
+// What the model wrote in a Responses list: its messages, its reasoning and
+// its calls, as opposed to what it was given (user turns and call outputs).
+function fromModel(item: unknown): boolean {
   const entry = record(item);
   if (!entry) return false;
-  return format === "responses"
-    ? entry.type === "message" && entry.role === "assistant"
-    : entry.role === "assistant";
+  if (entry.role === "assistant") return true;
+  return typeof entry.type === "string" && /^reasoning$|_call$/.test(entry.type);
+}
+
+// The turns a cutoff counts: an assistant message, one per model round. In a
+// Responses list a round is a run of model items, and only some end in an
+// assistant message: Codex runs a whole tool loop as reasoning and calls with
+// no message between, so counting messages made pi's 83 items 9 turns, and
+// it never reached the first step.
+function isAssistant(format: Format, list: unknown[], at: number): boolean {
+  if (format !== "responses") return record(list[at])?.role === "assistant";
+  return fromModel(list[at]) && (at === 0 || !fromModel(list[at - 1]));
 }
 
 // The calls a conversation made, keyed by the id their results answer. What
@@ -262,7 +273,7 @@ function sizes(format: Format, list: unknown[], from: Walk): Sized[] {
   let turn = 0;
   return list.map((item, at) => {
     for (const walk of [asOld, asNew]) remember(format, item, walk);
-    if (isAssistant(format, item)) turn++;
+    if (isAssistant(format, list, at)) turn++;
     // Stripping thinking is left out: the cutoff is the same with it on or off.
     const old = shapeEntry(format, item, asOld, true, at > asked, false)?.saved ?? 0;
     const recent = shapeEntry(format, item, asNew, false, at > asked, false)?.saved ?? 0;
@@ -342,12 +353,13 @@ function cutoffFor(
   list: unknown[],
   walk: Walk,
   body: Record<string, unknown>,
+  wire: Format,
 ): { cutoff: number; previous: number } {
   const forked = isSubagent(format, body) ? forkedAt(list) : -1;
   if (isSubagent(format, body) && forked < 1) return { cutoff: 0, previous: 0 };
   const model = body.model;
   const items = sizes(format, list, walk);
-  const write = cachePrice(format, model);
+  const write = cachePrice(wire, model);
   let cutoff = 0;
   let previous = 0;
   let turns = 0;
@@ -357,14 +369,14 @@ function cutoffFor(
   const last = forked > 0 ? forked : asksForSummary(list) ? items.length - 1 : items.length;
   for (let end = 0; end <= last; end++) {
     const item = items[end];
-    if (item === undefined || isAssistant(format, list[end])) {
+    if (item === undefined || isAssistant(format, list, end)) {
       const due = dueAt(turns, tokens);
       if (due > cutoff && pays(items, { end, turns, from: cutoff, to: due }, write)) cutoff = due;
       if (item !== undefined) previous = cutoff;
     }
     if (item === undefined) break;
     tokens += item.tokens;
-    if (isAssistant(format, list[end])) turns++;
+    if (isAssistant(format, list, end)) turns++;
   }
   // A fork's cutoff never moves, so no request of it steps.
   return forked > 0 ? { cutoff, previous: cutoff } : { cutoff, previous };
@@ -413,6 +425,20 @@ interface Change {
   saved: number;
   kind: Kind;
 }
+
+// Encrypted reasoning bills far below its length: on 2026-10-26 four of
+// gpt-6-luna's items, 9,867 chars, cost 237 input tokens, about 42 chars a
+// token. Saved chars stand for tokens at 4 a token everywhere else, so an item
+// counts as the text that would cost the same, or a step would think it paid
+// ten times what it does.
+const REASONING_CHARS_PER_TOKEN = 42;
+
+function reasoningSaved(entry: Record_): number {
+  return Math.ceil((JSON.stringify(entry).length / REASONING_CHARS_PER_TOKEN) * 4);
+}
+
+// An item shaping leaves out of the conversation altogether.
+const DROPPED = Symbol("dropped");
 
 interface Replacement {
   entry: unknown;
@@ -591,10 +617,36 @@ export function shapeRequest(
   retrieval?: Retrieval,
   strip = stripThinkingOn(),
 ): Shaped | undefined {
+  if (format === "gemini") return shapeGemini(body, retrieval);
+  return shapeConversation(format, body, retrieval, strip, format);
+}
+
+// A Gemini request is shaped as the Anthropic view of it, the one the rest of
+// the proxy reads it through, and written back into its own parts (gemini.ts).
+// Priced as its API caches, not as Anthropic's: implicitly, with no write
+// premium and no markers to place.
+function shapeGemini(body: Record<string, unknown>, retrieval?: Retrieval): Shaped | undefined {
+  let result: Shaped | undefined;
+  const contents = shapedGemini(body, (view) => {
+    result = shapeConversation("anthropic", view, retrieval, false, "gemini");
+    return result?.body;
+  });
+  return result && contents ? { ...result, body: { ...body, contents } } : undefined;
+}
+
+// `wire` is the API the request goes to, which sets the cache's price and
+// whether it takes markers; `format` is the shape the body is read in.
+function shapeConversation(
+  format: Format,
+  body: Record<string, unknown>,
+  retrieval: Retrieval | undefined,
+  strip: boolean,
+  wire: Format,
+): Shaped | undefined {
   const list = conversation(format, body);
   if (!list) return;
   const walk: Walk = { calls: new Map(), outputs: new Map(), retrieval, compacted: new Map() };
-  const { cutoff, previous } = cutoffFor(format, list, walk, body);
+  const { cutoff, previous } = cutoffFor(format, list, walk, body, wire);
   const kept = latestNotes(format, list, cutoff);
   const asked = lastAsked(format, list);
   // Only once something is old: the API drops nothing from an unshaped request.
@@ -616,7 +668,7 @@ export function shapeRequest(
   let current = -1;
   const out = list.map((item, at) => {
     remember(format, item, walk);
-    if (isAssistant(format, item)) turn++;
+    if (isAssistant(format, list, at)) turn++;
     if (turn <= previous) boundary = at;
     if (turn <= cutoff) current = at;
     // A result answers the call above it, so it shares that call's turn: the
@@ -639,8 +691,8 @@ export function shapeRequest(
   const ats = [previous > 0 ? boundary : -1, cutoff > 0 ? current : -1, loopStart].filter(
     (at) => at >= 0,
   );
-  const shaped = { ...body, [keyOf(format)]: out };
-  const marked = format === "anthropic" ? markBoundaries(shaped, out, ats) : shaped;
+  const shaped = { ...body, [keyOf(format)]: out.filter((item) => item !== DROPPED) };
+  const marked = wire === "anthropic" ? markBoundaries(shaped, out, ats) : shaped;
   const step = cutoff > previous ? { step: { from: previous, to: cutoff } } : {};
   return { body: marked, ...totals, savedChars, ...step };
 }
@@ -726,6 +778,13 @@ function shapeCall(format: Format, item: unknown, looping: boolean): Replacement
   if (!entry) return;
   if (format === "anthropic") return shapeBlocks(entry, true);
   if (format === "chat") return shapeChatCalls(entry, looping);
+  // An old reasoning item is billed as input when the model renders earlier
+  // turns, and the API takes a past turn without it. Kept within the loop the
+  // last typed turn started, as chat keeps its reasoning there (below).
+  if (entry.type === "reasoning")
+    return looping
+      ? undefined
+      : { entry: DROPPED, saved: reasoningSaved(entry), counts: counted("masked") };
   const field = entry.type === "function_call" ? "arguments" : "input";
   if (entry.type !== "function_call" && entry.type !== "custom_tool_call") return;
   const next = field === "arguments" ? maskedArguments(entry.arguments) : maskedValue(entry.input);
@@ -796,6 +855,11 @@ function hasOutput(entry: Record_): boolean {
 // The index of the last user message in a chat conversation, -1 for none or
 // another format: the items after it are the loop it started.
 function lastAsked(format: Format, list: unknown[]): number {
+  if (format === "responses")
+    return list.findLastIndex((item) => {
+      const entry = record(item);
+      return entry?.type === "message" && entry.role === "user";
+    });
   if (format !== "chat") return -1;
   return list.findLastIndex((item) => record(item)?.role === "user");
 }
@@ -854,10 +918,12 @@ function stepOf(turn: number): number {
 const NOTE = /^\s*<([a-z][\w-]*)>([\s\S]*)<\/\1>\s*$/;
 
 // A note's kind: its tag and first line, numbers aside, so the tokens-left
-// count from turn 3 and turn 30 are one kind.
+// count from turn 3 and turn 30 are one kind. A Responses text block is
+// input_text.
 function noteKind(block: unknown): string | undefined {
   const typed = record(block);
-  if (typed?.type !== "text" || typeof typed.text !== "string") return;
+  if (typed?.type !== "text" && typed?.type !== "input_text") return;
+  if (typeof typed.text !== "string") return;
   const match = NOTE.exec(typed.text);
   if (!match) return;
   const first = match[2]!.trim().split("\n")[0]!;
@@ -870,14 +936,14 @@ function userBlocks(item: unknown): unknown[] | undefined {
 }
 
 // Where the newest note of each kind sits in each step of the old part, as
-// "item:block".
-// Anthropic only: it is where harnesses put notes as blocks of their own.
+// "item:block". Any format whose user turns are lists of blocks: a note
+// alone in a turn is the turn, and is kept (dropNotes).
 function latestNotes(format: Format, list: unknown[], cutoff: number): Set<string> | undefined {
-  if (format !== "anthropic" || cutoff === 0) return;
+  if (cutoff === 0) return;
   const latest = new Map<string, string>();
   let turn = 0;
   list.forEach((item, at) => {
-    if (isAssistant(format, item)) turn++;
+    if (isAssistant(format, list, at)) turn++;
     if (turn > cutoff) return;
     userBlocks(item)?.forEach((block, index) => {
       const kind = noteKind(block);

@@ -436,6 +436,66 @@ describe("superseded harness notes", () => {
       expect(entry.content.length).toBeGreaterThan(0);
   });
 
+  // The same conversation as the Responses and chat APIs spell it: one call
+  // with a big result early, and a tokens-left note on every typed turn.
+  const spelled = (format: "responses" | "chat"): Array<Record<string, unknown>> => {
+    const text = format === "responses" ? "input_text" : "text";
+    const list: Array<Record<string, unknown>> = [];
+    for (let i = 0; i < 20; i++) {
+      const content = [
+        { type: text, text: `do the thing ${i}` },
+        { type: text, text: `<total_tokens>${1000 - i} tokens left</total_tokens>` },
+      ];
+      list.push(
+        format === "responses"
+          ? { type: "message", role: "user", content }
+          : { role: "user", content },
+      );
+      list.push(
+        format === "responses"
+          ? { type: "message", role: "assistant", content: [{ type: "output_text", text: pad(i) }] }
+          : { role: "assistant", content: pad(i) },
+      );
+    }
+    list.splice(
+      2,
+      0,
+      ...(format === "responses"
+        ? [
+            { type: "function_call", call_id: "r1", name: "bash", arguments: '{"command":"ls"}' },
+            { type: "function_call_output", call_id: "r1", output: big() },
+          ]
+        : [
+            {
+              role: "assistant",
+              content: null,
+              tool_calls: [
+                { id: "r1", type: "function", function: { name: "bash", arguments: "{}" } },
+              ],
+            },
+            { role: "tool", tool_call_id: "r1", content: big() },
+          ]),
+    );
+    return list;
+  };
+
+  for (const format of ["responses", "chat"] as const)
+    it(`drops superseded notes in a ${format} request too`, () => {
+      const list = spelled(format);
+      const key = format === "responses" ? "input" : "messages";
+      const shaped = shapeRequest(format, { [key]: list })!;
+      const count = (items: unknown[]) =>
+        items.flatMap((entry) => {
+          const content = (entry as { content?: unknown }).content;
+          return Array.isArray(content)
+            ? content.filter((block) => String(block?.text).includes("tokens left"))
+            : [];
+        }).length;
+      const after = count(shaped.body[key] as unknown[]);
+      expect(after).toBeLessThan(count(list));
+      expect(after).toBeGreaterThan(1);
+    });
+
   it("never empties a turn that is nothing but notes", () => {
     const list = noted();
     list[4] = { role: "user", content: [{ type: "text", text: "<total_tokens>9</total_tokens>" }] };
@@ -596,6 +656,51 @@ describe("chat requests", () => {
   });
 });
 
+describe("gemini requests", () => {
+  // opencode Go's Gemini shape: an early call with a big result, then twenty
+  // turns, ids left for the proxy to derive.
+  function gemini(): Array<Record<string, unknown>> {
+    const contents: Array<Record<string, unknown>> = [
+      { role: "user", parts: [{ text: "go" }] },
+      {
+        role: "model",
+        parts: [
+          { text: "thinking it over", thought: true },
+          { functionCall: { name: "bash", args: { command: "ls", note: "x".repeat(2_000) } } },
+        ],
+      },
+      {
+        role: "user",
+        parts: [{ functionResponse: { name: "bash", response: { content: big() } } }],
+      },
+    ];
+    for (let i = 0; i < 20; i++) {
+      contents.push({ role: "model", parts: [{ text: pad(i) }] });
+      contents.push({ role: "user", parts: [{ text: `do the thing ${i}` }] });
+    }
+    return contents;
+  }
+
+  it("masks an old functionResponse and call in Gemini's own parts", () => {
+    const contents = gemini();
+    const shaped = shapeRequest("gemini", { contents });
+    const out = shaped!.body.contents as Array<{ parts: Array<Record<string, any>> }>;
+    expect(shaped!.masked).toBeGreaterThan(0);
+    const response = out[2]!.parts[0]!.functionResponse;
+    expect(response.name).toBe("bash");
+    expect(response.response.content).toContain("bash `ls`");
+    expect(out[1]!.parts.some((part) => part.thought)).toBe(false);
+    expect(out[1]!.parts[0]!.functionCall.args.note).toContain("input removed");
+    // A turn shaping left alone goes out as it came, and nothing is marked.
+    expect(out.at(-1) as unknown).toBe(contents.at(-1));
+    expect(JSON.stringify(out)).not.toContain("cache_control");
+  });
+
+  it("leaves a short Gemini conversation alone", () => {
+    expect(shapeRequest("gemini", { contents: gemini().slice(0, 6) })).toBeUndefined();
+  });
+});
+
 describe("responses requests", () => {
   it("masks an old function_call_output by call_id", () => {
     const input: Array<Record<string, unknown>> = [];
@@ -628,6 +733,44 @@ describe("responses requests", () => {
     }
     input.splice(3, 0, { type: "custom_tool_call_output", call_id: "r1", output: big() });
     expect(shapeRequest("responses", { input })?.masked).toBe(1);
+  });
+
+  it("drops old reasoning, and keeps it in the loop the last typed turn started", () => {
+    const input: Array<Record<string, unknown>> = [];
+    for (let i = 0; i < 20; i++) {
+      input.push({ type: "message", role: "user", content: [{ type: "input_text", text: "go" }] });
+      input.push({ type: "reasoning", id: `rs_${i}`, encrypted_content: "e".repeat(400) });
+      input.push({ type: "message", role: "assistant", content: pad(i) });
+    }
+    input.splice(3, 0, { type: "function_call_output", call_id: "r1", output: big() });
+    // The last typed turn's loop: reasoning before a call, which must go back.
+    input.push({ type: "reasoning", id: "rs_loop", encrypted_content: "e".repeat(400) });
+    input.push({ type: "function_call", call_id: "r9", name: "bash", arguments: "{}" });
+    const shaped = shapeRequest("responses", { input })!;
+    const ids = (shaped.body.input as Array<{ type: string; id?: string }>)
+      .filter((item) => item.type === "reasoning")
+      .map((item) => item.id);
+    expect(ids).not.toContain("rs_0");
+    expect(ids).toContain("rs_19");
+    expect(ids).toContain("rs_loop");
+  });
+
+  it("counts each round of a tool loop as a turn, message or not", () => {
+    // Codex's shape: one typed turn, then a loop of reasoning and calls with no
+    // assistant message until the end.
+    const input: Array<Record<string, unknown>> = [
+      { type: "message", role: "user", content: "go" },
+    ];
+    for (let i = 0; i < 20; i++) {
+      input.push({ type: "reasoning", summary: [], encrypted_content: pad(i) });
+      input.push({ type: "function_call", call_id: `r${i}`, name: "bash", arguments: "{}" });
+      input.push({ type: "function_call_output", call_id: `r${i}`, output: i ? "ok" : big() });
+    }
+    input.push({ type: "message", role: "assistant", content: "done" });
+    const shaped = shapeRequest("responses", { input });
+    expect(shaped?.masked).toBe(1);
+    expect(resultText(shaped!.body.input, 3, "output")).toContain("[masked to save context:");
+    expect(resultText(shaped!.body.input, 60, "output")).not.toContain("[masked");
   });
 });
 

@@ -70,6 +70,8 @@ describe("the retrieve tool's offer", () => {
     );
     const chat = { tools: [{ type: "function", function: { name: "ithildin_retrieve" } }] };
     expect(offeredTool(chat)).toBe("ithildin_retrieve");
+    const gemini = { tools: [{ functionDeclarations: [{ name: "ithildin_retrieve" }] }] };
+    expect(offeredTool(gemini)).toBe("ithildin_retrieve");
     expect(offeredTool({ tools: [{ name: "retrieve" }, null] })).toBeUndefined();
     expect(offeredTool({})).toBeUndefined();
   });

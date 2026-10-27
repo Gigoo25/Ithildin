@@ -37,10 +37,13 @@ export function outputId(text: string): string {
 }
 
 // The retrieve tool's name in this request's tool list, or undefined when the
-// agent does not have it.
+// agent does not have it. Gemini declares its functions in groups.
 export function offeredTool(body: Record<string, unknown>): string | undefined {
   if (!Array.isArray(body.tools)) return;
-  for (const tool of body.tools as Array<Record<string, unknown> | null>) {
+  const tools = (body.tools as Array<Record<string, unknown> | null>).flatMap((tool) =>
+    Array.isArray(tool?.functionDeclarations) ? tool.functionDeclarations : [tool],
+  ) as Array<Record<string, unknown> | null>;
+  for (const tool of tools) {
     const fn = tool?.function as Record<string, unknown> | undefined;
     const name = tool?.name ?? fn?.name;
     if (typeof name === "string" && OFFERED.test(name)) return name;
