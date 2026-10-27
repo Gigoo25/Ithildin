@@ -27,6 +27,7 @@ import {
   latestAllowTags,
   loadScanCache,
   loadSwapped,
+  saveLearned,
   saveSwapped,
   redactValue,
   rememberSwapped,
@@ -116,6 +117,26 @@ export function saveScanCache(): void {
   aliases().saveCounters();
   saveSwapped();
   if (scanCacheBase) saveSessions(`${scanCacheBase}-sessions.json`);
+}
+
+// What decides the bytes of later requests, saved as soon as it changes and
+// before the request that changed it goes upstream: a stand-in minted, a turn's
+// original kept, a value learned, a session's switch or a blocked call. Saved
+// only every 30 seconds, a crash (an OOM kill, a power cut) lost what came
+// since, and the next request minted those values new stand-ins: a cache write
+// for each conversation holding one (proxy/sim/restart.ts --crash found it).
+// Each part writes only when it changed, so most requests write nothing; the
+// scan cache stays on the timer, as losing it costs time, not bytes.
+let sessionsChanged = false;
+
+export function saveDecisive(): void {
+  saveReplay();
+  aliases().saveCounters();
+  saveLearned();
+  if (sessionsChanged && scanCacheBase) {
+    saveSessions(`${scanCacheBase}-sessions.json`);
+    sessionsChanged = false;
+  }
 }
 
 // Per-session switches and blocked calls, kept across a restart: each decides
@@ -436,6 +457,9 @@ const SESSION_TAGS_MAX = 256;
 const sessionTags = new Map<string, Set<string>>();
 
 function rememberTags(session: string, tags: Set<string>) {
+  const old = sessionTags.get(session);
+  if (!old || old.size !== tags.size || [...tags].some((tag) => !old.has(tag)))
+    sessionsChanged = true;
   sessionTags.delete(session);
   sessionTags.set(session, new Set(tags));
   if (sessionTags.size > SESSION_TAGS_MAX) sessionTags.delete(sessionTags.keys().next().value!);
@@ -1848,6 +1872,7 @@ const SHAPE_SWITCH = /\[(?:raw|shape(?::session)?)\]/gi;
 const sessionShapes = new Map<string, boolean>();
 
 function rememberShape(session: string, on: boolean) {
+  if (sessionShapes.get(session) !== on) sessionsChanged = true;
   sessionShapes.delete(session);
   sessionShapes.set(session, on);
   if (sessionShapes.size > SESSION_TAGS_MAX)
@@ -1888,6 +1913,7 @@ export function shapingSwitch(
 const sessionImages = new Map<string, boolean>();
 
 function rememberImages(session: string, on: boolean) {
+  if (sessionImages.get(session) !== on) sessionsChanged = true;
   sessionImages.delete(session);
   sessionImages.set(session, on);
   if (sessionImages.size > SESSION_TAGS_MAX)
@@ -2025,6 +2051,7 @@ function block(callId: string | undefined, notice: string): Swapped {
   reportActivity({ type: "blocked", notice, ...(callId ? { call: callId } : {}) });
   if (callId) {
     if (blockedCalls.size > MAX_REMEMBERED) blockedCalls.clear();
+    if (blockedCalls.get(callId) !== notice) sessionsChanged = true;
     blockedCalls.set(callId, notice);
   }
   return { args: {}, swapped: 0, blocked: true };

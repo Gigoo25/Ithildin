@@ -12,11 +12,11 @@
 // deterministic and nothing else can be compared), and stopped and started
 // again at a few points, on one state directory. A restart is a clean stop
 // (state saved, as server.ts drain does) unless --crash, which stops without
-// saving past the last save, as a killed proxy does.
+// that save, as a killed proxy does: what decides bytes was saved as it
+// changed (saveDecisive), and the scan cache, on a timer, is lost.
 // Exits 1 on any difference, naming the seed, the request and where it parts.
 
 import "./env.ts";
-import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { Format } from "../src/redact.ts";
 import { recordSession } from "./loop.ts";
@@ -59,26 +59,17 @@ async function check(format: Format, seed: number, requests: number): Promise<Re
   const points = [...new Set(Array.from({ length: 3 }, () => random.int(1, n - 1)))];
   for (const k of points) {
     const dir = newDir();
-    // How far the state on disk reaches when the proxy starts again.
-    let saved = k;
-    // A crash loses what came after the last save; the proxy saves every 30
-    // seconds, here some requests before the stop.
-    if (crash) {
-      saved = random.int(0, k - 1);
-      await trial(file, dir, "--upto", String(saved));
-      const lost = mkdtempSync(join(scratch, "lost-"));
-      await trial(file, lost, "--upto", String(k));
-      rmSync(lost, { recursive: true, force: true });
-    } else await trial(file, dir, "--upto", String(k));
+    const stop = crash ? ["--crash"] : [];
+    await trial(file, dir, "--upto", String(k), ...stop);
     const after = await trial(file, dir, "--from", String(k));
     const at = after.sent.findIndex((digest, i) => digest !== one.sent[k + i]);
     if (at < 0) continue;
     const before = await dump(file, newDir(), k + at, []);
     const copy = newDir();
-    await trial(file, copy, "--upto", String(saved));
+    await trial(file, copy, "--upto", String(k), ...stop);
     const restarted = await dump(file, copy, k + at, ["--from", String(k)]);
     problems.push(
-      `${crash ? `crash after a save at ${saved}, ` : ""}restart before request ${k}: ` +
+      `${crash ? "crash" : "restart"} before request ${k}: ` +
         `request ${k + at} forwarded differently ` +
         parting(before, restarted),
     );

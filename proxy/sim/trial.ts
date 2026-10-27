@@ -47,8 +47,9 @@ else {
   const beside = sub ? { seed: sub[0]!, at: sub[1]!, count: sub[2]! } : undefined;
   report = await replayTape(tape, from, Number(option("upto") ?? tape.requests.length), beside);
 }
-// As the real proxy does when it stops (server.ts drain).
-saveScanCache();
+// As the real proxy does when it stops (server.ts drain); --crash stops as a
+// killed one does, with only what it saved along the way (saveDecisive).
+if (!args.includes("--crash")) saveScanCache();
 if (dumpAt !== undefined)
   writeFileSync(args[args.indexOf("--dump-at") + 2]!, sentPrompts.text ?? "");
 process.stdout.write(

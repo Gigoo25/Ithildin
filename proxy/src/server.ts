@@ -30,6 +30,7 @@ import {
   redactQuery,
   redactRequest,
   refreshIdentity,
+  saveDecisive,
   saveScanCache,
   shapingSwitch,
   type Stray,
@@ -653,6 +654,7 @@ function redactBody(
       (event) => activity.push(event),
       () => redact.request(format, parsed, session),
     );
+    saveDecisive();
     const scanMs = Math.round(performance.now() - started);
     noteUnguarded(redacted.unguarded);
     noteStrays(redacted.strays);
@@ -1508,7 +1510,10 @@ async function relayReply(
       upstream.body,
       format,
       tags,
-      (swapped, usage) => log(`${line} swapped=${swapped}${counted(usage)} (stream)`),
+      (swapped, usage) => {
+        saveDecisive();
+        log(`${line} swapped=${swapped}${counted(usage)} (stream)`);
+      },
       tap,
       hooks,
     );
@@ -1519,6 +1524,7 @@ async function relayReply(
     if (parsed instanceof Response) return parsed;
     hooks.listen(parsed.body);
     hooks.think(thinkingOfBody(format, parsed.body));
+    saveDecisive();
     log(`${line} swapped=${parsed.swapped}${counted(usageOf(format, parsed.body))}`);
     // Always re-serialized: a blocked call changes arguments without a swap.
     return new Response(JSON.stringify(parsed.body), init);

@@ -327,6 +327,7 @@ export function clearCaches(): void {
   TEXT_SEEN.clear();
   swapGeneration = 0;
   seenChanged = false;
+  learned = false;
   recall = undefined;
 }
 
@@ -1268,6 +1269,19 @@ const SWAPPED_MAX = 2_000;
 export function rememberSwapped(value: string, ruleId: string): void {
   if (value.length < 3 || /^\p{L}+$/u.test(value) || SWAPPED.has(value)) return;
   keepSwapped(value, ruleId, ++swapGeneration);
+  learned = true;
+}
+
+// A value learned since the last save: saveLearned writes the memory then,
+// and only then. A text first seen after a save needs no save of its own: on
+// a restart it is stamped with the saved generation again, which is the one it
+// had, unless a value was learned since, and that saves.
+let learned = false;
+
+export function saveLearned(): void {
+  if (!learned) return;
+  saveSwapped();
+  learned = false;
 }
 
 // A value learned now is masked only in text first seen from now on. Text that
