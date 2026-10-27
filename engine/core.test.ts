@@ -268,6 +268,39 @@ describe("redactText", () => {
     expect(result.text).not.toContain("123456789012");
   });
 
+  it("masks a PEM private key whole, every line of it, however the text carries it", () => {
+    // Base64 lines, one starting with "/": alone on its line that read as a
+    // path, so a key with one sent that line as it was.
+    let state = 7;
+    const line = (first = "") => {
+      let out = first;
+      const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+      while (out.length < 64) {
+        state = (state * 1103515245 + 12345) % 2147483648;
+        out += alphabet[state % 64];
+      }
+      return out;
+    };
+    const body = [line(), line(), line("/"), line(), line()];
+    const kind = "OPENSSH PRIVATE KEY";
+    const pem = [`-----BEGIN ${kind}-----`, ...body, `-----END ${kind}-----`].join("\n");
+    const leaked = (text: string) =>
+      body.filter((each) => redactText(text).text.includes(each)).length;
+    expect(leaked(pem)).toBe(0);
+    // Inside JSON, its lines joined by an escaped break and none alone on one.
+    expect(leaked(JSON.stringify({ key: pem }))).toBe(0);
+    // Cut off before its end, and with the headers an encrypted key has.
+    expect(leaked(pem.split("\n").slice(0, 4).join("\n"))).toBe(0);
+    const headers = "Proc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,0A1B2C3D4E5F6071\n\n";
+    const encrypted = pem.replace(`${kind}-----\n`, `${kind}-----\n${headers}`);
+    expect(leaked(encrypted)).toBe(0);
+    expect(redactText(encrypted).text).not.toContain("0A1B2C3D4E5F6071");
+    // What is around it stays.
+    const said = redactText(`Here it is:\n${pem}\nThat's the key (do not share it).`).text;
+    expect(said).toStartWith("Here it is:\n");
+    expect(said).toEndWith("\nThat's the key (do not share it).");
+  });
+
   it("gives a punctuation-only secret a token, not itself", () => {
     const synthetic = syntheticValue("!!!!--!!!!");
     expect(synthetic).not.toBe("!!!!--!!!!");

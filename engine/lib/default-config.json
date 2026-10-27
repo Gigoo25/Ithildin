@@ -17,7 +17,7 @@
     {
       "id": "private-key",
       "description": "PEM Private Key",
-      "regex": "-----BEGIN ((RSA|EC|DSA|PGP|OPENSSH|ENCRYPTED|SSH2 ENCRYPTED) )?PRIVATE KEY",
+      "regex": "-----BEGIN ((RSA|EC|DSA|PGP|OPENSSH|ENCRYPTED|SSH2 ENCRYPTED) )?PRIVATE KEY(?: BLOCK)?(?:-----(?:(?:\\r?\\n|\\\\r\\\\n|\\\\n)[ \\t]*[A-Za-z][A-Za-z0-9-]*:[^\\r\\n\\\\]*)*(?:(?:\\r?\\n|\\\\r\\\\n|\\\\n)[ \\t]*(?=(?:\\r?\\n|\\\\r\\\\n|\\\\n)))?(?:(?:\\r?\\n|\\\\r\\\\n|\\\\n)[ \\t]*[A-Za-z0-9+/=]+[ \\t]*(?=\\r?\\n|\\\\r\\\\n|\\\\n|[\"'`]|$))*(?:(?:\\r?\\n|\\\\r\\\\n|\\\\n)[ \\t]*-----END (?:(?:RSA|EC|DSA|PGP|OPENSSH|ENCRYPTED|SSH2 ENCRYPTED) )?PRIVATE KEY(?: BLOCK)?-----)?)?",
       "category": "secret"
     },
     {
