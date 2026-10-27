@@ -259,27 +259,42 @@ function cachePrice(format: Format, model: unknown): Price {
 // What each item is: the turn it belongs to, its size, and how much masking it
 // would save over shaping it as recent. Run with walks of their own, so this
 // says nothing about the real pass.
+//
+// Two gains, as an old chat or Responses item keeps its reasoning while it is
+// in the loop the last typed prompt started (shapeCall). Which one counts
+// depends on where the request ended, not on this request's last prompt: the
+// decision a past request made has to come out the same when it is replayed.
+// With this request's prompt instead, a new prompt turned a past "does not
+// pay" into "pays" and the cutoff jumped with no step taken (a simulated
+// session found it: proxy/sim).
 interface Sized {
   turn: number;
   tokens: number;
   gain: number;
+  loopGain: number;
+  // A typed prompt: the items after it, up to the next, are its loop.
+  asks: boolean;
 }
 
 function sizes(format: Format, list: unknown[], from: Walk): Sized[] {
   const { retrieval, compacted } = from;
   const asOld: Walk = { calls: new Map(), outputs: new Map(), retrieval, compacted };
+  const asLoop: Walk = { calls: new Map(), outputs: new Map(), retrieval, compacted };
   const asNew: Walk = { calls: new Map(), outputs: new Map(), retrieval, compacted };
-  const asked = lastAsked(format, list);
+  // Anthropic has no loop rule (lastAsked is -1): every item counts as in it.
+  const loops = format === "chat" || format === "responses";
   let turn = 0;
   return list.map((item, at) => {
-    for (const walk of [asOld, asNew]) remember(format, item, walk);
+    for (const walk of [asOld, asLoop, asNew]) remember(format, item, walk);
     if (isAssistant(format, list, at)) turn++;
     // Stripping thinking is left out: the cutoff is the same with it on or off.
-    const old = shapeEntry(format, item, asOld, true, at > asked, false)?.saved ?? 0;
-    const recent = shapeEntry(format, item, asNew, false, at > asked, false)?.saved ?? 0;
+    const looped = shapeEntry(format, item, asLoop, true, true, false)?.saved ?? 0;
+    const old = loops ? (shapeEntry(format, item, asOld, true, false, false)?.saved ?? 0) : looped;
+    const recent = shapeEntry(format, item, asNew, false, true, false)?.saved ?? 0;
     // Every byte, results included: this is what a rewrite sends again.
     const tokens = Math.ceil(JSON.stringify(item ?? null).length / 4);
-    return { turn, tokens, gain: Math.max(0, Math.ceil((old - recent) / 4)) };
+    const gain = (saved: number) => Math.max(0, Math.ceil((saved - recent) / 4));
+    return { turn, tokens, gain: gain(old), loopGain: gain(looped), asks: asksAt(format, item) };
   });
 }
 
@@ -290,19 +305,22 @@ interface Step {
   turns: number;
   from: number;
   to: number;
+  // The last typed prompt before `end`, as that request saw it.
+  asked: number;
 }
 
 function pays(items: Sized[], step: Step, price: Price): boolean {
-  const { end, from, to } = step;
+  const { end, from, to, asked } = step;
   let gain = 0;
   let suffix = 0;
   let changed = false;
   for (let i = 0; i < end; i++) {
     const item = items[i]!;
     const inStep = item.turn > from && item.turn <= to;
-    if (inStep && item.gain > 0) changed = true;
-    if (changed || price.whole) suffix += Math.max(0, item.tokens - (inStep ? item.gain : 0));
-    if (inStep) gain += item.gain;
+    const saves = i > asked ? item.loopGain : item.gain;
+    if (inStep && saves > 0) changed = true;
+    if (changed || price.whole) suffix += Math.max(0, item.tokens - (inStep ? saves : 0));
+    if (inStep) gain += saves;
   }
   const { write, read } = price;
   // A step that changes no bytes is free to take.
@@ -364,6 +382,7 @@ function cutoffFor(
   let previous = 0;
   let turns = 0;
   let tokens = 0;
+  let asked = -1;
   // Every point a request could have ended: just before each assistant turn,
   // and the end of the list.
   const last = forked > 0 ? forked : asksForSummary(list) ? items.length - 1 : items.length;
@@ -371,10 +390,12 @@ function cutoffFor(
     const item = items[end];
     if (item === undefined || isAssistant(format, list, end)) {
       const due = dueAt(turns, tokens);
-      if (due > cutoff && pays(items, { end, turns, from: cutoff, to: due }, write)) cutoff = due;
+      const step = { end, turns, from: cutoff, to: due, asked };
+      if (due > cutoff && pays(items, step, write)) cutoff = due;
       if (item !== undefined) previous = cutoff;
     }
     if (item === undefined) break;
+    if (item.asks) asked = end;
     tokens += item.tokens;
     if (isAssistant(format, list, end)) turns++;
   }
@@ -855,13 +876,13 @@ function hasOutput(entry: Record_): boolean {
 // The index of the last user message in a chat conversation, -1 for none or
 // another format: the items after it are the loop it started.
 function lastAsked(format: Format, list: unknown[]): number {
-  if (format === "responses")
-    return list.findLastIndex((item) => {
-      const entry = record(item);
-      return entry?.type === "message" && entry.role === "user";
-    });
-  if (format !== "chat") return -1;
-  return list.findLastIndex((item) => record(item)?.role === "user");
+  return list.findLastIndex((item) => asksAt(format, item));
+}
+
+function asksAt(format: Format, item: unknown): boolean {
+  const entry = record(item);
+  if (format === "responses") return entry?.type === "message" && entry.role === "user";
+  return format === "chat" && entry?.role === "user";
 }
 
 function shapeChatCalls(entry: Record_, looping: boolean): Replacement | undefined {
