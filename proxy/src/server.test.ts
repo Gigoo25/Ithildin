@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import zlib from "node:zlib";
 import {
   egressBlocked,
   IMAGE_NOTICE,
@@ -23,6 +24,7 @@ import {
   DEFAULT_ROUTES,
   journalLine,
   loadRoutes,
+  REQUEST_BYTES_MAX,
   upstreamUrl,
 } from "./server.ts";
 import { aliases } from "../engine/core.ts";
@@ -282,17 +284,52 @@ describe("requests", () => {
     expect(up.seen.at(-1)!.headers.get("x-ithildin-session")).toBeNull();
   });
 
-  it("refuses unknown routes and compressed bodies", async () => {
+  it("refuses unknown routes and encodings it cannot decode", async () => {
     const up = fakeUpstream(() => Response.json({}));
     const handler = createHandler(DEFAULT_ROUTES, up.fetch);
     expect((await handler(post("nowhere/v1/messages", {}))).status).toBe(404);
-    const gz = new Request("http://127.0.0.1/anthropic/v1/messages", {
-      method: "POST",
-      headers: { "content-type": "application/json", "content-encoding": "gzip" },
-      body: "x",
-    });
-    expect((await handler(gz)).status).toBe(415);
+    const encoded = (encoding: string, body: Uint8Array | string) =>
+      new Request("http://127.0.0.1/anthropic/v1/messages", {
+        method: "POST",
+        headers: { "content-type": "application/json", "content-encoding": encoding },
+        body,
+      });
+    expect((await handler(encoded("compress", "x"))).status).toBe(415);
+    expect((await handler(encoded("gzip, br", "x"))).status).toBe(415);
+    expect((await handler(encoded("zstd", "not zstd"))).status).toBe(400);
+    // A small body that decodes past the cap is refused, not held.
+    const bomb = zlib.zstdCompressSync(Buffer.alloc(REQUEST_BYTES_MAX + 1, 32));
+    expect(bomb.byteLength).toBeLessThan(1024 * 1024);
+    expect((await handler(encoded("zstd", bomb))).status).toBe(413);
     expect(up.seen.length).toBe(0);
+  });
+
+  it("decodes a compressed body, scans it, and sends it on plain", async () => {
+    const body = JSON.stringify({ messages: [{ role: "user", content: `mail ${EMAIL}` }] });
+    const encoders: Record<string, (b: Buffer) => Buffer> = {
+      zstd: zlib.zstdCompressSync,
+      gzip: zlib.gzipSync,
+      deflate: zlib.deflateSync,
+      br: zlib.brotliCompressSync,
+    };
+    for (const [encoding, encode] of Object.entries(encoders)) {
+      const up = fakeUpstream(() => Response.json({ content: [] }));
+      const response = await createHandler(
+        DEFAULT_ROUTES,
+        up.fetch,
+      )(
+        new Request("http://127.0.0.1/anthropic/v1/messages", {
+          method: "POST",
+          headers: { "content-type": "application/json", "content-encoding": encoding },
+          body: encode(Buffer.from(body)),
+        }),
+      );
+      expect(response.status).toBe(200);
+      const sent = JSON.stringify(up.seen[0]!.body);
+      expect(sent).toContain("mail ");
+      expect(sent).not.toContain(EMAIL);
+      expect(up.seen[0]!.headers.get("content-encoding")).toBeNull();
+    }
   });
 
   it("maps opencode-go's three wire formats onto one upstream", () => {

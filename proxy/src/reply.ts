@@ -20,7 +20,15 @@ export async function readCapped(
   body: ReadableStream<Uint8Array> | null,
   max: number,
 ): Promise<string | undefined> {
-  if (!body) return "";
+  return (await readCappedBytes(body, max))?.toString("utf8");
+}
+
+// The same, as bytes: a compressed body is decoded before it is text.
+export async function readCappedBytes(
+  body: ReadableStream<Uint8Array> | null,
+  max: number,
+): Promise<Buffer | undefined> {
+  if (!body) return Buffer.alloc(0);
   const chunks: Uint8Array[] = [];
   let size = 0;
   for await (const chunk of body) {
@@ -29,5 +37,5 @@ export async function readCapped(
     if (size > max) return undefined;
     chunks.push(chunk);
   }
-  return Buffer.concat(chunks).toString("utf8");
+  return Buffer.concat(chunks);
 }

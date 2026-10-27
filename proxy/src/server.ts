@@ -18,6 +18,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { promisify } from "node:util";
+import zlib from "node:zlib";
 import {
   type Counts,
   type Format,
@@ -66,7 +68,7 @@ import {
   type Thread,
 } from "./diagnose.ts";
 import { type Miss, pruneMisses, saveMiss } from "./misses.ts";
-import { errorReply, readCapped } from "./reply.ts";
+import { errorReply, readCapped, readCappedBytes } from "./reply.ts";
 import { type SelfTest, selfTest } from "./selftest.ts";
 import { createRewriter, formatSse, parseSseBlock, swapResponseBody } from "./streams.ts";
 import { thinkingOfBody, thinkingOfEvent } from "./thinking.ts";
@@ -526,6 +528,34 @@ function unscanned(): Scanned {
   };
 }
 
+type Decoder = (bytes: Buffer, options: { maxOutputLength: number }) => Promise<Buffer>;
+
+// The encodings a request body is decoded from before it is scanned. Codex
+// sends zstd to the ChatGPT backend; the redacted body goes on uncompressed.
+const DECODERS: Record<string, Decoder> = {
+  gzip: promisify(zlib.gunzip),
+  "x-gzip": promisify(zlib.gunzip),
+  deflate: promisify(zlib.inflate),
+  br: promisify(zlib.brotliDecompress),
+  zstd: promisify(zlib.zstdDecompress),
+};
+
+// The decoded body, capped like a plain one: a few kilobytes of zstd can
+// expand to gigabytes, so the cap is on what comes out.
+async function decodeBody(
+  decode: Decoder,
+  encoding: string,
+  bytes: Buffer,
+): Promise<Buffer | Response> {
+  try {
+    return await decode(bytes, { maxOutputLength: REQUEST_BYTES_MAX });
+  } catch (error) {
+    if ((error as { code?: string }).code === "ERR_BUFFER_TOO_LARGE")
+      return refuse(413, `request body over ${REQUEST_BYTES_MAX} bytes once decoded`);
+    return refuse(400, `request body is not valid ${encoding}`);
+  }
+}
+
 // The request body redacted, or the refusal. Bodies not read as JSON pass
 // only when empty.
 async function scanRequest(
@@ -535,14 +565,18 @@ async function scanRequest(
   session: string | null,
 ): Promise<Scanned | Response> {
   if (request.method === "GET" || request.method === "HEAD") return unscanned();
-  const encoding = request.headers.get("content-encoding");
-  if (encoding && encoding !== "identity")
+  const encoding = (request.headers.get("content-encoding") ?? "identity").trim().toLowerCase();
+  const decode = DECODERS[encoding];
+  if (encoding !== "identity" && !decode)
     return refuse(415, `compressed request bodies (${encoding}) cannot be scanned`);
   const declared = Number(request.headers.get("content-length") ?? 0);
   if (declared > REQUEST_BYTES_MAX)
     return refuse(413, `request body over ${REQUEST_BYTES_MAX} bytes`);
-  const raw = await readCapped(request.body, REQUEST_BYTES_MAX);
-  if (raw === undefined) return refuse(413, `request body over ${REQUEST_BYTES_MAX} bytes`);
+  const bytes = await readCappedBytes(request.body, REQUEST_BYTES_MAX);
+  if (bytes === undefined) return refuse(413, `request body over ${REQUEST_BYTES_MAX} bytes`);
+  const decoded = decode ? await decodeBody(decode, encoding, bytes) : bytes;
+  if (decoded instanceof Response) return decoded;
+  const raw = decoded.toString("utf8");
   const type = request.headers.get("content-type") ?? "";
   if (type.includes("json") || (format !== undefined && raw.trimStart().startsWith("{"))) {
     const parsed = parseRequestObject(raw);
@@ -1127,6 +1161,8 @@ function sessionOf(request: Request): { id: string; client: string } | undefined
 function forwardedHeaders(request: Request): Headers {
   const headers = new Headers(request.headers);
   for (const name of HOP_HEADERS) headers.delete(name);
+  // A compressed body was decoded to be scanned, and goes on as plain JSON.
+  headers.delete("content-encoding");
   headers.delete(SESSION_HEADERS[0]![0]);
   // The proxy names the upstream, never the agent: a client's own routing
   // header is dropped whether or not this route goes through a via host.

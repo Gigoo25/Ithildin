@@ -36,9 +36,11 @@ agent ──> http://127.0.0.1:18733/<route>/... ──> provider
   so a stand-in split across two stream chunks still swaps. Thinking blocks
   pass through untouched because they are signed.
 - **Refusals.** The proxy refuses to forward anything it cannot scan: an
-  unknown route, a body that isn't JSON, a compressed body, a WebSocket
-  upgrade, a scan that throws or runs out of time. It refuses an upstream
-  redirect too: a client following one would resend its unredacted body.
+  unknown route, a body that isn't JSON, a compressed body it cannot decode, a
+  WebSocket upgrade, a scan that throws or runs out of time. A gzip, deflate,
+  brotli or zstd body is decoded, scanned and sent on uncompressed. It refuses
+  an upstream redirect too: a client following one would resend its unredacted
+  body.
 - **Self-test.** On startup, and every five minutes after, the proxy sends
   synthetic secrets, a file read and an image through itself in every wire
   format, JSON and streamed. It checks that none of them reach the provider,

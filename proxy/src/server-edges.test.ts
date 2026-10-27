@@ -68,9 +68,16 @@ describe("requests the proxy refuses", () => {
       [
         post("anthropic/v1/messages", messages, {
           "content-type": "application/json",
-          "content-encoding": "gzip",
+          "content-encoding": "compress",
         }),
         415,
+      ],
+      [
+        post("anthropic/v1/messages", messages, {
+          "content-type": "application/json",
+          "content-encoding": "gzip",
+        }),
+        400,
       ],
       [post("anthropic/v1/messages", "{not json", { "content-type": "application/json" }), 400],
       [post("anthropic/v1/messages", "[1,2]"), 400],
