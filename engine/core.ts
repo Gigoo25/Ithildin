@@ -36,6 +36,7 @@ import {
   isPromptOnlyRule,
   GENERALIZE_PATH,
   escapeRegExp,
+  rulesRevision,
 } from "./lib/rules.ts";
 import { AliasBook, aliasKeyPath, isAliasValue, SESSION_KEY_SUFFIX } from "./lib/aliases.ts";
 import { assert } from "./lib/assert.ts";
@@ -43,8 +44,8 @@ import { FIRST_NAMES } from "./lib/first-names.ts";
 import { NAME, sessionFile as sessionPath, setting } from "./lib/names.ts";
 import { planRedaction } from "./lib/redaction-spans.ts";
 import { redactCopies, redactEncoded } from "./lib/encoded.ts";
-import { reportActivity } from "./lib/activity.ts";
-import { reportRedaction } from "./lib/redaction-audit.ts";
+import { recordActivity, reportActivity, type ActivityEvent } from "./lib/activity.ts";
+import { auditing, reportRedaction } from "./lib/redaction-audit.ts";
 import { assignmentEdits, inspectDocument } from "./lib/structured-text.ts";
 import {
   applyAllowTags,
@@ -206,7 +207,12 @@ export function aliases(): AliasBook {
 // installs a book on its one persistent key.
 export function setAliasBook(book: AliasBook): void {
   aliasBook = book;
+  bookRevision++;
 }
+
+// Bumped with a new alias book: a kept redaction (redactText) holds stand-ins
+// from the old one.
+let bookRevision = 0;
 
 // PII replacement. Stand-ins keep role, shape, and relationships and stay
 // stable across sessions; `aliases: "tokens"` restores the numbered
@@ -342,10 +348,17 @@ export function collectValues<T>(work: () => T): { result: T; values: number } {
 // Overlapping findings (one address matched as an email and as user@host)
 // are one value: their merged span's text is what gets counted.
 function collectSpans(text: string, findings: Array<{ start: number; end: number }>): void {
-  if (!valueSink) return;
-  for (const range of mergeRanges(findings.map(({ start, end }) => ({ start, end }))))
-    valueSink.add(text.slice(range.start, range.end));
+  if (!valueSink && !spanLog) return;
+  for (const range of mergeRanges(findings.map(({ start, end }) => ({ start, end })))) {
+    const value = text.slice(range.start, range.end);
+    valueSink?.add(value);
+    spanLog?.push(value);
+  }
 }
+
+// The values collectSpans gave while redactText ran, kept with its result so a
+// reuse gives the sink the same.
+let spanLog: string[] | undefined;
 
 // Completed scan windows next to the session, value-free by construction (see
 // exportWindowCache). A resumed session reuses the windows a previous process
@@ -576,35 +589,69 @@ function tooShortForPii(finding: LocatedFinding): boolean {
   return finding.category === "pii" && [...finding.secretValue].length < 3;
 }
 
-// Each text's last complete redaction, by its allow tags. A request whose scan
-// runs out of time withholds what it could not vouch for; a text that was
-// redacted completely before gets that answer instead. Its bytes are the ones
-// a full scan gives (an old text keeps its bytes as values are learned:
-// swappedFindings), so nothing goes out that a full scan would not send. Without
-// it, a text sent whole was withheld on a request scanned short of time and
-// whole again on the next: two cache writes from that point each time, found
-// under a starved scan budget (ITHILDIN_SIM_STARVE, proxy/sim). Only on such a
-// request: elsewhere the work is done each time, as the dashboard counts it.
-const COMPLETE = new Map<string, { text: string; hits: number }>();
+// Each text's last redaction: by its allow tags and whether the user typed it
+// (prompt-only rules run on that alone), under the rules and alias book it was
+// made with. A complete one is given again rather than redone: an old text's
+// bytes do not change as values are learned (swappedFindings), so a full scan
+// gives the same, and the same events and values with it. Redone, a 1.9 MB
+// tool output cost half a second on every later request, looking again for
+// encoded copies of 20,000 found values and minting their stand-ins
+// (proxy/sim). A request whose scan runs out of time gets the last answer
+// too, a partly withheld one included, which is what the provider already had:
+// without that, a text sent whole was withheld on a request scanned short of
+// time and whole again on the next, and a starved retry withheld other parts
+// than the try before, a cache write each time (ITHILDIN_SIM_STARVE). A partly
+// withheld answer is not given to a full scan, which replaces it.
+interface Kept {
+  text: string;
+  hits: number;
+  withheld: number;
+  revision: string;
+  events: ActivityEvent[];
+  values: string[];
+}
+const COMPLETE = new Map<string, Kept>();
 const COMPLETE_MAX_BYTES = 32_000_000;
 let completeBytes = 0;
 
 const completeKey = (source: string, allowTags: Set<string>) =>
-  `${[...allowTags].sort().join(",")}\0${source}`;
+  `${[...allowTags].sort().join(",")}\0${scanningUserText ? "typed" : ""}\0${source}`;
 
-function keepComplete(key: string, out: { text: string; hits: number }): void {
-  const cost = (key.length + out.text.length) * 2;
+const revisionNow = () => `${rulesRevision()}:${bookRevision}`;
+
+// What a kept result costs to hold: its text and its key twice over (UTF-16),
+// and its events and values, which hold real values.
+function costOf(key: string, kept: Kept): number {
+  let cost = (key.length + kept.text.length) * 2;
+  for (const event of kept.events) cost += 64 + ("value" in event ? event.value.length * 2 : 0);
+  for (const value of kept.values) cost += 32 + value.length * 2;
+  return cost;
+}
+
+function keepComplete(key: string, kept: Kept): void {
+  const cost = costOf(key, kept);
   if (cost > COMPLETE_MAX_BYTES) return;
   const old = COMPLETE.get(key);
-  if (old) completeBytes -= (key.length + old.text.length) * 2;
+  if (old) completeBytes -= costOf(key, old);
   COMPLETE.delete(key);
   while (completeBytes + cost > COMPLETE_MAX_BYTES) {
     const [oldest, value] = COMPLETE.entries().next().value!;
     COMPLETE.delete(oldest);
-    completeBytes -= (oldest.length + value.text.length) * 2;
+    completeBytes -= costOf(oldest, value);
   }
-  COMPLETE.set(key, out);
+  COMPLETE.set(key, kept);
   completeBytes += cost;
+}
+
+// A kept result given again: its events and values reported as a redo would.
+function givenAgain(kept: Kept): { text: string; hits: number } {
+  for (const event of kept.events) reportActivity(event);
+  for (const value of kept.values) {
+    valueSink?.add(value);
+    spanLog?.push(value);
+  }
+  if (kept.withheld > 0) reportActivity({ type: "withheld", chars: kept.withheld });
+  return { text: kept.text, hits: kept.hits };
 }
 
 export function redactText(
@@ -616,20 +663,28 @@ export function redactText(
   // from that turn on (proxy/sim, ITHILDIN_SIM_STARVE).
   if (source === "") return { text: "", hits: 0 };
   const key = completeKey(source, allowTags);
-  const outer = withheldChars;
+  const revision = revisionNow();
+  const kept = COMPLETE.get(key);
+  const current = kept?.revision === revision ? kept : undefined;
+  if (current && current.withheld === 0 && !auditing()) return givenAgain(current);
+  const outer = { withheld: withheldChars, spans: spanLog };
   withheldChars = 0;
+  spanLog = [];
   try {
-    const out = redactWhole(source, allowTags);
+    const { result: out, events } = recordActivity(() => redactWhole(source, allowTags));
     if (withheldChars === 0) {
-      keepComplete(key, out);
+      keepComplete(key, { ...out, withheld: 0, revision, events, values: spanLog });
       return out;
     }
-    const kept = COMPLETE.get(key);
-    if (kept) return kept;
-    reportActivity({ type: "withheld", chars: withheldChars });
+    if (current) return givenAgain(current);
+    const partial = { ...out, withheld: withheldChars, revision, events: [], values: [] };
+    keepComplete(key, partial);
+    reportActivity({ type: "withheld", chars: partial.withheld });
     return out;
   } finally {
-    withheldChars = outer;
+    withheldChars = outer.withheld;
+    if (outer.spans) outer.spans.push(...spanLog);
+    spanLog = outer.spans;
   }
 }
 

@@ -2,14 +2,16 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { withScanBudget } from "./lib/rules.ts";
+import { compileGeneralizeEntry, RULES, withScanBudget } from "./lib/rules.ts";
 import { type ActivityEvent, observeActivity } from "./lib/activity.ts";
 import { AliasBook } from "./lib/aliases.ts";
 import {
   aliases,
+  asUserText,
   blocksInventoryAccess,
   clearCaches,
   blocksSecretAccess,
+  collectValues,
   commandPathCandidates,
   isSyntheticValue,
   MAX_SCAN_BYTES,
@@ -201,6 +203,50 @@ describe("redactValue", () => {
     });
   });
 
+  it("gives a text redacted before again, with the same events and values", () => {
+    clearCaches();
+    const text = `deploy key ${TOKEN} for jane.doe@corp.example.net`;
+    const run = () => {
+      const events: ActivityEvent[] = [];
+      const { result, values } = collectValues(() =>
+        observeActivity(
+          (event) => events.push(event),
+          () => redactText(text),
+        ),
+      );
+      return { result, events, values };
+    };
+    const first = run();
+    const again = run();
+    expect(again).toEqual(first);
+    expect(first.events.length).toBeGreaterThan(0);
+    expect(first.values).toBeGreaterThan(0);
+    clearCaches();
+  });
+
+  it("keeps a text the user typed apart from the same text in a tool's output", () => {
+    clearCaches();
+    // Prompt-only rules run on typed text alone: a kept answer for one must not
+    // be given to the other.
+    const rule = compileGeneralizeEntry({
+      id: "typed",
+      terms: ["migraine"],
+      replace: "a condition",
+      scope: "prompts",
+    });
+    RULES.push(rule);
+    try {
+      const text = "I get a migraine on mondays";
+      expect(redactText(text).text).toBe(text);
+      expect(asUserText(() => redactText(text)).text).toContain("a condition");
+      expect(redactText(text).text).toBe(text);
+      expect(asUserText(() => redactText(text)).text).toContain("a condition");
+    } finally {
+      RULES.splice(RULES.indexOf(rule), 1);
+      clearCaches();
+    }
+  });
+
   it("gives a text it scanned whole before the same bytes under a starved budget", () => {
     // A starved request withheld text the provider had whole the request
     // before, then sent it whole again: two cache writes from that point. A
@@ -220,6 +266,14 @@ describe("redactValue", () => {
     expect(events.filter((e) => e.type === "withheld")).toEqual([
       { type: "withheld", chars: fresh.length },
     ]);
+    // A text never scanned whole is withheld the same way each time it is
+    // starved again, however far the scan got: a retry sends the same bytes.
+    const again = starved(fresh);
+    expect(again).toBe(withScanBudget(() => redactText(fresh).text, -1));
+    // A full scan replaces it, and a starved one after that gets the full text.
+    const whole = redactText(fresh).text;
+    expect(whole).not.toMatch(/ithildin: omitted/);
+    expect(starved(fresh)).toBe(whole);
     // An empty text has nothing to withhold, scanned whole before or not.
     expect(withScanBudget(() => redactText("").text, -1)).toBe("");
     // Under other allow tags a text is a different redaction, not reused.

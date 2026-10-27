@@ -26,6 +26,23 @@ export function reportActivity(event: ActivityEvent): void {
   observer?.(event);
 }
 
+// The events `work` reports, which still reach whatever observer is installed.
+// For redactText to keep with a result it reuses (core.ts): the values stay in
+// memory only, as the text they came from does.
+export function recordActivity<T>(work: () => T): { result: T; events: ActivityEvent[] } {
+  const previous = observer;
+  const events: ActivityEvent[] = [];
+  observer = (event) => {
+    events.push(event);
+    previous?.(event);
+  };
+  try {
+    return { result: work(), events };
+  } finally {
+    observer = previous;
+  }
+}
+
 export function observeActivity<T>(fn: (event: ActivityEvent) => void, work: () => T): T {
   const previous = observer;
   observer = fn;

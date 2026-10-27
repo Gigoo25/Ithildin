@@ -15,6 +15,11 @@ let observer: ((audit: RedactionAudit) => void) | undefined;
 export function reportRedaction(audit: RedactionAudit): void {
   observer?.(audit);
 }
+// Whether anything is watching: a reused redaction reports nothing, so
+// redactText scans whole while it is.
+export function auditing(): boolean {
+  return observer !== undefined;
+}
 export function observeRedactions<T>(fn: (audit: RedactionAudit) => void, work: () => T): T {
   const previous = observer;
   observer = fn;

@@ -1658,6 +1658,15 @@ let active:
     }
   | undefined;
 
+// Bumped each time the list is built again, so a result kept from an older
+// list (core.ts redactText) is not reused under a newer one.
+let revision = 0;
+
+export function rulesRevision(): number {
+  activeList();
+  return revision;
+}
+
 function activeList(): NonNullable<typeof active> {
   const kept = active;
   if (
@@ -1669,6 +1678,7 @@ function activeList(): NonNullable<typeof active> {
   )
     return kept;
   const rules = RULES.concat(runtimeInventoryRules);
+  revision++;
   const byId = new Map<string, Rule>();
   // The first rule with an id wins, as a search of the list found it.
   for (const rule of rules) if (!byId.has(rule.id)) byId.set(rule.id, rule);
