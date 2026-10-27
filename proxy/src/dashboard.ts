@@ -186,7 +186,12 @@ export const DASHBOARD_HTML = `<!doctype html>
   .alert .when, .other_line .when { color: var(--dim); font: 11px var(--mono); flex: none; }
   .alert b { flex: none; }
   .other_line { display: flex; gap: 10px; margin-bottom: 4px; }
-  .find { display: flex; gap: 10px; align-items: center; padding: 10px 18px; flex-wrap: wrap; }
+  /* One row whatever the request holds: wrapping as the legend and the note
+     changed moved the conversation under the reader. */
+  .find { display: flex; gap: 10px; align-items: center; padding: 10px 18px; }
+  .find #legend { flex: 0 1 auto; min-width: 0; flex-wrap: nowrap; overflow-x: auto; }
+  .find .key { white-space: nowrap; }
+  .alert .more { margin-left: auto; flex: none; padding: 0 6px; font-size: 11px; }
   input[type=search] {
     flex: 1; min-width: 160px; background: var(--panel); color: var(--ink);
     border: 1px solid var(--edge); border-radius: 4px; padding: 4px 10px;
@@ -233,6 +238,14 @@ export const DASHBOARD_HTML = `<!doctype html>
     margin: 0 0 6px; padding: 3px 8px; font-size: 12px; font-weight: 600; color: var(--alert);
     background: var(--alert_bg); border-left: 2px solid var(--alert); border-radius: 0 3px 3px 0;
   }
+  /* A leak named anywhere goes to its message on a click; the flag pulses. */
+  .go, .badge.held { cursor: pointer; }
+  .alert.go:hover { outline: 1px solid var(--alert); }
+  @keyframes pulse_alert {
+    from { box-shadow: 0 0 0 5px var(--alert_bg); }
+    to { box-shadow: 0 0 0 0 transparent; }
+  }
+  .flag.at { animation: pulse_alert 1.4s ease-out; }
   .empty { color: var(--dim); padding: 24px 0; text-align: center; }
   .empty b { display: block; color: var(--silver); font-size: 15px; }
 
@@ -306,6 +319,7 @@ export const DASHBOARD_HTML = `<!doctype html>
   summary { cursor: pointer; list-style: none; }
   summary::-webkit-details-marker { display: none; }
   .gist { color: var(--dim); }
+  .held > summary .gist { color: var(--alert); }
   summary:hover .gist { color: var(--ink); }
   details.out { margin: 2px 0 0 1.6em; }
   .body {
@@ -326,6 +340,7 @@ export const DASHBOARD_HTML = `<!doctype html>
     main { display: flex; flex-direction: column; overflow-y: auto; }
     #side { border-right: 0; }
     #center { min-height: 80vh; }
+    .find { flex-wrap: wrap; }
   }
 </style>
 </head>
@@ -344,7 +359,7 @@ export const DASHBOARD_HTML = `<!doctype html>
     <summary><h2>Sessions<span class="chev"></span></h2></summary>
     <div id="sessions"></div>
   </details>
-  <details class="section" id="fold_numbers" open>
+  <details class="section" id="fold_numbers">
     <summary><h2>Numbers<span class="chev"></span></h2></summary>
     <div id="numbers">
       <div class="group">
@@ -428,6 +443,17 @@ const earlier = new Map();
 // from how the page would set it: the view is rebuilt whenever a request
 // arrives, and a rebuild must not undo a click.
 const folds = new Map();
+// Where the reader scrolled inside a long output, by the same keys, for the
+// same reason.
+const scrolls = new Map();
+// The sessions in the order last laid out, kept while the pointer is on the
+// list: sorted afresh each poll, a row moved out from under the click.
+let sessionOrder = [];
+// A rebuild held back while the reader has text selected in the conversation:
+// it would drop the selection mid-copy. The next poll tries again.
+let deferred = false;
+// Whether the head lists every alert, or the newest alone.
+let alertsOpen = false;
 let shownId = 0;
 let view = 'chat';
 // Each session's shaping and cache figures, by the proxy's tally.
@@ -520,6 +546,11 @@ function sessionLabel(known) {
 function renderSessions() {
   const list = [...sessions.values()]
     .sort((a, b) => (a.id === OTHER) - (b.id === OTHER) || b.last - a.last);
+  if (byId('sessions').matches?.(':hover')) {
+    const place = new Map(sessionOrder.map((id, i) => [id, i]));
+    list.sort((a, b) => (place.get(a.id) ?? place.size) - (place.get(b.id) ?? place.size));
+  }
+  sessionOrder = list.map((known) => known.id);
   const rows = list.map((known) => {
     const button = byClass('button', 'pick session' + (known.id === chosen ? ' on' : ''));
     const label = byClass('span', 'label');
@@ -528,24 +559,57 @@ function renderSessions() {
     button.appendChild(label);
     if (known.leaked > 0) {
       const leaks = byClass('span', 'badge held', String(known.leaked));
-      leaks.title = plural(known.leaked, 'leak');
+      leaks.title = plural(known.leaked, 'leak') + '; click to go to the latest';
+      leaks.addEventListener('click', (event) => {
+        event.stopPropagation();
+        goToLeak(feed.find((entry) => entry.type === 'leaked' &&
+          (entry.session || OTHER) === known.id));
+      });
       button.appendChild(leaks);
     }
     button.title = known.id === OTHER ? 'Requests without a session, and refusals'
       : 'Session ' + known.id;
-    button.addEventListener('click', () => {
-      chosen = known.id;
-      shownId = 0;
-      // Turn numbers count a session's own turns, so another session's folds
-      // are not this one's.
-      folds.clear();
-      renderSessions();
-      showSession();
-    });
+    button.addEventListener('click', () => choose(known.id));
     return button;
   });
   byId('sessions').replaceChildren(...rows);
   if (rows.length === 0) byId('sessions').appendChild(byClass('p', 'count', 'None yet'));
+}
+
+function choose(id) {
+  chosen = id;
+  shownId = 0;
+  // Turn numbers count a session's own turns, so another session's folds
+  // are not this one's.
+  folds.clear();
+  scrolls.clear();
+  renderSessions();
+  return showSession();
+}
+
+// A leak, wherever it is named, leads to the message it was found in: its
+// session picked, the conversation shown unfiltered, its turn opened and its
+// flag in view. A leak outside the messages has no flag, so it ends at the
+// session.
+async function goToLeak(entry) {
+  if (!entry) return;
+  const id = entry.session || OTHER;
+  view = 'chat';
+  only = undefined;
+  if (id === chosen) {
+    shownId = 0;
+    await showSession();
+  } else {
+    await choose(id);
+  }
+  const flag = byId('viewer').querySelector('.flag[data-at="' + leakIndex(entry) + '"]');
+  if (!flag) return;
+  for (let open = flag.closest('details'); open; open = open.parentElement.closest('details'))
+    open.open = true;
+  flag.classList.remove('at');
+  void flag.offsetWidth;
+  flag.classList.add('at');
+  flag.scrollIntoView({ block: 'center' });
 }
 
 // The picked session's name, what happened in it, and what went wrong.
@@ -574,7 +638,9 @@ function renderHead(known) {
   if (tally) note.append(byClass('br', ''), tally);
   const alarms = feed.filter((entry) => (entry.session || OTHER) === known.id &&
     (entry.type === 'leaked' || entry.type === 'blocked' || entry.type === 'refused'));
-  const lines = alarms.slice(0, ALERTS_SHOWN).map((entry) => {
+  // One line unless the reader asks for the rest: a list that grew with each
+  // alert pushed the conversation down under the reader.
+  const lines = alarms.slice(0, alertsOpen ? ALERTS_SHOWN : 1).map((entry) => {
     const line = byClass('div', 'alert');
     const what = entry.type === 'leaked' ? 'Leak' : entry.type === 'blocked' ? 'Blocked'
       : 'Refused ' + entry.status;
@@ -582,13 +648,28 @@ function renderHead(known) {
       ? firstSentence(entry.text) : entry.text;
     line.append(byClass('span', 'when', clock(entry.time)), byClass('b', '', what), text);
     if (entry.text) line.title = entry.text;
+    if (entry.type === 'leaked') {
+      line.classList.add('go');
+      line.title = 'Go to the message it was found in';
+      line.addEventListener('click', () => goToLeak(entry));
+    }
     return line;
   });
-  if (alarms.length > ALERTS_SHOWN)
+  if (alarms.length > 1) {
+    const more = byClass('button', 'small more', alertsOpen ? 'fewer'
+      : plural(alarms.length - 1, 'more alert'));
+    more.addEventListener('click', (event) => {
+      event.stopPropagation();
+      alertsOpen = !alertsOpen;
+      renderHead(known);
+    });
+    lines[0].append(more);
+  }
+  if (alertsOpen && alarms.length > ALERTS_SHOWN)
     lines.push(byClass('div', 'count', 'and ' + (alarms.length - ALERTS_SHOWN) + ' earlier'));
   byId('alerts').replaceChildren(...lines);
 }
-const ALERTS_SHOWN = 4;
+const ALERTS_SHOWN = 8;
 
 // What shaping took off a session's requests and what its replies said the
 // cache did, in a line; nothing for a session with neither.
@@ -665,6 +746,10 @@ async function showSession() {
     return;
   }
   if (sent.id === shownId) return;
+  const selected = window.getSelection?.();
+  deferred = shownId !== 0 && Boolean(selected && !selected.isCollapsed &&
+    viewer.contains(selected.anchorNode));
+  if (deferred) return;
   if (!texts.has(sent.id)) {
     const [response, masked] = await Promise.all([
       fetch('${REQUEST_PATH}?id=' + sent.id, { cache: 'no-store' }),
@@ -712,7 +797,7 @@ function renderVerdict(stats, watch) {
     verdict.className = 'bad';
     title = plural(stats.leaked, 'leak') + ' found';
     note = last ? 'Latest ' + clock(last.time) : '';
-    if (last) tip = 'Latest in ' + last.where + '. ' + tip;
+    if (last) tip = 'Latest in ' + last.where + '; click to go to it. ' + tip;
   } else if (watched > 0) {
     verdict.className = 'ok';
     title = 'No leaks';
@@ -723,6 +808,7 @@ function renderVerdict(stats, watch) {
     note = 'Add a watch list to config.json';
   }
   verdict.title = tip;
+  verdict.classList.toggle('go', stats.leaked > 0);
   verdict.replaceChildren(byClass('b', '', title), byClass('span', '', note));
 }
 
@@ -856,6 +942,7 @@ async function poll() {
       replies.clear();
       earlier.clear();
       folds.clear();
+      scrolls.clear();
       shownId = 0;
     }
     since = data.next;
@@ -875,7 +962,8 @@ async function poll() {
       chosen = latest ? latest.id : sessions.has(OTHER) ? OTHER : undefined;
     }
     renderSessions();
-    if (firstPoll || data.entries.some((entry) => (entry.session || OTHER) === chosen))
+    if (firstPoll || deferred ||
+      data.entries.some((entry) => (entry.session || OTHER) === chosen))
       await showSession();
     await readThinking();
     if (!firstPoll) notifyLeaks(data.entries);
@@ -1155,7 +1243,14 @@ function fold(className, head, text, wants, needle, label) {
     const count = body.querySelectorAll(selector).length;
     if (count > 0) summary.appendChild(byClass('span', 'badge ' + type, String(count)));
   }
-  box.open = body.querySelector('mark:not([data-type=masked])') !== null;
+  // Text that is only the proxy's notice of what it held back, a blocked
+  // call's result most often, says so in its head, red, and stays shut:
+  // opened, it said the same thing again under it.
+  const held = body.querySelector('mark[data-type=held]');
+  const notice = held !== null && text.trimStart().startsWith(held.textContent) &&
+    body.querySelector('mark:not([data-type=masked]):not([data-type=held])') === null;
+  if (notice) box.classList.add('held');
+  box.open = !notice && body.querySelector('mark:not([data-type=masked])') !== null;
   return { node: box, matches, fold: box };
 }
 
@@ -1163,6 +1258,11 @@ function fold(className, head, text, wants, needle, label) {
 // that opens it. Only a choice that differs from the page's own is kept, so
 // a turn the reader never touched closes once a newer one arrives.
 function remember(box, key) {
+  const body = box.querySelector(':scope > .body');
+  if (body) {
+    body.dataset.key = key;
+    body.addEventListener('scroll', () => scrolls.set(key, body.scrollTop));
+  }
   const usual = box.open;
   const found = box.querySelector('mark[data-type=found]') !== null;
   if (folds.has(key) && !found) box.open = folds.get(key);
@@ -1211,11 +1311,19 @@ function conversation(items, marks, needle, leaks) {
   const flagged = new Set();
   // A turn starts at each message holding something the user typed, not a
   // reminder or a tool result beside one. Each turn hangs on a rail.
-  const prompts = new Set(items
-    .filter((item) => item.kind === 'user' && !WRAPPED.test(item.text))
-    .map((item) => item.at));
+  // Its title is what was typed there: the message's first item is often the
+  // tool result or reminder the harness put beside it.
+  const prompts = new Map();
+  for (const item of items)
+    if (item.kind === 'user' && !WRAPPED.test(item.text) && !prompts.has(item.at))
+      prompts.set(item.at, item.text);
+  // A note the harness repeats between steps, a token count after every
+  // result, shows once a turn: one each time buried the steps between them.
+  // Known by its text with the figures taken out.
+  let notes = new Set();
   const nodes = [];
   const calls = [];
+  const repeats = [];
   const metas = [];
   // What each turn holds, kept apart until the end so it can go in newest
   // first; a leak's flag stays above the message it is about.
@@ -1238,6 +1346,7 @@ function conversation(items, marks, needle, leaks) {
     nodes.push(turn);
     groups.push([]);
     calls.push(0);
+    repeats.push(0);
   };
   let matches = 0;
   const put = (item, shown) => {
@@ -1246,7 +1355,9 @@ function conversation(items, marks, needle, leaks) {
     const group = [];
     if (found && !flagged.has(item.at)) {
       flagged.add(item.at);
-      group.push(byClass('div', 'flag', '\\u26a0 Leak: ' + leakDetail(found[0])));
+      const flag = byClass('div', 'flag', '\\u26a0 Leak: ' + leakDetail(found[0]));
+      flag.dataset.at = String(item.at);
+      group.push(flag);
     }
     group.push(shown.node);
     groups[groups.length - 1].push(group);
@@ -1260,13 +1371,21 @@ function conversation(items, marks, needle, leaks) {
   for (const item of items) {
     if (prompts.has(item.at) && item.at !== started) {
       started = item.at;
-      start('Turn ' + ++count, item.text);
+      start('Turn ' + ++count, prompts.get(item.at));
+      notes = new Set();
     }
     if (item.kind === 'tools') {
       put(item, fold('meta', item.name + ' tools offered', item.text, plain, needle, 'system'));
     } else if (item.kind === 'system') {
+      const note = item.at >= 0;
+      const shape = item.text.replace(/\\d+/g, '#');
+      if (note && notes.has(shape)) {
+        repeats[repeats.length - 1]++;
+        continue;
+      }
+      if (note) notes.add(shape);
       const size = item.text.length + ' characters';
-      const head = 'System prompt \\u00b7 ' + size;
+      const head = (note ? 'System note' : 'System prompt') + ' \\u00b7 ' + size;
       put(item, fold('meta', head, item.text, plain, needle, 'system'));
     } else if (item.kind === 'user') {
       const tag = WRAPPED.exec(item.text);
@@ -1276,7 +1395,11 @@ function conversation(items, marks, needle, leaks) {
     } else if (item.kind === 'assistant') {
       put(item, said('reply', 'agent', item.text, model, needle));
     } else if (item.kind === 'thinking') {
-      const head = item.live ? 'Thinking \\u00b7 live' : 'Thinking';
+      // Its first line in the head, a reasoning summary's title most often:
+      // a bare "Thinking" between every call said nothing.
+      const gist = oneLine(item.text.replace(/\\*\\*/g, '').split('\\n')[0], 100);
+      const head = item.live ? 'Thinking \\u00b7 live'
+        : gist && !/^\\(hidden/.test(gist) ? 'Thinking \\u00b7 ' + gist : 'Thinking';
       put(item, fold('meta', head, item.text, plain, needle, 'agent'));
     } else if (item.kind === 'tool_call') {
       const result = item.id ? results.get(item.id) : undefined;
@@ -1311,6 +1434,7 @@ function conversation(items, marks, needle, leaks) {
     const latest = index === nodes.length - 1;
     const said = [];
     if (calls[index] > 0) said.push(plural(calls[index], 'tool call'));
+    if (repeats[index] > 0) said.push(plural(repeats[index], 'repeated note') + ' hidden');
     if (latest && count > 0) said.push('latest');
     metas[index].textContent = said.join(' \\u00b7 ');
     if (latest && count > 0) node.classList.add('latest');
@@ -1408,13 +1532,18 @@ function leaksFor(id) {
   const leaks = new Map();
   for (const entry of feed) {
     if (entry.type !== 'leaked' || (entry.session || OTHER) !== id) continue;
-    const at = /^(?:messages|input)\\[(\\d+)\\]/.exec(entry.where || '');
-    if (!at) continue;
-    const index = Number(at[1]);
+    const index = leakIndex(entry);
+    if (index === undefined) continue;
     if (!leaks.has(index)) leaks.set(index, []);
     leaks.get(index).push(entry);
   }
   return leaks;
+}
+
+// The message a leak was found in, from where the scan says it was.
+function leakIndex(entry) {
+  const at = /^(?:messages|input)\\[(\\d+)\\]/.exec(entry.where || '');
+  return at ? Number(at[1]) : undefined;
 }
 
 // What a stand-in stands for: the kind of value, the rule that matched it,
@@ -1556,6 +1685,8 @@ function showText(place) {
     const shown = conversation(items, marks, needle, leaksFor(chosen));
     viewer.append(...shown.nodes);
     matches = shown.matches;
+    for (const body of viewer.querySelectorAll('.body[data-key]'))
+      if (scrolls.has(body.dataset.key)) body.scrollTop = scrolls.get(body.dataset.key);
   }
   byId('detail_count').textContent = needle ? plural(matches, 'match') : '';
   renderLegend(raw, raw ? [] : outside(body, marks.plain));
@@ -1584,6 +1715,10 @@ for (const section of document.querySelectorAll('.section')) {
     localStorage.setItem(key, section.open ? 'open' : 'closed'));
 }
 resizable(byId('grip'));
+// Off the list, it takes the newest-first order again.
+byId('sessions').addEventListener('mouseleave', renderSessions);
+byId('verdict').addEventListener('click', () =>
+  goToLeak(feed.find((entry) => entry.type === 'leaked')));
 offerNotifications();
 poll();
 setInterval(poll, POLL_MS);

@@ -534,6 +534,7 @@ describe("dashboard", () => {
         setAttribute() {},
         querySelector: () => null,
         querySelectorAll: () => [],
+        closest: () => null,
         scrollIntoView() {},
         scrollTop: 0,
         scrollHeight: 0,
@@ -550,8 +551,16 @@ describe("dashboard", () => {
         { role: "user", content: "first ask" },
         { role: "assistant", content: [{ type: "tool_use", id: "t", name: "Bash", input: {} }] },
         { role: "user", content: [{ type: "tool_result", tool_use_id: "t", content: "ok" }] },
+        { role: "system", content: "<total_tokens>900 left</total_tokens>" },
         { role: "assistant", content: "done" },
-        { role: "user", content: "second ask" },
+        { role: "system", content: "<total_tokens>850 left</total_tokens>" },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "<system-reminder>ignore</system-reminder>" },
+            { type: "text", text: "second ask" },
+          ],
+        },
       ],
     });
     const answers: Record<string, unknown> = {
@@ -610,12 +619,14 @@ describe("dashboard", () => {
       querySelectorAll: () => [],
     };
     const storage = { getItem: () => null, setItem() {} };
+    const intervals: (() => Promise<void>)[] = [];
+    const window: { getSelection?: () => unknown } = {};
     new Function("document", "fetch", "localStorage", "window", "setInterval", script)(
       document,
       fetch,
       storage,
-      {},
-      () => 0,
+      window,
+      (run: () => Promise<void>) => intervals.push(run),
     );
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(byId("state").textContent).toBe("proxy up");
@@ -627,7 +638,7 @@ describe("dashboard", () => {
     );
     expect(heads).toEqual([
       ["Turn 2", "second ask", "latest", ""],
-      ["Turn 1", "first ask", "1 tool call", ""],
+      ["Turn 1", "first ask", "1 tool call \u00b7 1 repeated note hidden", ""],
       ["Before the first prompt", "", ""],
     ]);
     expect(shown.map((turn) => turn.open)).toEqual([true, false, false]);
@@ -637,30 +648,35 @@ describe("dashboard", () => {
       "agent",
       "Thinking \u00b7 live",
     ]);
-    // Inside a turn too: the reply, above the call, above the prompt.
+    // Inside a turn too: the reply, above the call, above the prompt; the
+    // harness's token count once, not after every step.
     expect(shown[1]!.children.slice(1).map((step) => step.className)).toEqual([
       "step reply",
+      "step meta",
       "step call",
       "step prompt",
     ]);
     // Each says who spoke in a word, not an arrow that reads as a control;
     // a call's sits in the head it shares with the tool's name.
     const label = (step: Fake) => (step.className === "step call" ? step.children[0]! : step);
-    expect(shown[1]!.children.slice(1).map((step) => label(step).children[0]!.textContent)).toEqual(
-      ["agent", "tool", "you"],
-    );
+    const steps = shown[1]!.children.slice(1).filter((step) => step.className !== "step meta");
+    expect(steps.map((step) => label(step).children[0]!.textContent)).toEqual([
+      "agent",
+      "tool",
+      "you",
+    ]);
     // A fold the reader opened stays open across the rebuild a new request makes.
     const toggle = (node: Fake, open: boolean) => {
       node.open = open;
       (node.ontoggle as () => void)();
     };
     toggle(shown[1]!, true);
-    toggle(shown[1]!.children[2]!.children[1]!, true);
+    toggle(shown[1]!.children[3]!.children[1]!, true);
     toggle(shown[0]!, false);
     (byId("detail_search").oninput as () => void)();
     const again = byId("viewer").children;
     expect(again.map((turn) => turn.open)).toEqual([false, true, false]);
-    expect(again[1]!.children[2]!.children[1]!.open).toBe(true);
+    expect(again[1]!.children[3]!.children[1]!.open).toBe(true);
     // Put back the way the page had it, the choice is forgotten.
     toggle(again[0]!, true);
     (byId("detail_search").oninput as () => void)();
@@ -715,6 +731,79 @@ describe("dashboard", () => {
       "Last break",
       "system in claude 1 (agent)",
     ]);
+    // A leak, clicked where it is named, leads to its flag, its turn opened.
+    const leak = { id: 2, time: 2, type: "leaked", session: "s1", where: "messages[0].content" };
+    answers["/dashboard/activity?since=1"] = {
+      ...(answers["/dashboard/activity?since=0"] as object),
+      entries: [leak],
+      next: 2,
+    };
+    await intervals[0]!();
+    const alert = byId("alerts").children[0]!;
+    expect(alert.title).toBe("Go to the message it was found in");
+    let reached: Fake | undefined;
+    byId("viewer").querySelector = (selector: string) => {
+      expect(selector).toBe('.flag[data-at="0"]');
+      const turn = byId("viewer").children.find((each) =>
+        each.children.some((child) => child.className === "flag"),
+      )!;
+      const flag = turn.children.find((child) => child.className === "flag")!;
+      flag.closest = () => turn;
+      flag.scrollIntoView = () => (reached = flag);
+      return flag;
+    };
+    await (byId("verdict").onclick as () => Promise<void>)();
+    expect(reached!.textContent).toStartWith("\u26a0 Leak: Watched string found at messages[0]");
+    const flagged = byId("viewer").children.find((turn) => turn.children.includes(reached!))!;
+    expect(flagged.children[0]!.textContent).toBe("Turn 1");
+    expect(flagged.open).toBe(true);
+    reached = undefined;
+    await (alert.onclick as () => Promise<void>)();
+    expect(reached).toBeDefined();
+    // A second alert keeps the head one line; the rest open on a click.
+    const poll = async (entries: unknown[], next: number) => {
+      answers[`/dashboard/activity?since=${next - 1}`] = {
+        ...(answers["/dashboard/activity?since=0"] as object),
+        entries,
+        next,
+      };
+      await intervals[0]!();
+    };
+    await poll([{ ...leak, id: 3, time: 3 }], 3);
+    expect(byId("alerts").children.length).toBe(1);
+    const more = byId("alerts").children[0]!.children.at(-1)!;
+    expect(more.textContent).toBe("1 more alert");
+    (more.onclick as (event: { stopPropagation(): void }) => void)({ stopPropagation() {} });
+    expect(byId("alerts").children.length).toBe(2);
+    expect(byId("alerts").children[0]!.children.at(-1)!.textContent).toBe("fewer");
+    // Under the pointer the sessions keep their places; off it, newest first.
+    const order = () =>
+      byId("sessions").children.map((row) => row.children[0]!.children[0]!.textContent);
+    await poll([{ id: 4, time: 4, type: "request", route: "anthropic", session: "s2" }], 4);
+    expect(order()).toEqual(["s2", "Fix the login"]);
+    byId("sessions").matches = () => true;
+    await poll([{ id: 5, time: 5, type: "request", route: "anthropic", session: "s1" }], 5);
+    expect(order()).toEqual(["s2", "Fix the login"]);
+    byId("sessions").matches = () => false;
+    (byId("sessions").onmouseleave as () => void)();
+    expect(order()).toEqual(["Fix the login", "s2"]);
+    // With text selected in the conversation, a new request waits for the
+    // selection to go before it rebuilds the view.
+    answers["/dashboard/requests"] = {
+      enabled: true,
+      keep: 20,
+      requests: [{ id: 8, session: "s1", main: true, time: 6000, turn: 2 }],
+    };
+    answers["/dashboard/request?id=8"] = sent;
+    let selection = { isCollapsed: false, anchorNode: {} };
+    window.getSelection = () => selection;
+    byId("viewer").contains = () => true;
+    const before = byId("view_note").textContent;
+    await poll([{ id: 6, time: 6, type: "request", route: "anthropic", session: "s1" }], 6);
+    expect(byId("view_note").textContent).toBe(before);
+    selection = { isCollapsed: true, anchorNode: {} };
+    await poll([], 7);
+    expect(byId("view_note").textContent).not.toBe(before);
   });
 
   it("carries its own icon, so the browser never asks the proxy for /favicon.ico", () => {
@@ -746,6 +835,7 @@ describe("dashboard", () => {
     const run = new Function(
       "feed",
       `const OTHER = ''; const sessions = new Map(); ${pick("noteEntries")} ${pick("leaksFor")}` +
+        ` ${pick("leakIndex")}` +
         " noteEntries(feed); return { sessions: [...sessions.values()], leaks: leaksFor('s1') };",
     ) as (feed: unknown[]) => { sessions: unknown[]; leaks: Map<number, unknown[]> };
     const { sessions, leaks } = run(feed);
@@ -1098,9 +1188,61 @@ describe("dashboard", () => {
     expect(DASHBOARD_HTML).toMatch(/\.turn \{[^}]*border-left: 1px solid var\(--edge\)/);
   });
 
-  it("leaves Sessions and Numbers open, so both sides read without a click", () => {
+  it("leaves Sessions open and Numbers shut, so the sessions read without the totals' bulk", () => {
     expect(DASHBOARD_HTML).toMatch(/<details class="section" id="fold_sessions" open>/);
-    expect(DASHBOARD_HTML).toMatch(/<details class="section" id="fold_numbers" open>/);
+    expect(DASHBOARD_HTML).toMatch(/<details class="section" id="fold_numbers">/);
+  });
+
+  it("keeps a result that is only a held-back notice shut, its head in red", () => {
+    const source = /function fold\([\s\S]*?\n\}/.exec(DASHBOARD_HTML)![0];
+    type Node = { [key: string]: unknown; textContent: string; children: Node[] };
+    // A body knows the marks put in it; enough of the DOM for fold to ask.
+    const node = (): Node => {
+      const it: Node = {
+        textContent: "",
+        children: [],
+        marks: [] as { type: string; text: string }[],
+        classes: new Set<string>(),
+        append: (...kids: Node[]) => it.children.push(...kids),
+        appendChild: (kid: Node) => it.children.push(kid),
+        classList: { add: (name: string) => (it.classes as Set<string>).add(name) },
+        querySelectorAll: (selector: string) =>
+          (it.marks as { type: string }[]).filter((mark) => selector.includes(mark.type)),
+        querySelector: (selector: string) =>
+          (it.marks as { type: string; text: string }[])
+            .filter((mark) =>
+              selector.includes(":not")
+                ? !selector.includes(`[data-type=${mark.type}]`)
+                : selector.includes(mark.type),
+            )
+            .map((mark) => ({ textContent: mark.text }))[0] ?? null,
+      };
+      return it;
+    };
+    const fold = new Function(
+      "byClass",
+      "document",
+      "markInto",
+      "MARK_KINDS",
+      source + "\nreturn fold;",
+    )(
+      () => node(),
+      { createElement: () => node() },
+      (body: Node, text: string, wants: { type: string; text: string }[]) => {
+        body.marks = wants.filter((want) => text.includes(want.text));
+        return 0;
+      },
+      [["held", "mark[data-type=held]"]],
+    );
+    const notice = "Not run: this command uses the network.";
+    const held = [{ type: "held", text: notice }];
+    const blocked = fold("out", notice, notice + " Ask the user first.", held, "");
+    expect(blocked.node.open).toBe(false);
+    expect([...(blocked.node.classes as Set<string>)]).toEqual(["held"]);
+    // Held back somewhere inside a longer output, it opens to show where.
+    const inside = fold("out", "log", "line one\n" + notice, held, "");
+    expect(inside.node.open).toBe(true);
+    expect((inside.node.classes as Set<string>).size).toBe(0);
   });
 
   it("goes back to the newest session from the name", () => {
