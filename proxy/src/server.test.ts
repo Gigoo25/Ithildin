@@ -57,7 +57,11 @@ function fakeUpstream(reply: (seen: Seen) => Response): { fetch: typeof fetch; s
   return { fetch: fn, seen };
 }
 
-function sse(events: Array<{ event?: string; data: unknown }>, chunkAt?: number): Response {
+function sse(
+  events: Array<{ event?: string; data: unknown }>,
+  chunkAt?: number,
+  type: string | undefined = "text/event-stream",
+): Response {
   const text = events
     .map((e) => {
       const data = typeof e.data === "string" ? e.data : JSON.stringify(e.data);
@@ -74,7 +78,7 @@ function sse(events: Array<{ event?: string; data: unknown }>, chunkAt?: number)
         controller.close();
       },
     }),
-    { headers: { "content-type": "text/event-stream" } },
+    type ? { headers: { "content-type": type } } : {},
   );
 }
 
@@ -481,6 +485,34 @@ describe("reply text", () => {
     expect(out.find((e) => e.type === "response.output_text.done")!.text).toBe(`to ${EMAIL}`);
     expect(JSON.stringify(out.at(-1))).toContain(EMAIL);
     expect(JSON.stringify(out)).not.toContain(standIn);
+  });
+
+  it("reads ChatGPT's Codex stream, which comes with no content-type", async () => {
+    const part = { type: "response.output_text.delta", item_id: "m", content_index: 0 };
+    const done = { ...part, type: "response.output_text.done", text: `to ${standIn}` };
+    // Cut inside "event:", so the type is decided across chunks.
+    const res = await handler(() =>
+      sse(
+        [
+          { event: part.type, data: { ...part, delta: `to ${standIn}` } },
+          { event: done.type, data: done },
+        ],
+        3,
+        undefined,
+      ),
+    )(post("openai-codex/codex/responses", { stream: true, input: "hi" }));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("text/event-stream");
+    const text = await res.text();
+    expect(text).toStartWith(`event: ${part.type}\n`);
+    const out = events(text);
+    expect(
+      out
+        .filter((e) => e.type === part.type)
+        .map((e) => e.delta)
+        .join(""),
+    ).toBe(`to ${EMAIL}`);
+    expect(text).not.toContain(standIn);
   });
 
   it("releases held Responses text before the item closes without output_text.done", async () => {

@@ -249,6 +249,19 @@ describe("replies the proxy refuses", () => {
       ).status,
     ).toBe(502);
     expect((await refusal(await send(() => new Response("data")))).status).toBe(502);
+    // Untyped, a reply is typed by how it starts; one that starts as neither
+    // SSE nor JSON is refused as before, as is an empty one.
+    for (const body of ["  <p>hi</p>", "\n\n", "[1]"]) {
+      const { message } = await refusal(await send(() => new Response(body)));
+      expect(message).toContain("upstream reply type  cannot be checked");
+    }
+  });
+
+  it("reads an untyped JSON reply as JSON", async () => {
+    const reply = { choices: [{ message: { role: "assistant", content: "hi" } }] };
+    const res = await send(() => new Response(`\n${JSON.stringify(reply)}`));
+    expect(res.headers.get("content-type")).toBe("application/json");
+    expect(await res.json()).toEqual(reply);
   });
 
   it("passes provider errors and non-model routes through unchanged", async () => {

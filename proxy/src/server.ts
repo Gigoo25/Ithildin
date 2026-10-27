@@ -1419,6 +1419,10 @@ async function relayReply(
     await upstream.body?.cancel();
     return refuse(502, `upstream redirected (${upstream.status}), refusing to pass it on`);
   }
+  // ChatGPT's Codex backend streams SSE with no content-type at all: type
+  // such a reply by how it starts, so it is read rather than refused.
+  if (format && upstream.ok && upstream.body && !upstream.headers.has("content-type"))
+    upstream = await typedByContent(upstream, upstream.body);
   const headers = new Headers(upstream.headers);
   headers.delete("content-encoding");
   headers.delete("content-length");
@@ -1453,6 +1457,51 @@ async function relayReply(
   if (!format && upstream.ok && upstream.body) return relayUnread(upstream, init, line, asked);
   log(line);
   return new Response(upstream.body, init);
+}
+
+// How far into an untyped reply typedByContent looks before it gives up.
+const SNIFF_BYTES_MAX = 64 * 1024;
+
+// `upstream` again, with a content-type taken from its first non-blank
+// characters: an SSE field or comment, or a JSON object. Anything else stays
+// untyped, and is refused as before. The bytes read to decide are replayed
+// ahead of the rest, so nothing of the reply is lost.
+async function typedByContent(upstream: Response, body: ReadableStream<Uint8Array>) {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  const seen: Uint8Array[] = [];
+  let head = "";
+  let size = 0;
+  while (head.length < 8 && size < SNIFF_BYTES_MAX) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    seen.push(value);
+    size += value.length;
+    head = (head + decoder.decode(value, { stream: true })).trimStart();
+  }
+  const type = /^(?:(?:event|data|id|retry)?:)/.test(head)
+    ? "text/event-stream"
+    : head.startsWith("{")
+      ? "application/json"
+      : undefined;
+  const headers = new Headers(upstream.headers);
+  if (type) headers.set("content-type", type);
+  const replay = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of seen) controller.enqueue(chunk);
+    },
+    async pull(controller) {
+      const { done, value } = await reader.read();
+      if (done) controller.close();
+      else controller.enqueue(value);
+    },
+    cancel: (reason) => reader.cancel(reason),
+  });
+  return new Response(replay, {
+    status: upstream.status,
+    statusText: upstream.statusText,
+    headers,
+  });
 }
 
 // Top-level keys of model replies in the formats not read here: completions
