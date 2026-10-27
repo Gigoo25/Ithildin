@@ -66,6 +66,9 @@ export class Agent {
     readonly random: Random,
     readonly faults: Faults,
     readonly session: string,
+    // A subagent: the parent's session and machine, its own model and system
+    // prompt, as Claude Code runs one (proxy/sim/subagents.ts).
+    readonly subagent = false,
   ) {
     this.prompt(true);
   }
@@ -211,8 +214,8 @@ export class Agent {
         path: "openai-codex/codex/responses",
         headers: { ...auth, session_id: this.session },
         body: {
-          model: "gpt-6-luna",
-          instructions: `You are Codex.\n\n${this.world.memory}`,
+          model: this.subagent ? "gpt-6-luna-mini" : "gpt-6-luna",
+          instructions: `${this.persona("Codex")}\n\n${this.world.memory}`,
           tools,
           input: structuredClone(this.list),
           stream: true,
@@ -223,18 +226,22 @@ export class Agent {
       path: "opencode-go/chat/completions",
       headers: { ...auth, "x-opencode-session": this.session, "x-opencode-client": "opencode" },
       body: {
-        model: "deepseek-v4",
+        model: this.subagent ? "deepseek-v4-flash" : "deepseek-v4",
         stream: true,
         tools: this.tools.map((name) => ({
           type: "function",
           function: { name, parameters: { type: "object" } },
         })),
         messages: [
-          { role: "system", content: `You are opencode.\n\n${this.world.memory}` },
+          { role: "system", content: `${this.persona("opencode")}\n\n${this.world.memory}` },
           ...structuredClone(this.list),
         ],
       },
     };
+  }
+
+  private persona(name: string): string {
+    return this.subagent ? `You are a subagent of ${name}.` : `You are ${name}.`;
   }
 
   // Claude Code's shape: a billing header, a marked system prompt, and its
@@ -247,7 +254,7 @@ export class Agent {
     const at = blocks.findLastIndex((b) => b.type !== "thinking");
     if (at >= 0) blocks[at] = { ...blocks[at], cache_control: marker };
     return {
-      model: "claude-opus-5-5",
+      model: this.subagent ? "claude-haiku-5-5" : "claude-opus-5-5",
       max_tokens: 32000,
       stream: true,
       thinking: { type: "adaptive" },
@@ -255,7 +262,7 @@ export class Agent {
         { type: "text", text: "x-anthropic-billing-header: cc_version=2.1" },
         {
           type: "text",
-          text: `You are Claude Code.\n\n${this.world.memory}`,
+          text: `${this.persona("Claude Code")}\n\n${this.world.memory}`,
           cache_control: marker,
         },
       ],

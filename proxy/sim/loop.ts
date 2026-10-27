@@ -17,7 +17,9 @@
 //   slow         a request takes under SLOW_MS in the proxy
 
 import "./env.ts";
+import { createHash } from "node:crypto";
 import { initEngine, swapText } from "../src/redact.ts";
+import { currentScanBudgetMs, setScanBudgetMs } from "../../engine/lib/rules.ts";
 import { createHandler, DEFAULT_ROUTES } from "../src/server.ts";
 import { redactText } from "../../engine/core.ts";
 import { Agent, faultsFor, modelItems, type Faults } from "./agent.ts";
@@ -44,6 +46,8 @@ export interface Finding {
 }
 
 export interface LoopReport {
+  // With a subagent beside a replay: what it sent, and what reached the provider.
+  subagent?: { requests: number; sent: number };
   seed: number;
   format: Format;
   // Which faults the session had on; a replayed tape carries its own.
@@ -58,6 +62,14 @@ export interface LoopReport {
   exposed: { held: number; free: number };
   ms: number[];
   breaks: { step: number; typed: number; cut: number; unexplained: number };
+  // A digest of each request's prompt as forwarded, so two runs of one tape
+  // (one straight through, one with a restart in it) can be compared.
+  sent: string[];
+  // The same, with every stand-in swapped back to its value. Which stand-in a
+  // value gets depends on what else the proxy saw first (a subagent beside a
+  // session takes some), so two runs that both keep their own stand-ins
+  // stable can still differ in them; with the values back they cannot.
+  real: string[];
 }
 
 // One proxy for every session in this process, as a live one serves every
@@ -69,6 +81,9 @@ let shared: ((request: Request) => Promise<Response>) | undefined;
 // session= field the proxy writes.
 const journal: string[] = [];
 const runs = new Map<string, Run>();
+// By session and model, for a subagent that shares its parent's session.
+const routes = new Map<string, Run>();
+const routeKey = (session: string, model: unknown) => `${session}\0${String(model)}`;
 const SESSION_HEADERS = ["x-claude-code-session-id", "session_id", "x-opencode-session"];
 const caughtKinds = new Map<Kind, boolean>();
 
@@ -126,12 +141,20 @@ interface Source {
 // The harness, its fault decisions drawn as step drew them before there were
 // tapes, so a seed found then still finds the same thing; each request it
 // sends is kept, so the session can be replayed.
+// Starving scans is opt-in, and drawn from a stream of its own, so turning it
+// on leaves every other choice of a seed as it was.
+const STARVE = process.env.ITHILDIN_SIM_STARVE === "1";
+
 class Live implements Source {
   readonly tape: Sent[] = [];
+  private load: Random;
   constructor(
     readonly agent: Agent,
     private random: Random,
-  ) {}
+    seed = 0,
+  ) {
+    this.load = new Random(seed * 977 + 5);
+  }
   get format(): Format {
     return this.agent.format;
   }
@@ -145,10 +168,12 @@ class Live implements Source {
     const { faults } = this.agent;
     const fail = faults.upstreamErrors && this.random.chance(0.05);
     const retry = faults.retry && this.random.chance(0.05);
+    const starve = STARVE && this.load.chance(0.15) ? this.load.int(1, 40) : 0;
     const sent: Sent = {
       ...this.agent.outgoing(),
       ...(fail ? { fail } : {}),
       ...(retry ? { retry } : {}),
+      ...(starve ? { starve } : {}),
     };
     this.tape.push(sent);
     return sent;
@@ -232,9 +257,12 @@ class Corpus implements Source {
 }
 
 class Replay implements Source {
-  private at = 0;
   private ids = 0;
-  constructor(private tape: Tape) {}
+  constructor(
+    private tape: Tape,
+    private at = 0,
+    private upto = tape.requests.length,
+  ) {}
   get format(): Format {
     return this.tape.format;
   }
@@ -245,7 +273,7 @@ class Replay implements Source {
     return this.tape.canaries;
   }
   get left(): number {
-    return this.tape.requests.length - this.at;
+    return this.upto - this.at;
   }
   next(): Sent {
     return this.tape.requests[this.at++]!;
@@ -261,6 +289,8 @@ class Replay implements Source {
 
 interface Run {
   report: LoopReport;
+  // A subagent beside a replay: its prompts are not the one asked for.
+  quiet?: boolean;
   source: Source;
   random: Random;
   cache: Cache;
@@ -311,22 +341,38 @@ function learnStandIns(run: Run, raw: Fields, seen: Seen): void {
     if (!run.sentTokens.has(t) && !run.sentTokens.has(t.replace(/[.]+$/, ""))) run.standIns.add(t);
 }
 
+// One request's prompt as forwarded, kept when asked for (trial.ts --dump-at).
+// `real`: with its stand-ins swapped back, as LoopReport.real has it.
+export const sentPrompts: { keep?: number; text?: string; real?: boolean } = {};
+
+// The proxy as the real one starts: the engine loaded from the state
+// directory, then a self-test through the handler before any request.
+let booted: Promise<unknown> | undefined;
+
 function proxy(): (request: Request) => Promise<Response> {
   if (!shared) {
     process.stderr.write = ((chunk: unknown) =>
       journal.push(String(chunk)) > 0) as typeof process.stderr.write;
     initEngine();
     shared = createHandler(DEFAULT_ROUTES, upstream);
+    booted = shared(new Request("http://127.0.0.1/selftest"));
   }
   return shared;
 }
 
-export function makeRun(format: Format, seed: number): Run {
+// A subagent shares a parent's session and machine (`session`, `world`) and
+// differs in model and system prompt, so it is a thread of its own.
+export function makeRun(
+  format: Format,
+  seed: number,
+  options: { session?: string; world?: number; subagent?: boolean } = {},
+): Run {
   const random = new Random(seed);
   const faults = faultsFor(random);
-  const world = makeWorld(seed);
-  const agent = new Agent(format, world, random, faults, `${format[0]}${seed}`);
-  return start(new Live(agent, random), seed, random, faults);
+  const world = makeWorld(options.world ?? seed);
+  const session = options.session ?? `${format[0]}${seed}`;
+  const agent = new Agent(format, world, random, faults, session, options.subagent);
+  return start(new Live(agent, random, seed), seed, random, faults);
 }
 
 function start(source: Source, seed: number, random: Random, faults?: Faults): Run {
@@ -341,6 +387,8 @@ function start(source: Source, seed: number, random: Random, faults?: Faults): R
       exposed: { held: 0, free: 0 },
       ms: [],
       breaks: { step: 0, typed: 0, cut: 0, unexplained: 0 },
+      sent: [],
+      real: [],
     },
     source,
     random,
@@ -362,10 +410,10 @@ function start(source: Source, seed: number, random: Random, faults?: Faults): R
 const upstream = (async (url: string, init: RequestInit) => {
   const headers = new Headers(init.headers);
   const id = SESSION_HEADERS.map((name) => headers.get(name)).find(Boolean);
-  const run = runs.get(String(id));
-  if (!run) return Response.json({ error: `no session ${String(id)}` }, { status: 400 });
   const text = String(init.body ?? "");
   const body = JSON.parse(text) as Fields;
+  const run = routes.get(routeKey(String(id), body.model)) ?? runs.get(String(id));
+  if (!run) return Response.json({ error: `no session ${String(id)}` }, { status: 400 });
   run.forwarded.push({ url: String(url), headers, text, body });
   if (run.failNext) {
     run.failNext = false;
@@ -432,6 +480,8 @@ function prefix(run: Run, raw: Fields, seen: Seen, lines: string[]): void {
 }
 
 async function send(run: Run, path: string, headers: Record<string, string>, raw: Fields) {
+  await booted;
+  routes.set(routeKey(run.source.session, raw.model), run);
   const from = journal.length;
   const start = performance.now();
   const request = new Request(`http://127.0.0.1/${path}`, {
@@ -443,14 +493,27 @@ async function send(run: Run, path: string, headers: Record<string, string>, raw
   const text = await response.text();
   const ms = performance.now() - start;
   const mine = ` session=${run.source.session} `;
-  const lines = journal.slice(from).filter((line) => line.includes(mine));
+  const model = typeof raw.model === "string" ? ` model=${raw.model.replace(/\s/g, "_")}` : "";
+  const lines = journal
+    .slice(from)
+    .filter((line) => line.includes(mine) && (!model || line.includes(`${model} `)));
   return { status: response.status, text, lines, ms };
 }
 
 // One request of the session, its retries, and every check on it.
 export async function step(run: Run): Promise<void> {
+  const next = run.source.next();
+  const budget = currentScanBudgetMs();
+  if (next.starve) setScanBudgetMs(next.starve);
+  try {
+    await sendAll(run, next);
+  } finally {
+    if (next.starve) setScanBudgetMs(budget);
+  }
+}
+
+async function sendAll(run: Run, { path, headers, body: raw, fail, retry }: Sent): Promise<void> {
   const { source, report } = run;
-  const { path, headers, body: raw, fail, retry } = source.next();
   const before = run.forwarded.length;
   if (fail) {
     run.failNext = true;
@@ -476,6 +539,12 @@ export async function step(run: Run): Promise<void> {
       find(run, "retry", "the same request forwarded different bytes");
   }
   const seen = copies.at(-1)!;
+  const text = prompt(seen);
+  const real = swapText(text, new Set()).text;
+  report.sent.push(createHash("sha1").update(text).digest("base64"));
+  report.real.push(createHash("sha1").update(real).digest("base64"));
+  if (!run.quiet && sentPrompts.keep === report.requests)
+    sentPrompts.text = sentPrompts.real ? real : text;
   for (const v of valid(source.format, seen.body)) find(run, "valid", v.detail);
   prefix(run, raw, seen, sent.lines);
   learnStandIns(run, raw, seen);
@@ -564,12 +633,45 @@ export async function recordCorpus(
 // A tape sent through the proxy, every check on every request. The fake
 // model still answers each, so what comes back to the harness is checked too;
 // the next request is the tape's, not one built from the answer.
-export async function replayTape(tape: Tape): Promise<LoopReport> {
-  const source = new Replay(tape);
+// `from` and `upto` replay part of it: the part before a restart, or after.
+// Request numbers in findings stay the tape's.
+export async function replayTape(
+  tape: Tape,
+  from = 0,
+  upto = tape.requests.length,
+  beside?: Subagent,
+): Promise<LoopReport> {
+  const source = new Replay(tape, from, upto);
   const run = start(source, tape.seed, new Random(tape.seed));
+  run.report.requests = from;
+  const child = beside
+    ? makeRun(tape.format, beside.seed, {
+        session: source.session,
+        world: tape.seed,
+        subagent: true,
+      })
+    : undefined;
+  if (child) child.quiet = true;
   while (source.left > 0) {
-    await step(run);
-    run.report.requests++;
+    const at = run.report.requests;
+    const alongside = child && at >= beside!.at && at < beside!.at + beside!.count;
+    await Promise.all([
+      step(run).then(() => run.report.requests++),
+      alongside ? step(child).then(() => child.report.requests++) : undefined,
+    ]);
   }
+  if (child)
+    run.report.subagent = { requests: child.report.requests, sent: child.forwarded.length };
+  if (child)
+    for (const f of child.report.findings)
+      run.report.findings.push({ ...f, check: `subagent ${f.check}` });
   return run.report;
+}
+
+// A subagent stepping beside a replayed session: its seed, the parent's
+// request it starts at, and how many requests it sends.
+export interface Subagent {
+  seed: number;
+  at: number;
+  count: number;
 }

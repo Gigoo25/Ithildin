@@ -28,6 +28,9 @@ export interface Sent {
   fail?: boolean;
   // The harness sends this one twice.
   retry?: boolean;
+  // The proxy scans this one with only this many milliseconds, as on a loaded
+  // machine (ITHILDIN_SIM_STARVE): a scan that runs out withholds the rest.
+  starve?: number;
   // What the provider answered, in its own form. Replayed, the provider gives
   // the same answer, so the proxy records and swaps back what it did the first
   // time; without it every turn of the model's would be news to the proxy.
