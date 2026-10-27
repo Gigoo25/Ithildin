@@ -60,6 +60,12 @@ export interface Entry {
   status?: number;
   // What the proxy did about a leak: it sent the request or refused it.
   action?: "flag" | "block";
+  // Where a leak starts in the string `where` names, and how long it is: the
+  // dashboard reads it out of the body it keeps, so the string is not sent.
+  start?: number;
+  length?: number;
+  // A blocked call's id.
+  call?: string;
   count?: number;
   text?: string;
 }
@@ -97,6 +103,7 @@ export interface Stats {
   // Requests whose cached prefix broke (prefix.ts), by whose doing, and the
   // latest one's place.
   cacheBreaksAgent: number;
+  cacheBreaksRedaction: number;
   cacheBreaksShaping: number;
   lastBreak?: string;
   blocked: number;
@@ -117,6 +124,7 @@ export interface Tally {
   usageCacheWrite: number;
   usageOutput: number;
   cacheBreaksAgent: number;
+  cacheBreaksRedaction: number;
   cacheBreaksShaping: number;
 }
 
@@ -350,6 +358,7 @@ function newStats(startedAt: number): Stats {
     usageCacheWrite: 0,
     usageOutput: 0,
     cacheBreaksAgent: 0,
+    cacheBreaksRedaction: 0,
     cacheBreaksShaping: 0,
     blocked: 0,
     refused: 0,
@@ -368,11 +377,18 @@ function newTally(): Tally {
     usageCacheWrite: 0,
     usageOutput: 0,
     cacheBreaksAgent: 0,
+    cacheBreaksRedaction: 0,
     cacheBreaksShaping: 0,
   };
 }
 
 type Masked = Extract<ActivityEvent, { type: "masked" }>;
+
+const BREAK_FIELDS = {
+  agent: "cacheBreaksAgent",
+  redaction: "cacheBreaksRedaction",
+  shaping: "cacheBreaksShaping",
+} as const;
 
 export class EventLog {
   private readonly entries: Entry[] = [];
@@ -448,7 +464,11 @@ export class EventLog {
       return false;
     }
     this.stats.blocked++;
-    this.add(context, { type: "blocked", text: event.notice });
+    this.add(context, {
+      type: "blocked",
+      text: event.notice,
+      ...(event.call ? { call: event.call } : {}),
+    });
     return false;
   }
 
@@ -498,11 +518,10 @@ export class EventLog {
 
   // A request whose cached prefix broke, named by where and in which session.
   cacheBreak(context: Context, found: Break): void {
-    if (found.cause === "agent") this.stats.cacheBreaksAgent++;
-    else this.stats.cacheBreaksShaping++;
+    const field = BREAK_FIELDS[found.cause];
+    this.stats[field]++;
     const tally = this.tally(context);
-    if (tally && found.cause === "agent") tally.cacheBreaksAgent++;
-    else if (tally) tally.cacheBreaksShaping++;
+    if (tally) tally[field]++;
     const where = context.sessionName ? ` in ${context.sessionName}` : "";
     this.stats.lastBreak = `${found.at}${where} (${found.cause})`;
   }
@@ -511,7 +530,7 @@ export class EventLog {
   // The preview is of the watched string, cut like any real value.
   leaked(
     context: Context,
-    hit: { term: string; source: "watch" | "known"; where: string },
+    hit: { term: string; source: "watch" | "known"; where: string; start?: number },
     action: "flag" | "block",
   ): boolean {
     // A digest, so the watched string itself is not kept.
@@ -527,6 +546,9 @@ export class EventLog {
       preview: preview(hit.term),
       where: hit.where,
       action,
+      ...(hit.start !== undefined && hit.start >= 0
+        ? { start: hit.start, length: hit.term.length }
+        : {}),
     });
     return true;
   }

@@ -2022,7 +2022,7 @@ function swapToolName(name: string): string {
 type Swapped = { args: unknown; swapped: number; blocked?: boolean };
 
 function block(callId: string | undefined, notice: string): Swapped {
-  reportActivity({ type: "blocked", notice });
+  reportActivity({ type: "blocked", notice, ...(callId ? { call: callId } : {}) });
   if (callId) {
     if (blockedCalls.size > MAX_REMEMBERED) blockedCalls.clear();
     blockedCalls.set(callId, notice);

@@ -50,6 +50,7 @@ describe("event log", () => {
     log.usage({ input: 1, cacheRead: 1, cacheWrite: 1, output: 1 });
     log.cacheBreak(context, { at: "message 4", cause: "agent" });
     log.cacheBreak(context, { at: "message 9", cause: "shaping" });
+    log.cacheBreak(context, { at: "system", cause: "redaction" });
     const { tallies, stats } = log.snapshot(0);
     expect(Object.keys(tallies)).toEqual(["01234567"]);
     expect(tallies["01234567"]).toEqual({
@@ -62,8 +63,10 @@ describe("event log", () => {
       usageCacheWrite: 10,
       usageOutput: 5,
       cacheBreaksAgent: 1,
+      cacheBreaksRedaction: 1,
       cacheBreaksShaping: 1,
     });
+    expect(stats.cacheBreaksRedaction).toBe(1);
     expect(stats.shapedMasked).toBe(6);
     expect(stats.usageInput).toBe(11);
     for (let n = 0; n <= TALLIES_MAX; n++)
@@ -732,7 +735,17 @@ describe("dashboard", () => {
       "system in claude 1 (agent)",
     ]);
     // A leak, clicked where it is named, leads to its flag, its turn opened.
-    const leak = { id: 2, time: 2, type: "leaked", session: "s1", where: "messages[0].content" };
+    const leak = {
+      id: 2,
+      time: 2,
+      type: "leaked",
+      session: "s1",
+      turn: 1,
+      where: "messages[0].content",
+      start: 0,
+      length: 5,
+      preview: "f\u2026 (5)",
+    };
     answers["/dashboard/activity?since=1"] = {
       ...(answers["/dashboard/activity?since=0"] as object),
       entries: [leak],
@@ -743,7 +756,9 @@ describe("dashboard", () => {
     expect(alert.title).toBe("Go to the message it was found in");
     let reached: Fake | undefined;
     byId("viewer").querySelector = (selector: string) => {
-      expect(selector).toBe('.flag[data-at="0"]');
+      // No real marks in this fake DOM: it falls back to the flag.
+      if (selector === 'mark[data-leak="2"]') return null;
+      expect(selector).toBe('.flag[data-leak="2"]');
       const turn = byId("viewer").children.find((each) =>
         each.children.some((child) => child.className === "flag"),
       )!;
@@ -753,7 +768,10 @@ describe("dashboard", () => {
       return flag;
     };
     await (byId("verdict").onclick as () => Promise<void>)();
-    expect(reached!.textContent).toStartWith("\u26a0 Leak: Watched string found at messages[0]");
+    expect(reached!.textContent).toBe(
+      "\u26a0 Leak: \u201cfirst\u201d \u00b7 A watched string, f\u2026 (5 characters), found " +
+        "unmasked at messages[0].content (request sent anyway)",
+    );
     const flagged = byId("viewer").children.find((turn) => turn.children.includes(reached!))!;
     expect(flagged.children[0]!.textContent).toBe("Turn 1");
     expect(flagged.open).toBe(true);
@@ -826,24 +844,62 @@ describe("dashboard", () => {
         DASHBOARD_HTML.slice(DASHBOARD_HTML.indexOf(`function ${name}(`)),
       )![0];
     const feed = [
-      { type: "leaked", session: "s1", where: "messages[4].content", time: 3 },
+      {
+        id: 3,
+        type: "leaked",
+        session: "s1",
+        where: "messages[4].content",
+        start: 6,
+        length: 8,
+        preview: "a\u2026lab (8)",
+        time: 3,
+      },
       { type: "swapped", session: "s1", standIn: "x", time: 2 },
       { type: "masked", session: "s1", standIn: "x", time: 1, sessionName: "claude 1" },
       { type: "refused", time: 4 },
       { type: "leaked", session: "s1", where: "path", time: 5 },
     ];
+    const names = ["noteEntries", "leaksFor", "placeOf", "valueAt", "turns", "leakDetail"];
     const run = new Function(
       "feed",
-      `const OTHER = ''; const sessions = new Map(); ${pick("noteEntries")} ${pick("leaksFor")}` +
-        ` ${pick("leakIndex")}` +
-        " noteEntries(feed); return { sessions: [...sessions.values()], leaks: leaksFor('s1') };",
-    ) as (feed: unknown[]) => { sessions: unknown[]; leaks: Map<number, unknown[]> };
-    const { sessions, leaks } = run(feed);
+      "body",
+      `const OTHER = ''; const sessions = new Map(); ${names.map(pick).join(" ")}` +
+        " function plural(n, word) { return n + ' ' + word + (n === 1 ? '' : 's'); }" +
+        " noteEntries(feed);" +
+        " return { sessions: [...sessions.values()], found: leaksFor('s1', body)," +
+        " placeOf };",
+    ) as (
+      feed: unknown[],
+      body: unknown,
+    ) => {
+      sessions: unknown[];
+      found: { leaks: Map<number, Array<{ text: string }>>; wants: Array<{ text: string }> };
+      placeOf: (entry: unknown, body: unknown) => { at: number; text?: string } | undefined;
+    };
+    const messages = [0, 1, 2, 3].map(() => ({ role: "user", content: "x" }));
+    const body = { messages: [...messages, { role: "user", content: "about ACME-LAB now" }] };
+    const { sessions, found, placeOf } = run(feed, body);
     expect(sessions).toEqual([
       { id: "s1", name: "s1", last: 5, masked: 1, swapped: 1, held: 0, leaked: 2 },
       { id: "", name: "Other traffic", last: 4, masked: 0, swapped: 0, held: 1, leaked: 0 },
     ]);
-    expect([...leaks.keys()]).toEqual([4]);
+    // Read out of the body by its place, and marked red wherever it stands.
+    expect([...found.leaks.keys()]).toEqual([4]);
+    expect(found.leaks.get(4)![0]!.text).toBe("ACME-LAB");
+    expect(found.wants.map((want) => want.text)).toEqual(["ACME-LAB"]);
+    // A later body with something else there is not taken for it.
+    const moved = { messages: [...messages, { role: "user", content: "about nothing at all" }] };
+    expect(placeOf(feed[0], moved)).toBeUndefined();
+    expect(placeOf(feed[0], { messages })).toBeUndefined();
+    // A blocked call is found by its id, in whichever message holds it.
+    const call = {
+      role: "assistant",
+      content: [{ type: "tool_use", id: "c1", name: "W", input: { a: 1 } }],
+    };
+    const blocked = { type: "blocked", call: "c1" };
+    expect(placeOf(blocked, { messages: [...messages, call] })).toEqual({ at: 4 });
+    expect(placeOf(blocked, { messages })).toBeUndefined();
+    expect(placeOf({ type: "blocked" }, { messages })).toBeUndefined();
   });
 
   it("puts earlier turns' thinking before the rest of each turn, unless it is there", () => {
@@ -1101,7 +1157,7 @@ describe("dashboard", () => {
   it("says a session's shaping and cache in a line", () => {
     const pick = (name: string) =>
       new RegExp(`function ${name}[\\s\\S]*?\\n\\}`).exec(DASHBOARD_HTML)![0];
-    const source = ["count", "bytes", "tallyLine"].map(pick).join("\n");
+    const source = ["count", "bytes", "breakCounts", "tallyLine"].map(pick).join("\n");
     const tallyLine = new Function(`${source}; return tallyLine;`)() as (
       tally?: Record<string, number>,
     ) => string;
@@ -1132,6 +1188,9 @@ describe("dashboard", () => {
     expect(line).not.toContain("compacted");
     expect(tallyLine({ ...none, usageCacheRead: 1, cacheBreaksShaping: 2 })).toBe(
       "Cache: 100% read of 1 prompt tokens, 0 agent / 2 shaping breaks",
+    );
+    expect(tallyLine({ ...none, usageCacheRead: 1, cacheBreaksRedaction: 1 })).toBe(
+      "Cache: 100% read of 1 prompt tokens, 0 agent / 1 redaction / 0 shaping breaks",
     );
   });
 

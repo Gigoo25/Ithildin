@@ -102,7 +102,7 @@ describe("finding watched strings", () => {
   it("finds a term whatever its case, and says where in the body", () => {
     const hits = found(["Acme-Lab"], messages([{ type: "text", text: "see the ACME-LAB wiki" }]));
     expect(hits).toEqual([
-      { value: "Acme-Lab", source: "watch", where: "messages[0].content[0].text" },
+      { value: "Acme-Lab", source: "watch", where: "messages[0].content[0].text", start: 8 },
     ]);
   });
 

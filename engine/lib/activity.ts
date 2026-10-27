@@ -10,8 +10,9 @@ export type ActivityEvent =
   // A stand-in the model wrote was given its real value back. `tool` is the
   // tool the call names, or REPLY_TEXT for reply text.
   | { type: "swapped"; ruleId: string; value: string; standIn: string; tool: string }
-  // A guard stopped a tool call. The notice names no values.
-  | { type: "blocked"; notice: string };
+  // A guard stopped a tool call. The notice names no values. `call` is the
+  // call's id, for the dashboard to find it in the conversation.
+  | { type: "blocked"; notice: string; call?: string };
 
 // The tool name swap-back is given for reply text, which is no tool call.
 export const REPLY_TEXT = "reply-text";

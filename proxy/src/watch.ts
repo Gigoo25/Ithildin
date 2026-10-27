@@ -70,6 +70,9 @@ export interface WatchHit {
   source: "watch" | "known";
   // `messages[3].content[0].text`, `path` or `query`.
   where: string;
+  // Where in that string it starts, so the dashboard can show it in the body
+  // it already has, without being sent the string.
+  start: number;
 }
 
 function empty(problems: string[] = []): WatchPolicy {
@@ -230,17 +233,21 @@ interface Scan {
   counts: Map<string, number>;
 }
 
-function note(scan: Scan, source: WatchHit["source"], value: string, where: string): void {
-  const key = `${source}\0${value}`;
+function note(scan: Scan, found: Omit<WatchHit, "start">, text: string): void {
+  const key = `${found.source}\0${found.value}`;
   const count = scan.counts.get(key) ?? 0;
   if (count >= LOCATIONS_PER_TERM || scan.hits.length >= HITS_MAX) return;
   scan.counts.set(key, count + 1);
-  scan.hits.push({ value, source, where });
+  // Terms match in any case, so the place is found the same way.
+  const start = text.toLowerCase().indexOf(found.value.toLowerCase());
+  scan.hits.push({ ...found, start });
 }
 
 function scanText(scan: Scan, text: string, where: string): void {
-  for (const term of termsIn(text, scan.terms)) note(scan, "watch", term, where);
-  for (const literal of new Set(knownIn(text, scan.index))) note(scan, "known", literal, where);
+  for (const value of termsIn(text, scan.terms))
+    note(scan, { value, source: "watch", where }, text);
+  for (const value of new Set(knownIn(text, scan.index)))
+    note(scan, { value, source: "known", where }, text);
 }
 
 function walk(scan: Scan, value: unknown, path: string, depth: number): void {

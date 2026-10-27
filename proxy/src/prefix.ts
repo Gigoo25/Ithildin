@@ -10,9 +10,13 @@
 // So every main request is reduced to one digest per part, in the order the
 // provider caches them (model, tools, system, thinking settings, then each
 // message), and compared with the previous request of the same conversation.
-// The first part that differs is where the prefix broke. It is checked twice,
-// on the request as it arrived and as it was forwarded: a break only in the
-// forwarded copy was shaping's (a cutoff step), anything else the agent's.
+// The first part that differs is where the prefix broke. It is checked three
+// times: on the request as the agent sent it, as redaction left it, and as it
+// was forwarded. A break the agent's copy already had is the agent's; one that
+// appears with redaction is redaction's (a value learned late, masked in text
+// that went out in clear before); one only in the forwarded copy is shaping's
+// (a cutoff step). Comparing redacted copies alone counted redaction's breaks
+// as the agent's.
 //
 // Only digests are kept, never text, and only for the most recent
 // conversations.
@@ -23,7 +27,7 @@ import type { Format } from "./redact.ts";
 export interface Break {
   // "system", "tools", "message 12": the first part that changed.
   at: string;
-  cause: "agent" | "shaping";
+  cause: "agent" | "redaction" | "shaping";
 }
 
 const CONVERSATIONS_MAX = 256;
@@ -112,18 +116,28 @@ export function threadOf(
 }
 
 export class PrefixWatch {
-  private readonly last = new Map<string, { arrived: string[]; sent: string[] }>();
+  private readonly last = new Map<string, { raw: string[]; arrived: string[]; sent: string[] }>();
   constructor() {}
 
-  // The break in this request's prefix, if there was one. `sent` is the body
-  // as forwarded, the same object as `arrived` when nothing changed it. A
+  // The break in this request's prefix, if there was one. `raw` is the body
+  // as the agent sent it, `arrived` as redaction left it, `sent` as
+  // forwarded; each is the same object as the one before when nothing
+  // changed it. A
   // Responses request that names a previous response carries only the new
   // items, so it has no prefix to compare.
-  check(format: Format, session: string, arrived: Fields, sent: Fields): Break | undefined {
+  check(
+    format: Format,
+    session: string,
+    { raw, arrived, sent }: { raw: Fields; arrived: Fields; sent: Fields },
+  ): Break | undefined {
     if (format === "responses" && arrived.previous_response_id) return;
     const key = keyOf(format, session, arrived);
     const seen = new WeakMap<object, string>();
-    const now = { arrived: parts(format, arrived, seen), sent: parts(format, sent, seen) };
+    const now = {
+      raw: parts(format, raw, seen),
+      arrived: parts(format, arrived, seen),
+      sent: parts(format, sent, seen),
+    };
     const before = this.last.get(key);
     this.last.delete(key);
     this.last.set(key, now);
@@ -131,8 +145,11 @@ export class PrefixWatch {
     if (!before) return;
     const sentAt = firstChange(before.sent, now.sent);
     if (sentAt === undefined) return;
-    const arrivedAt = firstChange(before.arrived, now.arrived);
-    const cause = arrivedAt !== undefined && arrivedAt <= sentAt ? "agent" : "shaping";
+    const by = (list: "raw" | "arrived") => {
+      const at = firstChange(before[list], now[list]);
+      return at !== undefined && at <= sentAt;
+    };
+    const cause = by("raw") ? "agent" : by("arrived") ? "redaction" : "shaping";
     return { at: label(sentAt), cause };
   }
 }

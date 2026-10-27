@@ -519,6 +519,9 @@ export type Scanned = {
   body: string | undefined;
   // The body as parsed JSON, for the watch list (watch.ts).
   object: unknown;
+  // The body as the agent sent it, to tell redaction's prefix breaks from the
+  // agent's (prefix.ts). Redaction builds a new body; this one is untouched.
+  raw?: unknown;
   tags: Set<string>;
   hits: number;
   counts: Counts | undefined;
@@ -665,6 +668,7 @@ function redactBody(
     return {
       body: JSON.stringify(redacted.body),
       object: redacted.body,
+      raw: parsed,
       tags: redacted.tags,
       hits: redacted.hits,
       counts: conversation ? redacted.counts : undefined,
@@ -1000,7 +1004,9 @@ function noteBreak(
 ): string {
   const arrived = scanned.object as Record<string, unknown> | undefined;
   if (!format || !context.session || !isMainRequest(arrived)) return "";
-  const found = stores.prefixes.check(format, context.session, arrived!, shaped.object ?? arrived!);
+  const raw = (scanned.raw ?? arrived) as Record<string, unknown>;
+  const sent = shaped.object ?? arrived!;
+  const found = stores.prefixes.check(format, context.session, { raw, arrived: arrived!, sent });
   if (!found) return "";
   stores.events.cacheBreak(context, found);
   return ` cachebreak=${found.at.replace(" ", "")}(${found.cause})`;
@@ -1358,7 +1364,8 @@ function watchOutgoing(
   const places = [...new Set(hits.map((hit) => hit.where))].join(", ");
   for (const hit of hits) {
     const action = hit.source === "watch" ? policy.action : "flag";
-    events.leaked(context, { term: hit.value, source: hit.source, where: hit.where }, action);
+    const { value: term, source, where, start } = hit;
+    events.leaked(context, { term, source, where, start }, action);
   }
   log(`watch list: ${hits.length} hit(s) in the request to ${context.route} (${places})`);
   const blocking = policy.action === "block" && hits.some((hit) => hit.source === "watch");

@@ -211,6 +211,10 @@ export const DASHBOARD_HTML = `<!doctype html>
     background: var(--alert_bg); color: var(--alert); outline-color: var(--alert);
   }
   mark[data-type=found] { background: var(--find_bg); outline-color: var(--find); }
+  /* What leaked, read out of the body the page already shows. */
+  mark[data-type=leak], .key.leak mark {
+    background: var(--alert); color: var(--bg); outline-color: var(--alert);
+  }
   @keyframes pulse {
     from { box-shadow: 0 0 0 5px var(--masked_bg); }
     to { box-shadow: 0 0 0 0 transparent; }
@@ -245,7 +249,7 @@ export const DASHBOARD_HTML = `<!doctype html>
     from { box-shadow: 0 0 0 5px var(--alert_bg); }
     to { box-shadow: 0 0 0 0 transparent; }
   }
-  .flag.at { animation: pulse_alert 1.4s ease-out; }
+  .flag.at, .step.at, mark[data-type=leak].at { animation: pulse_alert 1.4s ease-out; }
   .empty { color: var(--dim); padding: 24px 0; text-align: center; }
   .empty b { display: block; color: var(--silver); font-size: 15px; }
 
@@ -455,6 +459,9 @@ let deferred = false;
 // Whether the head lists every alert, or the newest alone.
 let alertsOpen = false;
 let shownId = 0;
+// The request shown instead of the session's newest: the one a leak or a
+// blocked call is in, until the reader picks a session or asks for the newest.
+let pinned = 0;
 let view = 'chat';
 // Each session's shaping and cache figures, by the proxy's tally.
 let tallies = {};
@@ -503,10 +510,12 @@ function firstSentence(text) {
 
 function leakDetail(entry) {
   const outcome = entry.action === 'block' ? 'request refused' : 'request sent anyway';
-  const what = entry.kind === 'known'
-    ? 'A value the proxy always masks was found unmasked'
-    : 'Watched string found';
-  return what + ' at ' + entry.where + ' (' + outcome + ')';
+  const what = entry.kind === 'known' ? 'A value the proxy always masks' : 'A watched string';
+  // The preview is cut like any real value: its first and last characters.
+  const shape = /^(.*) \\((\\d+)\\)$/.exec(entry.preview || '');
+  const shown = shape ? ', ' + shape[1] + ' (' + plural(Number(shape[2]), 'character') + '),'
+    : '';
+  return what + shown + ' found unmasked at ' + entry.where + ' (' + outcome + ')';
 }
 
 // What happened, per session, from the events as they come.
@@ -562,7 +571,7 @@ function renderSessions() {
       leaks.title = plural(known.leaked, 'leak') + '; click to go to the latest';
       leaks.addEventListener('click', (event) => {
         event.stopPropagation();
-        goToLeak(feed.find((entry) => entry.type === 'leaked' &&
+        goTo(feed.find((entry) => entry.type === 'leaked' &&
           (entry.session || OTHER) === known.id));
       });
       button.appendChild(leaks);
@@ -576,8 +585,9 @@ function renderSessions() {
   if (rows.length === 0) byId('sessions').appendChild(byClass('p', 'count', 'None yet'));
 }
 
-function choose(id) {
+function choose(id, pin = 0) {
   chosen = id;
+  pinned = pin;
   shownId = 0;
   // Turn numbers count a session's own turns, so another session's folds
   // are not this one's.
@@ -587,29 +597,99 @@ function choose(id) {
   return showSession();
 }
 
-// A leak, wherever it is named, leads to the message it was found in: its
-// session picked, the conversation shown unfiltered, its turn opened and its
-// flag in view. A leak outside the messages has no flag, so it ends at the
-// session.
-async function goToLeak(entry) {
+// A leak or a blocked call, wherever it is named, leads to where it is: the
+// request holding it shown, its turn opened, the place marked, pulsing and in
+// view. The newest request often does not hold it: a subagent's or a side
+// request's leak, a call blocked before the history was cleared. So the kept
+// requests are searched, the one it happened in first. Found in none, it ends
+// at the session.
+async function goTo(entry) {
   if (!entry) return;
   const id = entry.session || OTHER;
   view = 'chat';
   only = undefined;
+  const holding = await requestHolding(entry, id);
   if (id === chosen) {
+    pinned = holding;
     shownId = 0;
     await showSession();
   } else {
-    await choose(id);
+    await choose(id, holding);
   }
-  const flag = byId('viewer').querySelector('.flag[data-at="' + leakIndex(entry) + '"]');
-  if (!flag) return;
-  for (let open = flag.closest('details'); open; open = open.parentElement.closest('details'))
+  const spot = spotOf(byId('viewer'), entry);
+  if (!spot) return;
+  for (let open = spot.closest('details'); open; open = open.parentElement.closest('details'))
     open.open = true;
-  flag.classList.remove('at');
-  void flag.offsetWidth;
-  flag.classList.add('at');
-  flag.scrollIntoView({ block: 'center' });
+  spot.classList.remove('at');
+  void spot.offsetWidth;
+  spot.classList.add('at');
+  spot.scrollIntoView({ block: 'center' });
+}
+
+// The node to show for an entry: a leak's own mark, else its flag; a blocked
+// call's card.
+function spotOf(viewer, entry) {
+  if (entry.type === 'blocked')
+    return entry.call ? viewer.querySelector('[data-call="' + entry.call + '"]') : null;
+  return viewer.querySelector('mark[data-leak="' + entry.id + '"]') ||
+    viewer.querySelector('.flag[data-leak="' + entry.id + '"]');
+}
+
+// The kept request of the session that holds an entry's place, or 0.
+async function requestHolding(entry, id) {
+  if (id === OTHER) return 0;
+  const list = await (await fetch('${REQUESTS_PATH}', { cache: 'no-store' })).json();
+  const own = (list.requests || []).filter((request) => request.session === id);
+  const order = new Set([...own.filter((request) => request.turn === entry.turn),
+    ...own.filter((request) => request.main), ...own]);
+  for (const request of order) {
+    if (!(await load(request.id))) continue;
+    const body = parsed(texts.get(request.id));
+    if (body && placeOf(entry, body)) return request.id;
+  }
+  return 0;
+}
+
+function parsed(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+}
+
+// Where a leak or a blocked call is in a request body: the message it is in
+// (-1 for the system prompt and tools), and for a leak the text that leaked,
+// read out of the body by the place the proxy gave. Checked against the
+// preview's first and last characters, so a later body that holds something
+// else there is not taken for it. undefined: not in this body.
+function placeOf(entry, body) {
+  if (entry.type === 'blocked') {
+    if (!entry.call) return undefined;
+    const item = turns(body).find((each) => each.id === entry.call);
+    return item && { at: item.at };
+  }
+  const value = valueAt(body, entry.where || '');
+  if (typeof value !== 'string') return undefined;
+  const at = /^(?:messages|input)\\[(\\d+)\\]/.exec(entry.where);
+  const place = at ? Number(at[1]) : -1;
+  if (entry.start === undefined) return { at: place, text: '' };
+  const text = value.slice(entry.start, entry.start + entry.length);
+  const shape = /^(.*)\\u2026(.*) \\((\\d+)\\)$/.exec(entry.preview || '');
+  const fits = text.length === entry.length && (!shape ||
+    (text.toLowerCase().startsWith(shape[1].toLowerCase()) &&
+      text.toLowerCase().endsWith(shape[2].toLowerCase())));
+  return fits ? { at: place, text } : undefined;
+}
+
+// The value at a place like messages[3].content[0].text.
+function valueAt(body, where) {
+  let value = body;
+  for (const [, index, key] of where.matchAll(/\\[(\\d+)\\]|([^.[\\]]+)/g)) {
+    if (!value || typeof value !== 'object') return undefined;
+    value = value[index !== undefined ? Number(index) : key];
+  }
+  return value;
 }
 
 // The picked session's name, what happened in it, and what went wrong.
@@ -648,10 +728,11 @@ function renderHead(known) {
       ? firstSentence(entry.text) : entry.text;
     line.append(byClass('span', 'when', clock(entry.time)), byClass('b', '', what), text);
     if (entry.text) line.title = entry.text;
-    if (entry.type === 'leaked') {
+    if (entry.type === 'leaked' || (entry.type === 'blocked' && entry.call)) {
       line.classList.add('go');
-      line.title = 'Go to the message it was found in';
-      line.addEventListener('click', () => goToLeak(entry));
+      line.title = entry.type === 'leaked' ? 'Go to the message it was found in'
+        : 'Go to the call it stopped';
+      line.addEventListener('click', () => goTo(entry));
     }
     return line;
   });
@@ -686,10 +767,8 @@ function tallyLine(tally) {
   const read = tally.usageCacheRead;
   const prompt = tally.usageInput + read + tally.usageCacheWrite;
   if (prompt > 0) {
-    const breaks = tally.cacheBreaksAgent + tally.cacheBreaksShaping;
     said.push('Cache: ' + Math.round((read / prompt) * 100) + '% read of ' + count(prompt) +
-      ' prompt tokens, ' + (breaks === 0 ? 'no breaks' : tally.cacheBreaksAgent +
-      ' agent / ' + tally.cacheBreaksShaping + ' shaping breaks'));
+      ' prompt tokens, ' + breakCounts(tally, ' / ', ' breaks'));
   }
   return said.join(' \\u00b7 ');
 }
@@ -739,7 +818,8 @@ async function showSession() {
     return;
   }
   const own = list.requests.filter((request) => request.session === known.id);
-  const sent = own.find((request) => request.main) || own[0];
+  const sent = (pinned && own.find((request) => request.id === pinned)) ||
+    own.find((request) => request.main) || own[0];
   if (!sent) {
     viewer.classList.add('raw');
     viewer.textContent = 'No request of this session is kept any more.';
@@ -750,29 +830,45 @@ async function showSession() {
   deferred = shownId !== 0 && Boolean(selected && !selected.isCollapsed &&
     viewer.contains(selected.anchorNode));
   if (deferred) return;
-  if (!texts.has(sent.id)) {
-    const [response, masked] = await Promise.all([
-      fetch('${REQUEST_PATH}?id=' + sent.id, { cache: 'no-store' }),
-      fetch('${REQUEST_PATH}?masked&id=' + sent.id, { cache: 'no-store' }),
-    ]);
-    if (!response.ok) return;
-    texts.set(sent.id, await response.text());
-    values.set(sent.id, masked.ok ? await masked.json() : []);
-    // The page may show an older turn again, so the last few are kept.
-    while (texts.size > TEXTS_MAX) {
-      const oldest = texts.keys().next().value;
-      texts.delete(oldest);
-      values.delete(oldest);
-      replies.delete(oldest);
-      earlier.delete(oldest);
-    }
-  }
+  if (!(await load(sent.id))) return;
   if (chosen !== known.id) return;
   const first = shownId === 0;
   shownId = sent.id;
-  byId('view_note').textContent = 'As sent ' + clock(sent.time) +
+  const note = byId('view_note');
+  note.textContent = 'As sent ' + clock(sent.time) +
     (sent.cut ? ', cut at ${BODY_BYTES_MAX / 1048576} MiB of ' + bytes(sent.size) : '');
+  if (sent.id === pinned) {
+    // Held on the request a leak or block is in: newer turns do not move it.
+    const newest = byClass('button', 'small more', 'show newest');
+    newest.addEventListener('click', () => {
+      pinned = 0;
+      shownId = 0;
+      showSession();
+    });
+    note.append(', where it was found ', newest);
+  }
   showText(first ? 'top' : 'keep');
+}
+
+// A kept request's text and masked values, fetched once. false: not kept.
+async function load(id) {
+  if (texts.has(id)) return true;
+  const [response, masked] = await Promise.all([
+    fetch('${REQUEST_PATH}?id=' + id, { cache: 'no-store' }),
+    fetch('${REQUEST_PATH}?masked&id=' + id, { cache: 'no-store' }),
+  ]);
+  if (!response.ok) return false;
+  texts.set(id, await response.text());
+  values.set(id, masked.ok ? await masked.json() : []);
+  // The page may show an older turn again, so the last few are kept.
+  while (texts.size > TEXTS_MAX) {
+    const oldest = texts.keys().next().value;
+    texts.delete(oldest);
+    values.delete(oldest);
+    replies.delete(oldest);
+    earlier.delete(oldest);
+  }
+  return true;
 }
 
 function duration(ms) {
@@ -881,19 +977,29 @@ function renderStats(stats, watch) {
 
 // What the replies said the prompts cost, and how often a conversation's
 // cached prefix broke. The share read from the cache is the figure that says
+// Prefix breaks by whose doing; redaction's only when there were any, as a
+// value learned late is the rare case.
+function breakCounts(counts, joiner, tail) {
+  const agent = counts.cacheBreaksAgent || 0;
+  const redaction = counts.cacheBreaksRedaction || 0;
+  const shaping = counts.cacheBreaksShaping || 0;
+  if (agent + redaction + shaping === 0) return tail ? 'no breaks' : 'none';
+  const said = [agent + ' agent'];
+  if (redaction) said.push(redaction + ' redaction');
+  said.push(shaping + ' shaping');
+  return said.join(joiner) + tail;
+}
+
 // whether shaping's savings are real: a result already cached costs a tenth.
 function renderCache(stats) {
   const read = stats.usageCacheRead || 0;
   const write = stats.usageCacheWrite || 0;
   const prompt = (stats.usageInput || 0) + read + write;
-  const agent = stats.cacheBreaksAgent || 0;
-  const shaping = stats.cacheBreaksShaping || 0;
   figures('num_cache', [
     ['Read from cache', prompt ? Math.round((read / prompt) * 100) + '%' : 'no usage yet'],
     ['Prompt tokens', count(prompt) + ' (' + count(write) + ' written)'],
     ['Output tokens', count(stats.usageOutput || 0)],
-    ['Prefix breaks', agent + shaping === 0 ? 'none' :
-      agent + ' agent, ' + shaping + ' shaping'],
+    ['Prefix breaks', breakCounts(stats, ', ', '')],
     ['Last break', stats.lastBreak || 'none'],
   ]);
 }
@@ -1149,7 +1255,7 @@ function standInsIn(text, wants) {
   const index = wantIndex(wants);
   const found = [];
   const fits = (want, at) =>
-    text.startsWith(want.text, at) && standsWhole(text, at, want.text.length);
+    text.startsWith(want.text, at) && (want.loose || standsWhole(text, at, want.text.length));
   for (let at = 0; at < text.length; at++) {
     let hit = (index.byPrefix.get(text.slice(at, at + PREFIX_CHARS)) || [])
       .find((want) => fits(want, at));
@@ -1157,7 +1263,7 @@ function standInsIn(text, wants) {
       if (fits(want, at) && want.text.length > (hit ? hit.text.length : 0)) hit = want;
     if (!hit) continue;
     const end = at + hit.text.length;
-    found.push({ at, end, type: hit.type, title: hit.title, back: hit.back });
+    found.push({ at, end, type: hit.type, title: hit.title, back: hit.back, leak: hit.leak });
     at = end - 1;
   }
   return found;
@@ -1194,6 +1300,7 @@ function markInto(node, text, wants, needle) {
     mark.dataset.type = hit.type;
     if (hit.title) mark.title = hit.title;
     if (hit.back) mark.dataset.back = '';
+    if (hit.leak) mark.dataset.leak = String(hit.leak);
     node.appendChild(mark);
     from = hit.end;
   }
@@ -1349,16 +1456,24 @@ function conversation(items, marks, needle, leaks) {
     repeats.push(0);
   };
   let matches = 0;
-  const put = (item, shown) => {
+  // also: the messages of a result shown under its call, whose leaks are
+  // flagged on the call's card.
+  const put = (item, shown, also = []) => {
     if (!turn) start('Before the first prompt');
-    const found = leaks.get(item.at);
     const group = [];
-    if (found && !flagged.has(item.at)) {
-      flagged.add(item.at);
-      const flag = byClass('div', 'flag', '\\u26a0 Leak: ' + leakDetail(found[0]));
-      flag.dataset.at = String(item.at);
-      group.push(flag);
+    for (const at of [item.at, ...also]) {
+      const found = leaks.get(at);
+      if (!found || flagged.has(at)) continue;
+      flagged.add(at);
+      for (const { entry, text } of found) {
+        const what = text ? '\\u201c' + oneLine(text, 80) + '\\u201d \\u00b7 ' : '';
+        const flag = byClass('div', 'flag', '\\u26a0 Leak: ' + what + leakDetail(entry));
+        flag.dataset.at = String(at);
+        flag.dataset.leak = String(entry.id);
+        group.push(flag);
+      }
     }
+    if (item.id) shown.node.dataset.call = item.id;
     group.push(shown.node);
     groups[groups.length - 1].push(group);
     matches += shown.matches;
@@ -1418,7 +1533,7 @@ function conversation(items, marks, needle, leaks) {
       const shown = fold('out', '\\u23bf  ' + first + more, body, plain, needle);
       matches += shown.matches;
       box.append(head, shown.node);
-      put(item, { node: box, matches: 0, fold: shown.fold });
+      put(item, { node: box, matches: 0, fold: shown.fold }, result ? [result.at] : []);
       calls[calls.length - 1]++;
     } else if (item.kind === 'tool_result') {
       if (paired.has(item)) continue;
@@ -1527,23 +1642,22 @@ function marksFor(id, masked = []) {
   return { plain: plain.concat(heldMarks), model: model.concat(heldMarks) };
 }
 
-// Where each leak of a session was found, by the message it is in.
-function leaksFor(id) {
+// Each leak of a session this body holds, by the message it is in, with the
+// text that leaked; and that text as marks, red wherever it stands.
+function leaksFor(id, body) {
   const leaks = new Map();
+  const wants = [];
   for (const entry of feed) {
     if (entry.type !== 'leaked' || (entry.session || OTHER) !== id) continue;
-    const index = leakIndex(entry);
-    if (index === undefined) continue;
-    if (!leaks.has(index)) leaks.set(index, []);
-    leaks.get(index).push(entry);
+    const place = body && placeOf(entry, body);
+    if (!place) continue;
+    if (!leaks.has(place.at)) leaks.set(place.at, []);
+    leaks.get(place.at).push({ entry, text: place.text });
+    if (place.text)
+      wants.push({ text: place.text, type: 'leak', loose: true, leak: entry.id,
+        title: 'Leaked: ' + leakDetail(entry) });
   }
-  return leaks;
-}
-
-// The message a leak was found in, from where the scan says it was.
-function leakIndex(entry) {
-  const at = /^(?:messages|input)\\[(\\d+)\\]/.exec(entry.where || '');
-  return at ? Number(at[1]) : undefined;
+  return { leaks, wants };
 }
 
 // What a stand-in stands for: the kind of value, the rule that matched it,
@@ -1576,6 +1690,7 @@ const MARK_KINDS = [
   ['masked', 'mark[data-type=masked]', 'masked'],
   ['back', 'mark[data-back]', 'swapped back'],
   ['held', 'mark[data-type=held]', 'held back'],
+  ['leak', 'mark[data-type=leak]', 'leaked'],
 ];
 
 // A key to the marks, with counts. In the conversation a click narrows it to
@@ -1682,7 +1797,9 @@ function showText(place) {
   if (raw) {
     matches = markInto(viewer, text, marks.plain, needle);
   } else {
-    const shown = conversation(items, marks, needle, leaksFor(chosen));
+    const { leaks, wants } = leaksFor(chosen, body);
+    const all = { plain: marks.plain.concat(wants), model: marks.model.concat(wants) };
+    const shown = conversation(items, all, needle, leaks);
     viewer.append(...shown.nodes);
     matches = shown.matches;
     for (const body of viewer.querySelectorAll('.body[data-key]'))
@@ -1718,7 +1835,7 @@ resizable(byId('grip'));
 // Off the list, it takes the newest-first order again.
 byId('sessions').addEventListener('mouseleave', renderSessions);
 byId('verdict').addEventListener('click', () =>
-  goToLeak(feed.find((entry) => entry.type === 'leaked')));
+  goTo(feed.find((entry) => entry.type === 'leaked')));
 offerNotifications();
 poll();
 setInterval(poll, POLL_MS);

@@ -2,6 +2,7 @@ import { describe, expect, it, spyOn } from "bun:test";
 import { markerText } from "./mark.ts";
 import { cacheTrail, createHandler, DEFAULT_ROUTES } from "./server.ts";
 import { PrefixWatch } from "./prefix.ts";
+import type { Format } from "./redact.ts";
 import { merge, usageOf, usageOfEvent, usageText, writtenText, type Usage } from "./usage.ts";
 
 describe("usage from a reply", () => {
@@ -200,6 +201,18 @@ describe("cache trail", () => {
   });
 });
 
+// The agent's copy defaults to the redacted one: most cases have no redaction.
+function check(
+  watch: PrefixWatch,
+  format: Format,
+  session: string,
+  arrived: Record<string, unknown>,
+  sent: Record<string, unknown>,
+  raw = arrived,
+) {
+  return watch.check(format, session, { raw, arrived, sent });
+}
+
 describe("prefix breaks", () => {
   const turn = (text: string) => ({ role: "user", content: text });
   const body = (system: string, ...texts: string[]) => ({
@@ -212,9 +225,9 @@ describe("prefix breaks", () => {
   it("says nothing when a conversation only appends", () => {
     const watch = new PrefixWatch();
     const first = body("sys", "a");
-    expect(watch.check("anthropic", "s", first, first)).toBeUndefined();
+    expect(check(watch, "anthropic", "s", first, first)).toBeUndefined();
     const next = body("sys", "a", "b", "c");
-    expect(watch.check("anthropic", "s", next, next)).toBeUndefined();
+    expect(check(watch, "anthropic", "s", next, next)).toBeUndefined();
   });
 
   it("ignores the cache breakpoint moving to the newest message", () => {
@@ -223,9 +236,9 @@ describe("prefix breaks", () => {
       ...body("sys"),
       messages: [{ role: "user", content: "a", cache_control: { type: "ephemeral" } }],
     };
-    watch.check("anthropic", "s", marked, marked);
+    check(watch, "anthropic", "s", marked, marked);
     const moved = { ...body("sys"), messages: [turn("a"), turn("b")] };
-    expect(watch.check("anthropic", "s", moved, moved)).toBeUndefined();
+    expect(check(watch, "anthropic", "s", moved, moved)).toBeUndefined();
   });
 
   it("reads a string and the one text block that carried the breakpoint as the same", () => {
@@ -234,16 +247,16 @@ describe("prefix breaks", () => {
     const watch = new PrefixWatch();
     const block = [{ type: "text", text: "a", cache_control: { type: "ephemeral" } }];
     const marked = { ...body("sys"), messages: [{ role: "user", content: block }] };
-    watch.check("anthropic", "s", marked, marked);
+    check(watch, "anthropic", "s", marked, marked);
     const moved = { ...body("sys"), messages: [turn("a"), turn("b")] };
-    expect(watch.check("anthropic", "s", moved, moved)).toBeUndefined();
+    expect(check(watch, "anthropic", "s", moved, moved)).toBeUndefined();
   });
 
   it("names the agent when what arrived changed, at the first part that did", () => {
     const watch = new PrefixWatch();
-    watch.check("anthropic", "s", body("sys at 10:00", "a"), body("sys at 10:00", "a"));
+    check(watch, "anthropic", "s", body("sys at 10:00", "a"), body("sys at 10:00", "a"));
     const changed = body("sys at 10:05", "a", "b");
-    expect(watch.check("anthropic", "s", changed, changed)).toEqual({
+    expect(check(watch, "anthropic", "s", changed, changed)).toEqual({
       at: "system",
       cause: "agent",
     });
@@ -252,45 +265,59 @@ describe("prefix breaks", () => {
   it("names shaping when only the forwarded copy changed", () => {
     const watch = new PrefixWatch();
     const arrived = body("sys", "a", "big result", "c");
-    watch.check("anthropic", "s", arrived, arrived);
+    check(watch, "anthropic", "s", arrived, arrived);
     const next = body("sys", "a", "big result", "c", "d");
     const shaped = body("sys", "a", "[masked]", "c", "d");
-    expect(watch.check("anthropic", "s", next, shaped)).toEqual({
+    expect(check(watch, "anthropic", "s", next, shaped)).toEqual({
       at: "message 2",
       cause: "shaping",
+    });
+  });
+
+  it("names redaction when only the redacted copy changed what went before", () => {
+    // A value learned from a later tool call, masked in a system prompt that
+    // went out in clear: the agent sent the same system both times.
+    const watch = new PrefixWatch();
+    const raw = body("owner a@acme-corp.example", "a");
+    check(watch, "anthropic", "s", raw, raw);
+    const next = body("owner a@acme-corp.example", "a", "b");
+    const masked = body("owner a@ozel-corp.example", "a", "b");
+    expect(check(watch, "anthropic", "s", masked, masked, next)).toEqual({
+      at: "system",
+      cause: "redaction",
     });
   });
 
   it("counts a history that got shorter as a break where it ends", () => {
     const watch = new PrefixWatch();
     const long = body("sys", "a", "b", "c");
-    watch.check("anthropic", "s", long, long);
+    check(watch, "anthropic", "s", long, long);
     const short = body("sys", "a");
-    expect(watch.check("anthropic", "s", short, short)?.at).toBe("message 2");
+    expect(check(watch, "anthropic", "s", short, short)?.at).toBe("message 2");
   });
 
   it("keeps a subagent apart from its parent, and skips a chained Responses request", () => {
     const watch = new PrefixWatch();
     const parent = body("sys", "parent task");
-    watch.check("anthropic", "s", parent, parent);
+    check(watch, "anthropic", "s", parent, parent);
     const child = body("other sys", "child task");
-    expect(watch.check("anthropic", "s", child, child)).toBeUndefined();
+    expect(check(watch, "anthropic", "s", child, child)).toBeUndefined();
     const chained = { model: "m", previous_response_id: "r1", input: [turn("x")] };
-    expect(watch.check("responses", "s", chained, chained)).toBeUndefined();
-    expect(watch.check("responses", "s", chained, chained)).toBeUndefined();
+    expect(check(watch, "responses", "s", chained, chained)).toBeUndefined();
+    expect(check(watch, "responses", "s", chained, chained)).toBeUndefined();
   });
 
   it("forgets the oldest conversation past its limit", () => {
     const watch = new PrefixWatch();
     const first = body("sys", "first");
-    watch.check("anthropic", "s0", first, first);
+    check(watch, "anthropic", "s0", first, first);
     for (let i = 1; i <= 256; i++) {
       const other = body("sys", `conversation ${i}`);
-      watch.check("anthropic", `s${i}`, other, other);
+      check(watch, "anthropic", `s${i}`, other, other);
     }
     // Forgotten, so a changed system prompt reads as a first request.
     const changed = body("changed", "first");
-    expect(watch.check("anthropic", "s0", changed, changed)).toBeUndefined();
+    expect(check(watch, "anthropic", "s0", changed, changed)).toBeUndefined();
   });
 });
 
