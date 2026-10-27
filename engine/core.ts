@@ -16,7 +16,7 @@
 // restores `__ITHILDIN_HOST_1__`. This scanner is a defense in depth, not a
 // confidentiality boundary.
 
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import {
@@ -315,6 +315,9 @@ export function clearCaches(): void {
   lastScanCacheRevision = -1;
   aliasBook?.clear();
   SWAPPED.clear();
+  SWAPPED_SINCE.clear();
+  TEXT_SEEN.clear();
+  swapGeneration = 0;
   recall = undefined;
 }
 
@@ -1142,12 +1145,47 @@ const SWAPPED_MAX = 2_000;
 // catch a name in prose without the memory.
 export function rememberSwapped(value: string, ruleId: string): void {
   if (value.length < 3 || /^\p{L}+$/u.test(value) || SWAPPED.has(value)) return;
-  keepSwapped(value, ruleId);
+  keepSwapped(value, ruleId, ++swapGeneration);
 }
 
-function keepSwapped(value: string, ruleId: string): void {
-  if (SWAPPED.size >= SWAPPED_MAX) SWAPPED.delete(SWAPPED.keys().next().value!);
+// A value learned now is masked only in text first seen from now on. Text that
+// went out before held it in clear, so the provider has it already: masking it
+// there hid nothing and rewrote the cached prefix from that point. A system
+// prompt naming an address whose domain a tool call later swapped in was
+// rewritten whole on the next request (a simulated session found it:
+// proxy/sim). Text seen again is the same text, so it keeps the bytes it was
+// sent with; new text that echoes the value is masked as before.
+//
+// Generations, not times: each value learned is the next one, and a text is
+// stamped with the generation it was first seen in. A value recalled from
+// before a restart is generation 0, as it was masked in the history before
+// the restart and has to be again.
+const SWAPPED_SINCE = new Map<string, number>();
+const TEXT_SEEN = new Map<string, number>();
+const TEXT_SEEN_MAX = 200_000;
+let swapGeneration = 0;
+
+function keepSwapped(value: string, ruleId: string, since: number): void {
+  if (SWAPPED.size >= SWAPPED_MAX && !SWAPPED.has(value)) {
+    const oldest = SWAPPED.keys().next().value!;
+    SWAPPED.delete(oldest);
+    SWAPPED_SINCE.delete(oldest);
+  }
   SWAPPED.set(value, ruleId);
+  // A value already known keeps its generation: recalling one learned in this
+  // process must not reach back into the text from before it.
+  if (!SWAPPED_SINCE.has(value)) SWAPPED_SINCE.set(value, since);
+}
+
+// The generation a text was first seen in. A short text is its own key; a
+// long one goes by digest, so the map does not hold every body again.
+function firstSeen(text: string): number {
+  const key = text.length <= 64 ? text : createHash("sha1").update(text).digest("base64");
+  const known = TEXT_SEEN.get(key);
+  if (known !== undefined) return known;
+  if (TEXT_SEEN.size >= TEXT_SEEN_MAX) TEXT_SEEN.delete(TEXT_SEEN.keys().next().value!);
+  TEXT_SEEN.set(key, swapGeneration);
+  return swapGeneration;
 }
 
 // The memory across a restart (lib/recall.ts): loaded at start, written with
@@ -1240,11 +1278,13 @@ export function respelledFindings(text: string, raw: LocatedFinding[]): LocatedF
 }
 
 function swappedFindings(text: string): LocatedFinding[] {
-  if (recall) for (const { value, ruleId } of recall.find(text)) keepSwapped(value, ruleId);
+  const seen = firstSeen(text);
+  if (recall) for (const { value, ruleId } of recall.find(text)) keepSwapped(value, ruleId, 0);
   if (SWAPPED.size === 0) return [];
   const lower = text.toLowerCase();
   const out: LocatedFinding[] = [];
   for (const [value, ruleId] of SWAPPED) {
+    if ((SWAPPED_SINCE.get(value) ?? 0) > seen) continue;
     const needle = value.toLowerCase();
     for (let at = lower.indexOf(needle); at >= 0; at = lower.indexOf(needle, at + needle.length)) {
       // Whole tokens only: a swapped "acme" must not rewrite "acmeville".

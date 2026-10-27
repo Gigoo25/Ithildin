@@ -455,4 +455,21 @@ describe("values swapped into tool calls", () => {
     expect(redactText("see Zqxandra here").text).toBe("see Zqxandra here");
     clearCaches();
   });
+
+  it("leaves text sent before a value was learned as it was sent", () => {
+    // The provider already has it: masking it now would only rewrite the
+    // cached prefix from that text on.
+    clearCaches();
+    const [value, rule] = values[1]!;
+    const earlier = `Staging runs on ${value}.`;
+    const sent = redactText(earlier).text;
+    rememberSwapped(value, rule);
+    expect(redactText(earlier).text).toBe(sent);
+    // New text echoing it is masked, and stays masked when sent again.
+    const later = `ping ${value} again`;
+    const masked = redactText(later).text;
+    expect(masked).not.toContain(value);
+    expect(redactText(later).text).toBe(masked);
+    clearCaches();
+  });
 });
