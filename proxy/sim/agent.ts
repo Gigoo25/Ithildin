@@ -128,48 +128,7 @@ export class Agent {
   }
 
   private pushModel(turn: Turn): void {
-    if (this.format === "anthropic") {
-      const content: Fields[] = [
-        { type: "thinking", thinking: turn.thinking, signature: `sig-${turn.thinking.length}` },
-      ];
-      if (turn.text) content.push({ type: "text", text: turn.text });
-      for (const c of turn.calls)
-        content.push({ type: "tool_use", id: c.id, name: c.name, input: c.input });
-      this.list.push({ role: "assistant", content });
-      return;
-    }
-    if (this.format === "responses") {
-      this.list.push({
-        type: "reasoning",
-        summary: [{ type: "summary_text", text: turn.thinking }],
-        encrypted_content: Buffer.from(turn.thinking).toString("base64"),
-      });
-      if (turn.text)
-        this.list.push({
-          type: "message",
-          role: "assistant",
-          content: [{ type: "output_text", text: turn.text }],
-        });
-      for (const c of turn.calls)
-        this.list.push({
-          type: "function_call",
-          call_id: c.id,
-          name: c.name,
-          arguments: JSON.stringify(c.input),
-        });
-      return;
-    }
-    const calls = turn.calls.map((c) => ({
-      id: c.id,
-      type: "function",
-      function: { name: c.name, arguments: JSON.stringify(c.input) },
-    }));
-    this.list.push({
-      role: "assistant",
-      content: turn.text,
-      reasoning_content: turn.thinking,
-      ...(calls.length > 0 ? { tool_calls: calls } : {}),
-    });
+    this.list.push(...modelItems(this.format, turn));
   }
 
   private pushResults(turn: Turn, outputs: string[]): void {
@@ -308,4 +267,52 @@ export class Agent {
       messages,
     };
   }
+}
+
+// A model turn as the harness keeps it in its list, in each format.
+export function modelItems(format: Format, turn: Turn): Fields[] {
+  const out: Fields[] = [];
+  if (format === "anthropic") {
+    const content: Fields[] = [
+      { type: "thinking", thinking: turn.thinking, signature: `sig-${turn.thinking.length}` },
+    ];
+    if (turn.text) content.push({ type: "text", text: turn.text });
+    for (const c of turn.calls)
+      content.push({ type: "tool_use", id: c.id, name: c.name, input: c.input });
+    out.push({ role: "assistant", content });
+    return out;
+  }
+  if (format === "responses") {
+    out.push({
+      type: "reasoning",
+      summary: [{ type: "summary_text", text: turn.thinking }],
+      encrypted_content: Buffer.from(turn.thinking).toString("base64"),
+    });
+    if (turn.text)
+      out.push({
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: turn.text }],
+      });
+    for (const c of turn.calls)
+      out.push({
+        type: "function_call",
+        call_id: c.id,
+        name: c.name,
+        arguments: JSON.stringify(c.input),
+      });
+    return out;
+  }
+  const calls = turn.calls.map((c) => ({
+    id: c.id,
+    type: "function",
+    function: { name: c.name, arguments: JSON.stringify(c.input) },
+  }));
+  out.push({
+    role: "assistant",
+    content: turn.text,
+    reasoning_content: turn.thinking,
+    ...(calls.length > 0 ? { tool_calls: calls } : {}),
+  });
+  return out;
 }

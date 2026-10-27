@@ -146,6 +146,11 @@ function make(kind: Kind, random: Random): Canary {
   }
 }
 
+// How a finding names a canary: enough to tell which, not enough to be one.
+export function preview(c: Canary): string {
+  return c.core.length > 24 ? `${c.core.slice(0, 12)}…${c.core.slice(-6)}` : c.core;
+}
+
 export function canary(random: Random, kind = random.pick(KINDS)): Canary {
   return make(kind, random);
 }
