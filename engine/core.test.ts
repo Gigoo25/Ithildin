@@ -442,6 +442,19 @@ describe("redactText", () => {
     }
   });
 
+  // A full stop after an address kept the email rule from matching, so only
+  // the user part was swapped and the real domain went upstream.
+  it("masks an email's domain when a sentence ends on it", () => {
+    const address = "jane.doe@fakecorp.io";
+    const domain = address.slice(address.indexOf("@") + 1);
+    for (const tail of [".", ".\n", ". Next", "..."]) {
+      const text = redactText(`write to ${address}${tail}`).text;
+      expect(text).not.toContain(domain);
+      expect(text).toEndWith(tail);
+      expect(redactText(text).text).toBe(text);
+    }
+  });
+
   it("names other PII kinds PII when aliases are tokens", () => {
     const style = process.env.ITHILDIN_ALIASES;
     try {
