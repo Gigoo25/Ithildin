@@ -1026,11 +1026,17 @@ export class AliasBook {
         out = this.label(labelForRule(ruleId, customLabel), value);
     }
     this.record(out, value, ruleId);
-    // A composite's pieces resolve on their own too (the user of an email).
+    // A composite's pieces resolve on their own too (the user of an email),
+    // and are known as stand-ins when sent back: an email's domain
+    // (db.corp.internal) is itself a host a rule would mask again.
     if (kind === "email" || kind === "user-at-host") {
       const at = value.lastIndexOf("@");
-      if (at > 0)
+      if (at > 0) {
         this.record(this.user(value.slice(0, at)), value.slice(0, at), "pii-swapback-user");
+        const host = value.slice(at + 1).toLowerCase();
+        const standIn = out.slice(out.lastIndexOf("@") + 1);
+        if (standIn !== host) this.record(standIn, host, "pii-swapback-host");
+      }
     }
     return out;
   }

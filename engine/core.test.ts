@@ -455,6 +455,17 @@ describe("redactText", () => {
     }
   });
 
+  // A model quotes its stand-ins back in reasoning, which the proxy forwards
+  // as it came: masked again, the harness got the stand-in, not the value.
+  it("leaves its own stand-ins at an internal host as they are", () => {
+    const email = redactText("quillbram7@db.nethersmoke.internal").text;
+    expect(redactText(email).text).toBe(email);
+    const url = redactText("postgres://app:Xy7pQ2rTk9Lm@db.nethersmoke.internal:5432/app").text;
+    const [, password, host] = /:\/\/[^:]+:([^@]+)@([^:]+):/.exec(url)!;
+    for (const quoted of [`${password}@${host}`, `${password}@${host}.`])
+      expect(redactText(quoted).text).toBe(quoted);
+  });
+
   it("names other PII kinds PII when aliases are tokens", () => {
     const style = process.env.ITHILDIN_ALIASES;
     try {
@@ -482,8 +493,9 @@ describe("bounded caches", () => {
   afterAll(() => setCacheBudgets());
 
   it("evicts the oldest synthetic values past the budget", () => {
-    // Each value and its synthetic cost 2 × (10 + 10) bytes: room for three.
-    setCacheBudgets({ synthetic: 120 });
+    // Each value, its synthetic and its changed seven-letter word cost
+    // 2 × (10 + 10 + 7) bytes: room for three.
+    setCacheBudgets({ synthetic: 170 });
     const values = ["k1-AAAAAAA", "k2-BBBBBBB", "k3-CCCCCCC", "k4-DDDDDDD"];
     const first = values.map((value) => syntheticValue(value));
     expect(isSyntheticValue(first[0]!)).toBe(false);

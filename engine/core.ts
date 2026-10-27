@@ -112,11 +112,35 @@ const SYNTHETIC_VALUES_MAX_BYTES = 8_000_000;
 let syntheticValuesMaxBytes = SYNTHETIC_VALUES_MAX_BYTES;
 let syntheticValuesBytes = 0;
 const TOKEN_COUNTERS = new Map<string, number>();
+// The changed words of a secret's stand-in, each its own output: a model
+// quotes a URL's password alone, before an @ and a host, and a user or email
+// rule would mask that again, so the harness got the stand-in back. Kept and
+// evicted with the value they came from; counted, as two values can share one.
+const SYNTHETIC_PIECES = new Map<string, number>();
+const PIECES_OF = new Map<string, string[]>();
+const SYNTHETIC_PIECE_MIN = 6;
+
+function piecesOf(value: string[], synthetic: string[]): string[] {
+  const pieces: string[] = [];
+  let start = 0;
+  for (let i = 0; i <= synthetic.length; i++) {
+    if (i < synthetic.length && /[\p{L}\p{N}]/u.test(synthetic[i]!)) continue;
+    const piece = synthetic.slice(start, i).join("");
+    if (i - start >= SYNTHETIC_PIECE_MIN && piece !== value.slice(start, i).join(""))
+      pieces.push(piece);
+    start = i + 1;
+  }
+  return pieces;
+}
+
+function piecesBytes(pieces: string[]): number {
+  return pieces.reduce((sum, piece) => sum + piece.length * 2, 0);
+}
 
 // Callers return the cached synthetic on a hit, so a value is never stored twice.
-function storeSynthetic(value: string, synthetic: string): void {
+function storeSynthetic(value: string, synthetic: string, pieces: string[] = []): void {
   assert(!SYNTHETIC_VALUES.has(value), "synthetic value stored once");
-  const cost = (value.length + synthetic.length) * 2;
+  const cost = (value.length + synthetic.length) * 2 + piecesBytes(pieces);
   if (cost > syntheticValuesMaxBytes) return;
   while (syntheticValuesBytes + cost > syntheticValuesMaxBytes && SYNTHETIC_VALUES.size > 0) {
     const oldest = SYNTHETIC_VALUES.keys().next().value;
@@ -124,10 +148,21 @@ function storeSynthetic(value: string, synthetic: string): void {
     const oldValue = SYNTHETIC_VALUES.get(oldest);
     SYNTHETIC_VALUES.delete(oldest);
     if (oldValue !== undefined) SYNTHETIC_OUTPUTS.delete(oldValue);
-    syntheticValuesBytes -= (oldest.length + (oldValue?.length ?? 0)) * 2;
+    const oldPieces = PIECES_OF.get(oldest) ?? [];
+    PIECES_OF.delete(oldest);
+    for (const piece of oldPieces) {
+      const count = SYNTHETIC_PIECES.get(piece) ?? 1;
+      if (count > 1) SYNTHETIC_PIECES.set(piece, count - 1);
+      else SYNTHETIC_PIECES.delete(piece);
+    }
+    syntheticValuesBytes -= (oldest.length + (oldValue?.length ?? 0)) * 2 + piecesBytes(oldPieces);
   }
   SYNTHETIC_VALUES.set(value, synthetic);
   SYNTHETIC_OUTPUTS.add(synthetic);
+  if (pieces.length > 0) {
+    PIECES_OF.set(value, pieces);
+    for (const piece of pieces) SYNTHETIC_PIECES.set(piece, (SYNTHETIC_PIECES.get(piece) ?? 0) + 1);
+  }
   syntheticValuesBytes += cost;
   assert(syntheticValuesBytes <= syntheticValuesMaxBytes, "synthetic values within their bound");
 }
@@ -189,7 +224,7 @@ export function syntheticValue(value: string): string {
   // Punctuation-only credentials (or random short-value collisions) must not
   // pass through unchanged merely to preserve their shape.
   if (synthetic === value) return secretToken(value);
-  storeSynthetic(value, synthetic);
+  storeSynthetic(value, synthetic, piecesOf(chars, Array.from(synthetic)));
   return synthetic;
 }
 
@@ -226,8 +261,17 @@ function piiReplacement(ruleId: string, rawValue: string): string {
 }
 
 export function isSyntheticValue(value: string): boolean {
+  if (
+    SYNTHETIC_OUTPUTS.has(value) ||
+    SYNTHETIC_PIECES.has(value) ||
+    aliasBook?.isStandIn(value) === true ||
+    isAliasValue(value)
+  )
+    return true;
+  // Two outputs joined as an address: a password's stand-in at a host's.
+  const at = value.lastIndexOf("@");
   return (
-    SYNTHETIC_OUTPUTS.has(value) || aliasBook?.isStandIn(value) === true || isAliasValue(value)
+    at > 0 && isSyntheticValue(value.slice(0, at)) && isSyntheticValue(value.slice(at + 1))
   );
 }
 // Provider payload fields carrying authenticated ciphertext must remain byte-for-byte
@@ -315,6 +359,8 @@ export function clearCaches(): void {
   scanCacheBytes = 0;
   SYNTHETIC_VALUES.clear();
   SYNTHETIC_OUTPUTS.clear();
+  SYNTHETIC_PIECES.clear();
+  PIECES_OF.clear();
   syntheticValuesBytes = 0;
   TOKEN_COUNTERS.clear();
   clearWindowCache();
