@@ -116,9 +116,17 @@ function put(id: string, original: string | null): void {
 
 // `harness`: what the harness receives (and will send back); `original`:
 // what the provider sent.
+//
+// The first original kept for a form stays: two of the provider's outputs can
+// swap back to one harness form (a stand-in swapped back in one and written
+// as its value in the other), and a later record replacing the earlier one
+// changed what an older turn in history was sent as, rewriting the cache from
+// there on. Either original is the provider's own text, so the first serves.
 export function recordOriginal(kind: ReplayKind, harness: string, original: string): void {
   const id = digest(kind, harness);
-  if (id !== undefined) put(id, harness === original ? null : original);
+  if (id === undefined) return;
+  if (originals.has(id)) touch(id);
+  else put(id, harness === original ? null : original);
 }
 
 // The provider's original for a stored turn, or undefined when unknown.

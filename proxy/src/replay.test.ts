@@ -60,17 +60,29 @@ it("skips a line torn by a crash and rewrites before appending", () => {
   expect(replayOriginal("text", "later")).toBe("its original");
 });
 
+it("keeps the first original of a form: a later one does not move an older turn", () => {
+  initReplay(key);
+  recordOriginal("text", "the same form", "what the provider wrote first");
+  recordOriginal("text", "the same form", "what it wrote later");
+  expect(replayOriginal("text", "the same form")).toBe("what the provider wrote first");
+  recordOriginal("args", "unchanged", "unchanged");
+  recordOriginal("args", "unchanged", "a later original");
+  expect(replayOriginal("args", "unchanged")).toBe("unchanged");
+});
+
 it("compacts once the journal holds far more than is live", () => {
   const file = fresh();
   initReplay(key, file);
   const big = "x".repeat(200_000);
-  for (let round = 0; round < 12; round++) {
-    recordOriginal("text", "harness", `${round}${big}`);
+  recordOriginal("text", "harness", big);
+  // Each hit appends a line; enough of them outgrow twice what is live.
+  for (let round = 0; round < 40; round++) {
+    for (let hit = 0; hit < 1_000; hit++) replayOriginal("text", "harness");
     saveReplay();
   }
   expect(readFileSync(file, "utf8").length).toBeLessThan(2 * big.length + 1024 * 1024);
   initReplay(key, file);
-  expect(replayOriginal("text", "harness")).toBe(`11${big}`);
+  expect(replayOriginal("text", "harness")).toBe(big);
 });
 
 it("marks compact when the journal cannot be written", () => {

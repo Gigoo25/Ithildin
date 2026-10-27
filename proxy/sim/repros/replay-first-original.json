@@ -1,0 +1,446 @@
+{
+ "format": "anthropic",
+ "session": "a221",
+ "seed": 221,
+ "target": {
+  "check": "prefix"
+ },
+ "canaries": [
+  {
+   "kind": "home",
+   "value": "753235373f752d283f3435313b7529283975373b283e3f22",
+   "core": "753235373f752d283f3435313b"
+  },
+  {
+   "kind": "email",
+   "value": "3529313b287435313b3c35281a31283f3636773935282a74393537",
+   "core": "3529313b287435313b3c35281a31283f3636773935282a74393537"
+  },
+  {
+   "kind": "email",
+   "value": "3336293f743633343e2b2c33292e1a373b283e3f22773935282a74393537",
+   "core": "3336293f743633343e2b2c33292e1a373b283e3f22773935282a74393537"
+  },
+  {
+   "kind": "ip",
+   "value": "6b6a746b6363746b6c6f746b6f62",
+   "core": "6b6a746b6363746b6c6f746b6f62"
+  },
+  {
+   "kind": "ip",
+   "value": "6b6a746b696f746b696e746b686b",
+   "core": "6b6a746b696f746b696e746b686b"
+  },
+  {
+   "kind": "db-url",
+   "value": "2a35292e3d283f296075753b2a2a603f3963333e2e1f3f1c2f0d350d6910153738202e1a3e3874203b342e28357433342e3f28343b36606f6e6968753b2a2a",
+   "core": "3f3963333e2e1f3f1c2f0d350d6910153738202e"
+  },
+  {
+   "kind": "openai-key",
+   "value": "2931772a28353077152f1f6b2e2a162c030f160a1c6a2d6e39146f141c1b2f0c2a331e2220006e310c1d29692b1e282b306c1b380e1c6869",
+   "core": "2931772a28353077152f1f6b2e2a162c030f160a1c6a2d6e39146f141c1b2f0c2a331e2220006e310c1d29692b1e282b306c1b380e1c6869"
+  },
+  {
+   "kind": "jwt",
+   "value": "3f231032381d3933153310130f20136b143313291334086f3919136c13312a020c191063743f23106f0f77390b3e11093017223b3262132f6d31336c180e342b0e050c116c6a680d15681205021b1120023410056c03103c3529056d13201e6f623809397438196a11096e220b0e1e6b621010156f10232e6b35141b1622372b681b683315081b0f17231c2d281c0b36",
+   "core": "3f231032381d3933153310130f20136b143313291334086f3919136c13312a020c191063743f23106f0f77390b3e11093017223b3262132f6d31336c180e342b0e050c116c6a680d15681205021b1120023410056c03103c3529056d13201e6f623809397438196a11096e220b0e1e6b621010156f10232e6b35141b1622372b681b683315081b0f17231c2d281c0b36"
+  },
+  {
+   "kind": "aws-key",
+   "value": "1b11131b1d0a11680e1c170b0a0c0302680e6c0f",
+   "core": "1b11131b1d0a11680e1c170b0a0c0302680e6c0f"
+  },
+  {
+   "kind": "email",
+   "value": "33343f29742c3b342e35343d3f283f341a2a3f36332c35773935282a74393537",
+   "core": "33343f29742c3b342e35343d3f283f341a2a3f36332c35773935282a74393537"
+  },
+  {
+   "kind": "password",
+   "value": "1e18050a1b09090d15081e673b7b322c282900312a6900203b080a2839036b29356d",
+   "core": "3b7b322c282900312a6900203b080a2839036b29356d"
+  },
+  {
+   "kind": "slack-token",
+   "value": "22352238776c6f63696d6d626c636a69776c6368626e6c6b6f69696b773f0f0b17390e6d396e001b280928320317100f13120a1c17",
+   "core": "22352238776c6f63696d6d626c636a69776c6368626e6c6b6f69696b773f0f0b17390e6d396e001b280928320317100f13120a1c17"
+  },
+  {
+   "kind": "private-key",
+   "value": "7777777777181f1d13147a150a1f140909127a0a08130c1b0e1f7a111f037777777777501d2d326f2300170f290d3f1f311e6f201f1f3020172a2b390d126b0c3d37022a0b693b3632683c3e0c22100b692c3f3b0a222a69153b3c0c233336163b133b15500a2e376336100e0d102e2f6c17682c0b1b093d752f6f373c2a0c29302a1c1b303c68190a2b3e6d1369022f2c300a133c1e622f203f3d2b3b682b37393263230e501e2c1e2a2e2c0b2b6a0c1534153d2e2b12161b3c2817080b186b152239222269316d621c2b71381335003e1d293c0b3e300e1818323236080b7108343d0c6e7150302f0e30316868326e0f122d6210333b142d39392030201e292a232918712d351f3b2e2d0e201716181b131b2813396a20081b1428082c096a6d1c336810396c500318171f6c342b1e02190e28161e3c232d32220a3b102d120013713e0a0f6d2836391d102a2d330a0f6c37360263682e1b03003e620b6902133f236a68296319501d323e3518713e3e371d1e00021c0b2a3f2a1d69360d6d3730710233097135122e3e0f0c283d1b1839383c2309283432130d371b2a037511336b303c2f316d3d5077777777771f141e7a150a1f140909127a0a08130c1b0e1f7a111f037777777777",
+   "core": "1e2c1e2a2e2c0b2b6a0c1534153d2e2b12161b3c2817080b186b152239222269316d621c2b71381335003e1d293c0b3e300e1818323236080b7108343d0c6e71"
+  },
+  {
+   "kind": "bearer",
+   "value": "1b2f2e32352833203b2e333534607a183f3b283f287a38193131302f306934141e6c1b623e3d00121e2e10106f282f0915111b293f2c033f6b03231b372e2a2b3d3b31360e32",
+   "core": "38193131302f306934141e6c1b623e3d00121e2e10106f282f0915111b293f2c033f6b03231b372e2a2b3d3b31360e32"
+  },
+  {
+   "kind": "ip",
+   "value": "6b6a746b6b6274696f746c6e",
+   "core": "6b6a746b6b6274696f746c6e"
+  },
+  {
+   "kind": "bearer",
+   "value": "1b2f2e32352833203b2e333534607a183f3b283f287a021b226a136a2e630a3c322f203d120a3f38083069091e2a182e69103639332e1e0e23126b6f32026d3c69352b0c353b",
+   "core": "021b226a136a2e630a3c322f203d120a3f38083069091e2a182e69103639332e1e0e23126b6f32026d3c69352b0c353b"
+  },
+  {
+   "kind": "host",
+   "value": "3b39373f773933627433342e3f28343b36",
+   "core": "3b39373f773933627433342e3f28343b36"
+  },
+  {
+   "kind": "email",
+   "value": "373b3633317437383f31331a31283f3636773935282a74393537",
+   "core": "373b3633317437383f31331a31283f3636773935282a74393537"
+  },
+  {
+   "kind": "card",
+   "value": "6e6d6d6d62626c6e69636c6c6c636c68",
+   "core": "6e6d6d6d62626c6e69636c6c6c636c68"
+  },
+  {
+   "kind": "email",
+   "value": "383b232f74323b362c3528293f341a3b39373f773935282a74393537",
+   "core": "383b232f74323b362c3528293f341a3b39373f773935282a74393537"
+  },
+  {
+   "kind": "card",
+   "value": "6e6e6c6e6f696f626b63686f6d6c6e63",
+   "core": "6e6e6c6e6f696f626b63686f6d6c6e63"
+  },
+  {
+   "kind": "email",
+   "value": "3336293f7437383f31331a31283f3636773935282a74393537",
+   "core": "3336293f7437383f31331a31283f3636773935282a74393537"
+  },
+  {
+   "kind": "card",
+   "value": "6e63696e6b626e6d636269626d69636a",
+   "core": "6e63696e6b626e6d636269626d69636a"
+  },
+  {
+   "kind": "email",
+   "value": "232f3133743633343e2b2c33292e1a31283f3636773935282a74393537",
+   "core": "232f3133743633343e2b2c33292e1a31283f3636773935282a74393537"
+  },
+  {
+   "kind": "card",
+   "value": "6e6f626c6969626963626d686e6c6869",
+   "core": "6e6f626c6969626963626d686e6c6869"
+  },
+  {
+   "kind": "email",
+   "value": "33343f29743633343e2b2c33292e1a203b342e2835773935282a74393537",
+   "core": "33343f29743633343e2b2c33292e1a203b342e2835773935282a74393537"
+  },
+  {
+   "kind": "card",
+   "value": "6e6c6c626f6e6f6c6f6f6e6c686a6268",
+   "core": "6e6c6c626f6e6f6c6f6f6e6c686a6268"
+  },
+  {
+   "kind": "aws-key",
+   "value": "1b11131b101c6908156c1f0a1b681f1d1011106f",
+   "core": "1b11131b101c6908156c1f0a1b681f1d1011106f"
+  },
+  {
+   "kind": "github-token",
+   "value": "3d322a05361c023563626a0c6c0e09202c3f38201300006c201e0d2e0c3c1e1c190f1e293c2a1e6f",
+   "core": "3d322a05361c023563626a0c6c0e09202c3f38201300006c201e0d2e0c3c1e1c190f1e293c2a1e6f"
+  },
+  {
+   "kind": "email",
+   "value": "3e3b283335742c3b342e35343d3f283f341a3b39373f773935282a74393537",
+   "core": "3e3b283335742c3b342e35343d3f283f341a3b39373f773935282a74393537"
+  },
+  {
+   "kind": "email",
+   "value": "3e3b283335742c3b342e35343d3f283f341a203b342e2835773935282a74393537",
+   "core": "3e3b283335742c3b342e35343d3f283f341a203b342e2835773935282a74393537"
+  },
+  {
+   "kind": "email",
+   "value": "373b363331742c3b342e35343d3f283f341a31283f3636773935282a74393537",
+   "core": "373b363331742c3b342e35343d3f283f341a31283f3636773935282a74393537"
+  },
+  {
+   "kind": "aws-key",
+   "value": "1b11131b0d161710126e1115021f146c6c181008",
+   "core": "1b11131b0d161710126e1115021f146c6c181008"
+  },
+  {
+   "kind": "github-token",
+   "value": "3d322a05193813351c13150e1e196938331828170b033e302f0917690d152e0e16121c0e133b0c6e",
+   "core": "3d322a05193813351c13150e1e196938331828170b033e302f0917690d152e0e16121c0e133b0c6e"
+  },
+  {
+   "kind": "email",
+   "value": "2e3f353e35283b743c3f28283b28351a203b342e2835773935282a74393537",
+   "core": "2e3f353e35283b743c3f28283b28351a203b342e2835773935282a74393537"
+  },
+  {
+   "kind": "github-token",
+   "value": "3d322a0503686f0d3e186c3069030e376f280a1b1629101919093f220f2e0c3310193f020a392234",
+   "core": "3d322a0503686f0d3e186c3069030e376f280a1b1629101919093f220f2e0c3310193f020a392234"
+  },
+  {
+   "kind": "email",
+   "value": "3336293f743c3f28283b28351a203b342e2835773935282a74393537",
+   "core": "3336293f743c3f28283b28351a203b342e2835773935282a74393537"
+  },
+  {
+   "kind": "github-token",
+   "value": "3d322a056b201d39290e28096f6a6d351d196e203f1d3131150a29172e226a2c003f3d2c2311636d",
+   "core": "3d322a056b201d39290e28096f6a6d351d196e203f1d3131150a29172e226a2c003f3d2c2311636d"
+  },
+  {
+   "kind": "github-token",
+   "value": "3d322a0511361f03680e6e6f38110035691f383d6e6e120b00233023320e6f131e3c0b2029291c33",
+   "core": "3d322a0511361f03680e6e6f38110035691f383d6e6e120b00233023320e6f131e3c0b2029291c33"
+  },
+  {
+   "kind": "email",
+   "value": "2d283f34743633343e2b2c33292e1a31283f3636773935282a74393537",
+   "core": "2d283f34743633343e2b2c33292e1a31283f3636773935282a74393537"
+  },
+  {
+   "kind": "aws-key",
+   "value": "1b11131b6f6c036f196d0c181b68141c6c176f1d",
+   "core": "1b11131b6f6c036f196d0c181b68141c6c176f1d"
+  },
+  {
+   "kind": "email",
+   "value": "373b3633317435313b3c35281a203b342e2835773935282a74393537",
+   "core": "373b3633317435313b3c35281a203b342e2835773935282a74393537"
+  },
+  {
+   "kind": "email",
+   "value": "2e3f353e35283b7435313b3c35281a31283f3636773935282a74393537",
+   "core": "2e3f353e35283b7435313b3c35281a31283f3636773935282a74393537"
+  },
+  {
+   "kind": "email",
+   "value": "33343f29743c3f28283b28351a2a3f36332c35773935282a74393537",
+   "core": "33343f29743c3f28283b28351a2a3f36332c35773935282a74393537"
+  },
+  {
+   "kind": "email",
+   "value": "373b36333174323b362c3528293f341a31283f3636773935282a74393537",
+   "core": "373b36333174323b362c3528293f341a31283f3636773935282a74393537"
+  },
+  {
+   "kind": "email",
+   "value": "3529313b2874323b362c3528293f341a203b342e2835773935282a74393537",
+   "core": "3529313b2874323b362c3528293f341a203b342e2835773935282a74393537"
+  },
+  {
+   "kind": "email",
+   "value": "232f313374323b362c3528293f341a31283f3636773935282a74393537",
+   "core": "232f313374323b362c3528293f341a31283f3636773935282a74393537"
+  },
+  {
+   "kind": "aws-key",
+   "value": "1b11131b0f6e1e0d126f1d14100d02691d00030d",
+   "core": "1b11131b0f6e1e0d126f1d14100d02691d00030d"
+  },
+  {
+   "kind": "email",
+   "value": "2d283f347435313b3c35281a2a3f36332c35773935282a74393537",
+   "core": "2d283f347435313b3c35281a2a3f36332c35773935282a74393537"
+  },
+  {
+   "kind": "email",
+   "value": "232f3133743633343e2b2c33292e1a31283f3636773935282a74393537",
+   "core": "232f3133743633343e2b2c33292e1a31283f3636773935282a74393537"
+  },
+  {
+   "kind": "email",
+   "value": "232f3133743633343e2b2c33292e1a2a3f36332c35773935282a74393537",
+   "core": "232f3133743633343e2b2c33292e1a2a3f36332c35773935282a74393537"
+  },
+  {
+   "kind": "email",
+   "value": "232f313374323b362c3528293f341a31283f3636773935282a74393537",
+   "core": "232f313374323b362c3528293f341a31283f3636773935282a74393537"
+  },
+  {
+   "kind": "aws-key",
+   "value": "1b11131b6d161b021e13681c106c691d081d1415",
+   "core": "1b11131b6d161b021e13681c106c691d081d1415"
+  },
+  {
+   "kind": "aws-key",
+   "value": "1b11131b0c6f120e141b1e6816111b6e1b100d18",
+   "core": "1b11131b0c6f120e141b1e6816111b6e1b100d18"
+  },
+  {
+   "kind": "email",
+   "value": "232f3133743c3f28283b28351a2a3f36332c35773935282a74393537",
+   "core": "232f3133743c3f28283b28351a2a3f36332c35773935282a74393537"
+  },
+  {
+   "kind": "aws-key",
+   "value": "1b11131b176f1816006810171c6f121f1d1e121b",
+   "core": "1b11131b176f1816006810171c6f121f1d1e121b"
+  },
+  {
+   "kind": "email",
+   "value": "232f313374323b362c3528293f341a2a3f36332c35773935282a74393537",
+   "core": "232f313374323b362c3528293f341a2a3f36332c35773935282a74393537"
+  },
+  {
+   "kind": "aws-key",
+   "value": "1b11131b1569121d0e6e166f170e11141f0e1511",
+   "core": "1b11131b1569121d0e6e166f170e11141f0e1511"
+  },
+  {
+   "kind": "github-token",
+   "value": "3d322a050d220e081b303516351c351d136c2237180b2a2b0d34082862292b2f626e3d1123122d2b",
+   "core": "3d322a050d220e081b303516351c351d136c2237180b2a2b0d34082862292b2f626e3d1123122d2b"
+  },
+  {
+   "kind": "github-token",
+   "value": "3d322a050928101230621e0e096a032b386a34093d1c2337633e0a1537113f281e0c2f3b336b0e22",
+   "core": "3d322a050928101230621e0e096a032b386a34093d1c2337633e0a1537113f281e0c2f3b336b0e22"
+  },
+  {
+   "kind": "email",
+   "value": "3529313b28743c3f28283b28351a373b283e3f22773935282a74393537",
+   "core": "3529313b28743c3f28283b28351a373b283e3f22773935282a74393537"
+  },
+  {
+   "kind": "aws-key",
+   "value": "1b11131b1614171414026e08681f161b0c690f68",
+   "core": "1b11131b1614171414026e08681f161b0c690f68"
+  },
+  {
+   "kind": "aws-key",
+   "value": "1b11131b02000c0d090a6d69090b106c08140268",
+   "core": "1b11131b02000c0d090a6d69090b106c08140268"
+  },
+  {
+   "kind": "github-token",
+   "value": "3d322a0517326a09691d636d081312162e19133d28232839313c38126f342d6d360f1c026d17296b",
+   "core": "3d322a0517326a09691d636d081312162e19133d28232839313c38126f342d6d360f1c026d17296b"
+  },
+  {
+   "kind": "github-token",
+   "value": "3d322a052c6b03172c1303390c37356e1b6b632b6b620f3e6c152b381935361f35373f6b1f341617",
+   "core": "3d322a052c6b03172c1303390c37356e1b6b632b6b620f3e6c152b381935361f35373f6b1f341617"
+  },
+  {
+   "kind": "github-token",
+   "value": "3d322a056a2d2e231c3314121c0a0d336b360c0d3f292b2f346a691c330b19390d203b3432316b0a",
+   "core": "3d322a056a2d2e231c3314121c0a0d336b360c0d3f292b2f346a691c330b19390d203b3432316b0a"
+  },
+  {
+   "kind": "aws-key",
+   "value": "1b11131b031719101f08006c12181b1b6f1e0d69",
+   "core": "1b11131b031719101f08006c12181b1b6f1e0d69"
+  },
+  {
+   "kind": "github-token",
+   "value": "3d322a0523080a2e10193735106a6e2a1c321e2e6a632d1f020d0c3b34086a233d3f3e316e12036f",
+   "core": "3d322a0523080a2e10193735106a6e2a1c321e2e6a632d1f020d0c3b34086a233d3f3e316e12036f"
+  },
+  {
+   "kind": "github-token",
+   "value": "3d322a0517280b62130020116d091915112f121f022218291b3d1d16322c33372f351e3f3f116b1e",
+   "core": "3d322a0517280b62130020116d091915112f121f022218291b3d1d16322c33372f351e3f3f116b1e"
+  },
+  {
+   "kind": "aws-key",
+   "value": "1b11131b080a121d0a0b0b146e180c6c191b0e1e",
+   "core": "1b11131b080a121d0a0b0b146e180c6c191b0e1e"
+  },
+  {
+   "kind": "aws-key",
+   "value": "1b11131b1510681319111b1f6d086d14190f1569",
+   "core": "1b11131b1510681319111b1f6d086d14190f1569"
+  },
+  {
+   "kind": "email",
+   "value": "373b363331742c3b342e35343d3f283f341a3b39373f773935282a74393537",
+   "core": "373b363331742c3b342e35343d3f283f341a3b39373f773935282a74393537"
+  },
+  {
+   "kind": "aws-key",
+   "value": "1b11131b1d0b186d0c1c030b6c6d160b0368171c",
+   "core": "1b11131b1d0b186d0c1c030b6c6d160b0368171c"
+  },
+  {
+   "kind": "email",
+   "value": "3529313b28742c3b342e35343d3f283f341a2a3f36332c35773935282a74393537",
+   "core": "3529313b28742c3b342e35343d3f283f341a2a3f36332c35773935282a74393537"
+  },
+  {
+   "kind": "aws-key",
+   "value": "1b11131b090f6d151b140b00150e1d1b110a001c",
+   "core": "1b11131b090f6d151b140b00150e1d1b110a001c"
+  },
+  {
+   "kind": "aws-key",
+   "value": "1b11131b111612006d10081813150e18190b6d0a",
+   "core": "1b11131b111612006d10081813150e18190b6d0a"
+  },
+  {
+   "kind": "github-token",
+   "value": "3d322a052f183c6b0c2036282932690e3d0c101735192d303f361e34143168306d20120d6b3f3b0d",
+   "core": "3d322a052f183c6b0c2036282932690e3d0c101735192d303f361e34143168306d20120d6b3f3b0d"
+  },
+  {
+   "kind": "email",
+   "value": "373b363331743633343e2b2c33292e1a373b283e3f22773935282a74393537",
+   "core": "373b363331743633343e2b2c33292e1a373b283e3f22773935282a74393537"
+  },
+  {
+   "kind": "email",
+   "value": "3336293f74323b362c3528293f341a3b39373f773935282a74393537",
+   "core": "3336293f74323b362c3528293f341a3b39373f773935282a74393537"
+  },
+  {
+   "kind": "email",
+   "value": "3336293f7435313b3c35281a373b283e3f22773935282a74393537",
+   "core": "3336293f7435313b3c35281a373b283e3f22773935282a74393537"
+  },
+  {
+   "kind": "openai-key",
+   "value": "2931772a2835307715686e1b11032d03291e1f220917292a6f632a151514390c0c34031e6f32380f12193c182e003e2d16106e0a02631033",
+   "core": "2931772a2835307715686e1b11032d03291e1f220917292a6f632a151514390c0c34031e6f32380f12193c182e003e2d16106e0a02631033"
+  },
+  {
+   "kind": "email",
+   "value": "33343f29743c3f28283b28351a373b283e3f22773935282a74393537",
+   "core": "33343f29743c3f28283b28351a373b283e3f22773935282a74393537"
+  },
+  {
+   "kind": "host",
+   "value": "373b283e3f2277382f33363e687433342e3f28343b36",
+   "core": "373b283e3f2277382f33363e687433342e3f28343b36"
+  },
+  {
+   "kind": "email",
+   "value": "373b3633317435313b3c35281a203b342e2835773935282a74393537",
+   "core": "373b3633317435313b3c35281a203b342e2835773935282a74393537"
+  },
+  {
+   "kind": "host",
+   "value": "373b283e3f2277382f33363e6f7433342e3f28343b36",
+   "core": "373b283e3f2277382f33363e6f7433342e3f28343b36"
+  },
+  {
+   "kind": "anthropic-key",
+   "value": "2931773b342e773b2a336a697763390e290a3e1c172b6f29192f090b0a13350b6f15631c0d113b080c296e3163201d3f3b123f1c0f2817376b00202f691002001b222e171b3433181d6e296322221e1b032869140f3b1b2834681c166f1138146e09020d280e33162b132233",
+   "core": "2931773b342e773b2a336a697763390e290a3e1c172b6f29192f090b0a13350b6f15631c0d113b080c296e3163201d3f3b123f1c0f2817376b00202f691002001b222e171b3433181d6e296322221e1b032869140f3b1b2834681c166f1138146e09020d280e33162b132233"
+  },
+  {
+   "kind": "db-url",
+   "value": "2a35292e3d283f296075753b2a2a601f0a33172f2d1f23000a363c2c323c146d2d6e0a1a3e3874203b342e28357433342e3f28343b36606f6e6968753b2a2a",
+   "core": "1f0a33172f2d1f23000a363c2c323c146d2d6e0a"
+  }
+ ],
+ "requests": [{"path":"anthropic/v1/messages","headers":{"authorization":"Bearer sim-token","content-type":"application/json","x-claude-code-session-id":"a221","anthropic-version":"2023-06-01"},"body":{"model":"claude-opus-5-5","max_tokens":32000,"stream":true,"thinking":{"type":"adaptive"},"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1"},{"type":"text","text":"","cache_control":{"type":"ephemeral","ttl":"1h"}}],"tools":[],"messages":[{"role":"user","content":[{"type":"text","text":"Please look at @@sim-canary-0-0@@/README.md and fix the config.\nHere is what I have: @@sim-canary-86-0@@","cache_control":{"type":"ephemeral","ttl":"1h"}}]}]},"answer":{"thinking":"","text":"","calls":[{"id":"toolu_sim_0","name":"Bash","input":{"command":"grep -rn ICgVjaHrVVojxzeH5g6E@db.lelwfe.internal /home/dnetudo"}}]}},{"path":"anthropic/v1/messages","headers":{"authorization":"Bearer sim-token","content-type":"application/json","x-claude-code-session-id":"a221","anthropic-version":"2023-06-01"},"body":{"model":"claude-opus-5-5","max_tokens":32000,"stream":true,"thinking":{"type":"adaptive"},"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1"},{"type":"text","text":"","cache_control":{"type":"ephemeral","ttl":"1h"}}],"tools":[],"messages":[{"role":"user","content":[{"type":"text","text":"Please look at @@sim-canary-0-0@@/README.md and fix the config.\nHere is what I have: @@sim-canary-86-0@@"}]},{"role":"assistant","content":[{"type":"thinking","thinking":"","signature":"sig-90"},{"type":"tool_use","id":"toolu_sim_0","name":"Bash","input":{"command":"grep -rn ICgVjaHrVVojxzeH5g6E@db.zantro.internal @@sim-canary-0-1@@"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_sim_0","content":[{"type":"text","text":"(no matches)"}]}]},{"role":"assistant","content":[{"type":"thinking","thinking":"","signature":"sig-64"},{"type":"text","text":"Checking @@sim-canary-0-0@@/README.md."},{"type":"tool_use","id":"toolu_sim_1","name":"Write","input":{"file_path":"@@sim-canary-0-1@@/notes/summary-48.md","content":"ICgVjaHrVVojxzeH5g6E@db.zantro.internal"}}]}]},"answer":{"thinking":"","text":"","calls":[{"id":"toolu_sim_3","name":"Bash","input":{"command":"cat /home/dnetudo/notes/summary-48.md"}},{"id":"toolu_sim_4","name":"Bash","input":{"command":"grep -rn eglnnajbhvujlcok3t6e@db.lelwfe.internal /home/dnetudo"}}]}},{"path":"anthropic/v1/messages","headers":{"authorization":"Bearer sim-token","content-type":"application/json","x-claude-code-session-id":"a221","anthropic-version":"2023-06-01"},"body":{"model":"claude-opus-5-5","max_tokens":32000,"stream":true,"thinking":{"type":"adaptive"},"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1"},{"type":"text","text":"","cache_control":{"type":"ephemeral","ttl":"1h"}}],"tools":[],"messages":[{"role":"user","content":[{"type":"text","text":"Please look at @@sim-canary-0-0@@/README.md and fix the config.\nHere is what I have: @@sim-canary-86-0@@"}]},{"role":"assistant","content":[{"type":"thinking","thinking":"","signature":"sig-90"},{"type":"tool_use","id":"toolu_sim_0","name":"Bash","input":{"command":"grep -rn ICgVjaHrVVojxzeH5g6E@db.zantro.internal @@sim-canary-0-1@@"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_sim_0","content":[{"type":"text","text":"(no matches)"}]}]},{"role":"assistant","content":[{"type":"thinking","thinking":"","signature":"sig-64"},{"type":"text","text":"Checking @@sim-canary-0-0@@/README.md."},{"type":"tool_use","id":"toolu_sim_1","name":"Write","input":{"file_path":"@@sim-canary-0-1@@/notes/summary-48.md","content":"ICgVjaHrVVojxzeH5g6E@db.zantro.internal"}}]}]},"answer":{"thinking":"","text":"","calls":[{"id":"toolu_sim_5","name":"Bash","input":{"command":"cat /home/dnetudo/notes/summary-48.md"}}]}}]
+}
