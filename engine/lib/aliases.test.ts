@@ -94,6 +94,32 @@ it("keeps a stand-in where it was first minted across restarts", () => {
   }
 });
 
+// After a restart only the saved counters knew the older values: a value new
+// to the store took a pick one of them held, as the book had not seen it yet.
+it("mints a new value after a restart as it would have without one", () => {
+  const dir = mkdtempSync(join(tmpdir(), "alias-claims-"));
+  try {
+    const file = join(dir, "counters.json");
+    const live = book();
+    live.loadCounters(file);
+    // A value whose first pick an earlier one holds: a fresh book gives it that pick.
+    let bumped: { value: string; standIn: string } | undefined;
+    for (let i = 0; !bumped && i < 5000; i++) {
+      const value = `h${i.toString(36)}`;
+      live.saveCounters();
+      const standIn = live.standIn("pii-custom-handle", value, "handle");
+      if (book().standIn("pii-custom-handle", value, "handle") !== standIn)
+        bumped = { value, standIn };
+    }
+    expect(bumped).toBeDefined();
+    const later = book();
+    later.loadCounters(file);
+    expect(later.standIn("pii-custom-handle", bumped!.value, "handle")).toBe(bumped!.standIn);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 it("finds stand-ins by what it minted, as whole words only", () => {
   const b = book();
   const host = b.host("zqxfalcon-web");

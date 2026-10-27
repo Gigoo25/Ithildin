@@ -703,6 +703,13 @@ export class AliasBook {
   // never moves once chosen, even when its first pick later turns up as
   // real text (the corpus check below only runs on a value's first mint).
   private readonly counters = new Map<string, number>();
+  // Stand-in -> the HMAC it was minted for, saved with the counters. A new
+  // value's first pick skips a stand-in already held: in memory that was only
+  // what this process had seen, so after a restart a value new to the store
+  // took a pick an older value had taken first, and minted another stand-in
+  // than it would have (proxy/sim/restart.ts, seed 3207).
+  private readonly claims = new Map<string, string>();
+  private readonly claimOf = new Map<string, string>();
   private counterFile: string | undefined;
   private countersDirty = false;
   private corpus: (() => string) | undefined;
@@ -778,7 +785,9 @@ export class AliasBook {
     return tokens.every((token) => this.corpusTokens!.has(token));
   }
 
-  private taken(candidate: string, value: string): boolean {
+  private taken(candidate: string, value: string, id: string): boolean {
+    const claim = this.claims.get(candidate);
+    if (claim !== undefined && claim !== id) return true;
     const known = this.reverse.get(candidate);
     if (
       known !== undefined &&
@@ -806,7 +815,11 @@ export class AliasBook {
     } else {
       for (attempt = 0; attempt < MAX_TRIES; attempt++) {
         const candidate = make(attempt);
-        if (candidate !== value && !this.taken(candidate, value) && !this.avoided(candidate)) {
+        if (
+          candidate !== value &&
+          !this.taken(candidate, value, id) &&
+          !this.avoided(candidate)
+        ) {
           out = candidate;
           break;
         }
@@ -819,8 +832,17 @@ export class AliasBook {
       this.counters.set(id, attempt);
       this.countersDirty = true;
     }
+    this.claim(id, out);
     this.minted.set(memo, out);
     return out;
+  }
+
+  // A stand-in two values share keeps its first owner's claim.
+  private claim(id: string, standIn: string): void {
+    if (this.claimOf.has(id) || this.claims.has(standIn)) return;
+    this.claims.set(standIn, id);
+    this.claimOf.set(id, standIn);
+    this.countersDirty = true;
   }
 
   // Letter runs map on their own, so values sharing a run share its stand-in
@@ -1212,12 +1234,16 @@ export class AliasBook {
   }
 
   // Keeps each stand-in where it was first minted across restarts. The file
-  // holds keyed hashes of values and attempt numbers, never a value.
+  // holds keyed hashes of values, attempt numbers and the stand-ins, never a
+  // value. An entry without a stand-in is from before claims were saved.
   loadCounters(file: string): void {
     this.counterFile = file;
     try {
-      for (const [id, attempt] of JSON.parse(readFileSync(file, "utf8")) as Array<[string, number]>)
+      const entries = JSON.parse(readFileSync(file, "utf8")) as Array<[string, number, string?]>;
+      for (const [id, attempt, standIn] of entries) {
         this.counters.set(id, attempt);
+        if (standIn !== undefined) this.claim(id, standIn);
+      }
     } catch {
       // Absent or unreadable: values mint afresh.
     }
@@ -1229,9 +1255,16 @@ export class AliasBook {
     for (const id of this.counters.keys()) {
       if (this.counters.size <= MAX_COUNTERS) break;
       this.counters.delete(id);
+      const standIn = this.claimOf.get(id);
+      this.claimOf.delete(id);
+      if (standIn !== undefined) this.claims.delete(standIn);
     }
+    const entries = [...this.counters].map(([id, attempt]) => {
+      const standIn = this.claimOf.get(id);
+      return standIn === undefined ? [id, attempt] : [id, attempt, standIn];
+    });
     try {
-      writeFileSync(`${this.counterFile}.tmp`, JSON.stringify([...this.counters]), { mode: 0o600 });
+      writeFileSync(`${this.counterFile}.tmp`, JSON.stringify(entries), { mode: 0o600 });
       renameSync(`${this.counterFile}.tmp`, this.counterFile);
       this.countersDirty = false;
     } catch {
