@@ -222,3 +222,16 @@ it("lists minted stand-ins, values and resolved entries", () => {
   expect(b.values()).toContain("ZQX-1234");
   expect(b.known().map((entry) => entry.value)).toContain("ZQX-1234");
 });
+
+it("keeps a 16-digit value under 2^53 under it, so it stays a JSON number", () => {
+  const aliases = book();
+  const max = BigInt(Number.MAX_SAFE_INTEGER);
+  for (let i = 0n; i < 3000n; i++) {
+    const value = String(
+      1_000_000_000_000_000n + ((i * 2_999_999_999_999n) % (max - 999_999_999_999_999n)),
+    );
+    const standIn = aliases.label("credit-card", value);
+    expect(standIn).toHaveLength(16);
+    expect(BigInt(standIn) <= max).toBe(true);
+  }
+});

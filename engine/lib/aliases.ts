@@ -665,6 +665,19 @@ function shaped(run: string, next: Bytes): string {
   return out;
 }
 
+// A 16-digit run is the one length a number can be on either side of 2^53. A
+// run under it keeps its stand-in under it: redactNumber sends a stand-in back
+// as a JSON number only when it is a safe integer, so a card number in a
+// tool's arguments went upstream as a string about one time in nine, when its
+// stand-in started with a 9 past 9007… (a test that failed now and then). The
+// leading digit goes from 9 to 8; every other stand-in is as it was.
+const MAX_SAFE = String(Number.MAX_SAFE_INTEGER);
+
+function safeLike(run: string, out: string): string {
+  if (run.length !== MAX_SAFE.length || run > MAX_SAFE || out <= MAX_SAFE) return out;
+  return `8${out.slice(1)}`;
+}
+
 function caseLike(word: string, model: string): string {
   if (model.length > 1 && model === model.toUpperCase()) return word.toUpperCase();
   if (model[0] === model[0]?.toUpperCase()) return word[0]!.toUpperCase() + word.slice(1);
@@ -817,7 +830,7 @@ export class AliasBook {
     return value.replace(/[A-Za-z]+|[0-9]+/g, (run) => {
       const at = index++;
       if (/[0-9]/.test(run[0]!))
-        return shaped(run, this.bytes(`${kind}:digits`, `${value}\0${at}`, attempt));
+        return safeLike(run, shaped(run, this.bytes(`${kind}:digits`, `${value}\0${at}`, attempt)));
       if (names && run.length >= 2) return this.name(run, attempt);
       return shaped(run, this.bytes(`${kind}:letters`, run.toLowerCase(), attempt));
     });
