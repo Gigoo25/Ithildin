@@ -1343,7 +1343,11 @@ function decodeSegment(segment: string): string {
 }
 
 // Request headers the agent sends to its own provider: the user's credentials
-// for it (masked, the provider refuses the call) and protocol fields.
+// for it (masked, the provider refuses the call), protocol fields, and the
+// session ids harnesses make up (server.ts SESSION_HEADERS), which providers
+// route a session's cache by: a scan out of time withheld one whole, so the
+// request went to another cache under "[ithildin: omitted …]" (proxy/sim,
+// ITHILDIN_SIM_STARVE).
 const PASSED_HEADERS = new Set([
   "authorization",
   "x-api-key",
@@ -1354,6 +1358,11 @@ const PASSED_HEADERS = new Set([
   "accept",
   "anthropic-version",
   "anthropic-beta",
+  "x-claude-code-session-id",
+  "x-opencode-session",
+  "x-session-affinity",
+  "session_id",
+  "session-id",
 ]);
 
 // Header values, scanned like query values: a user agent, an X-* header a
