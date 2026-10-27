@@ -396,6 +396,13 @@ function rewriteSse(
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
   let buffer = "";
+  let finished = false;
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    done(rewriter.swapped, usage);
+    hooks.ended();
+  };
   const emit = (block: string, controller: TransformStreamDefaultController<Uint8Array>) => {
     const event = parseSseBlock(block);
     if (!event) {
@@ -415,24 +422,31 @@ function rewriteSse(
     const outs = observeActivity(tap, () => rewriter.push(event));
     for (const out of outs) controller.enqueue(encoder.encode(formatSse(out)));
   };
-  return body.pipeThrough(
-    new TransformStream<Uint8Array, Uint8Array>({
-      transform(chunk, controller) {
-        buffer += decoder.decode(chunk, { stream: true });
-        const blocks = buffer.split(/\r?\n\r?\n/);
-        buffer = blocks.pop() ?? "";
-        for (const block of blocks) emit(block, controller);
-      },
-      flush(controller) {
-        buffer += decoder.decode();
-        if (buffer.trim() !== "") emit(buffer, controller);
-        for (const out of observeActivity(tap, () => rewriter.flush()))
-          controller.enqueue(encoder.encode(formatSse(out)));
-        done(rewriter.swapped, usage);
-        hooks.ended();
-      },
-    }),
-  );
+  // `cancel` is in the Streams spec and Bun runs it, but TypeScript's lib does
+  // not declare it on Transformer yet.
+  const transformer: Transformer<Uint8Array, Uint8Array> & { cancel: () => void } = {
+    transform(chunk, controller) {
+      buffer += decoder.decode(chunk, { stream: true });
+      const blocks = buffer.split(/\r?\n\r?\n/);
+      buffer = blocks.pop() ?? "";
+      for (const block of blocks) emit(block, controller);
+    },
+    flush(controller) {
+      buffer += decoder.decode();
+      if (buffer.trim() !== "") emit(buffer, controller);
+      for (const out of observeActivity(tap, () => rewriter.flush()))
+        controller.enqueue(encoder.encode(formatSse(out)));
+      finish();
+    },
+    // A client may stop reading once it has the event it waits for (Pi's
+    // Codex reader cancels on response.completed, before the upstream
+    // closes), and then flush never runs: the usage already seen would go
+    // unlogged and the reply never reach the cache diagnosis.
+    cancel() {
+      finish();
+    },
+  };
+  return body.pipeThrough(new TransformStream(transformer));
 }
 
 // The scanners the handler calls; tests pass ones that fail, to show a

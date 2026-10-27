@@ -515,6 +515,39 @@ describe("reply text", () => {
     expect(text).not.toContain(standIn);
   });
 
+  it("logs a stream's usage when the client stops reading before the upstream closes", async () => {
+    const lines: string[] = [];
+    const spy = spyOn(process.stderr, "write").mockImplementation(
+      ((line: string) => lines.push(line) > 0) as never,
+    );
+    try {
+      const usage = {
+        input_tokens: 1161,
+        input_tokens_details: { cached_tokens: 1024 },
+        output_tokens: 54,
+      };
+      const completed = { type: "response.completed", response: { id: "r", usage } };
+      // Pi's Codex reader cancels on response.completed; this upstream never
+      // closes, so only the cancel can end the reply.
+      const open = new ReadableStream<Uint8Array>({
+        start(controller) {
+          const block = `event: ${completed.type}\ndata: ${JSON.stringify(completed)}\n\n`;
+          controller.enqueue(new TextEncoder().encode(block));
+        },
+      });
+      const res = await handler(
+        () => new Response(open, { headers: { "content-type": "text/event-stream" } }),
+      )(post("openai-codex/codex/responses", { stream: true, input: "hi" }));
+      const reader = res.body!.getReader();
+      expect(new TextDecoder().decode((await reader.read()).value)).toContain(completed.type);
+      await reader.cancel();
+      expect(lines.join("")).toContain("openai-codex/codex/responses 200");
+      expect(lines.join("")).toContain("usage=137/1024/0/54 (stream)");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("releases held Responses text before the item closes without output_text.done", async () => {
     const res = await handler(() =>
       sse([
