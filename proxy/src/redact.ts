@@ -319,9 +319,8 @@ export function initEngine(
 }
 
 // ── allow tags ──────────────────────────────────────────────────────────────
-// The latest thing the user typed decides. Tool-result turns (Anthropic user
-// messages holding only tool_result blocks) are not typed, so they are
-// skipped.
+// The latest thing the user typed decides, including a message typed mid-turn
+// beside a tool result (typedBlocks).
 
 function textBlocks(content: unknown): Array<{ type: "text"; text: string }> {
   if (typeof content === "string") return [{ type: "text", text: content }];
@@ -410,6 +409,24 @@ function promptBlocks(content: unknown): Array<{ type: "text"; text: string }> {
   return [];
 }
 
+// The typed prompt of a user turn, a tool-result turn's included. Anthropic
+// tool results come back as user turns, and a message the user types while
+// the agent works rides in the next one, after the results: Claude Code's
+// queued message, opencode's steered prompt (the AI SDK merges it into the
+// result's turn). The model writes no part of a user turn, so text there is
+// the harness's; after the last result, through the filters a prompt goes
+// through (wrapped notices, summaries, attached files), it is the user's.
+// Skipping these turns left a tag typed mid-turn doing nothing until the
+// next full prompt. Chat and Responses (Codex) send results as items of their
+// own, so a message typed mid-turn is already a user item there.
+function typedBlocks(content: unknown): Array<{ type: "text"; text: string }> {
+  if (!Array.isArray(content)) return promptBlocks(content);
+  const last = content.findLastIndex(
+    (block) => (block as { type?: unknown } | null)?.type === "tool_result",
+  );
+  return promptBlocks(content.slice(last + 1));
+}
+
 // The tags each session's latest prompt carried, for its requests that hold
 // none: a summary request, whose one user turn the agent wrote, would
 // otherwise mask what the user allowed. Oldest sessions go first.
@@ -470,9 +487,7 @@ function typedGrants(item: unknown): Array<{ grant: string | undefined; on: bool
   if (!item || typeof item !== "object") return [];
   const entry = item as { role?: unknown; content?: unknown };
   if (entry.role !== "user") return [];
-  // A tool-result turn is not a prompt, even with harness text beside it.
-  if (hasToolResult(entry.content)) return [];
-  const typed = userTypedText({ role: "user", content: promptBlocks(entry.content) });
+  const typed = userTypedText({ role: "user", content: typedBlocks(entry.content) });
   return [...typed.matchAll(SESSION_GRANT)].map((match) => ({
     grant: match[1]?.toLowerCase().replace("secrets", "secret"),
     on: match[2]?.toLowerCase() === "session",
@@ -520,16 +535,11 @@ function promptAllowTags(
   let typed = "";
   for (const item of list) {
     if (!item || typeof item !== "object" || (item as { role?: unknown }).role !== "user") continue;
-    const content = (item as { content?: unknown }).content;
-    const blocks = promptBlocks(content);
+    // A tool-result turn with nothing typed beside it is not the latest
+    // prompt: taken as one, it cancelled the typed tag at the first tool
+    // call, so [allow-secrets] never reached a read.
+    const blocks = typedBlocks((item as { content?: unknown }).content);
     if (blocks.length === 0) continue;
-    // Anthropic tool results come back as user turns, often with harness text
-    // beside them. Taken as the latest prompt, they cancelled the typed tag
-    // at the first tool call, so [allow-secrets] never reached a read. Nor
-    // does a tag of their own count: which text beside a result the user
-    // typed is a guess (promptBlocks), and a wrapper it missed, echoing a
-    // file that holds [allow-all], sent the result's key upstream whole.
-    if (hasToolResult(content)) continue;
     // Typed text only: a system reminder quoting CLAUDE.md, or a pasted
     // fence, that mentions [allow-protected] is not the user asking for it.
     typed = userTypedText({ role: "user", content: blocks });
@@ -588,21 +598,14 @@ export function turnTags(
 }
 
 // The content tags of the prompt one item holds, or undefined when it holds
-// none. A tool-result turn holds no prompt, as in promptAllowTags.
+// none, as in promptAllowTags.
 function promptTags(item: unknown): Set<string> | undefined {
   if (!item || typeof item !== "object") return undefined;
   const entry = item as { role?: unknown; content?: unknown };
-  if (entry.role !== "user" || hasToolResult(entry.content)) return undefined;
-  const blocks = promptBlocks(entry.content);
+  if (entry.role !== "user") return undefined;
+  const blocks = typedBlocks(entry.content);
   if (blocks.length === 0) return undefined;
   return latestAllowTags([{ role: "user", content: blocks }]);
-}
-
-function hasToolResult(content: unknown): boolean {
-  return (
-    Array.isArray(content) &&
-    content.some((block) => (block as { type?: unknown } | null)?.type === "tool_result")
-  );
 }
 
 // The session grants held at each item. The session's memory holds them as of
@@ -1837,13 +1840,7 @@ export function shapingSwitch(
     if (!item || typeof item !== "object") continue;
     const entry = item as { role?: unknown; content?: unknown };
     if (entry.role !== "user") continue;
-    // A tool-result turn is not a prompt, even with harness text beside it.
-    if (
-      Array.isArray(entry.content) &&
-      entry.content.some((block) => (block as { type?: unknown } | null)?.type === "tool_result")
-    )
-      continue;
-    const typed = userTypedText({ role: "user", content: promptBlocks(entry.content) });
+    const typed = userTypedText({ role: "user", content: typedBlocks(entry.content) });
     const last = [...typed.matchAll(SHAPE_SWITCH)].at(-1)?.[0];
     if (last !== undefined) decided = last.toLowerCase() === "[shape]";
   }
@@ -1946,11 +1943,7 @@ export function withholdImages(
   const prompts = (read.body[listKey(read.format)] as unknown[]).map((item) => {
     if (!item || typeof item !== "object") return [];
     const record = item as { role?: unknown; content?: unknown };
-    // A tool-result turn is not a prompt, even with harness text beside it.
-    const results =
-      Array.isArray(record.content) &&
-      record.content.some((block) => (block as { type?: unknown } | null)?.type === "tool_result");
-    return record.role === "user" && !results ? promptBlocks(record.content) : [];
+    return record.role === "user" ? typedBlocks(record.content) : [];
   });
   const switches = session ? prompts.map((typed) => imageSwitch(typed)) : [];
   // A history that holds the switch decides alone, so earlier turns stay as

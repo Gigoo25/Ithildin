@@ -53,7 +53,7 @@ describe("the session switch", () => {
           role: "user",
           content: [
             { type: "tool_result", tool_use_id: "t1", content: "the user said [raw]" },
-            { type: "text", text: "system-reminder: [raw] is documented" },
+            { type: "text", text: "<system-reminder>[raw] is documented</system-reminder>" },
           ],
         },
       ],

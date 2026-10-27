@@ -1437,7 +1437,7 @@ describe("secret reads", () => {
     expect(result("[allow-secrets] show it")).toBe(VALUE);
   });
 
-  it("a tag quoted inside harness text beside a tool result grants nothing", () => {
+  it("a tag beside a tool result counts typed, not quoted in harness text", () => {
     const messages = (beside: string) => [
       { role: "user", content: "show it" },
       {
@@ -1470,13 +1470,72 @@ describe("secret reads", () => {
     );
     // Unclosed: everything after the opening tag is harness text.
     expect(result("<system-reminder>hook said [allow-secrets]")).toBe(WITHHELD_NOTICE);
-    // Nor does text that reads as typed: which text beside a result the user
-    // wrote is a guess, so a tag typed while the agent works waits for the
-    // next prompt.
-    expect(result("<system-reminder>x</system-reminder> [allow-secrets] go on")).toBe(
-      WITHHELD_NOTICE,
+    // Typed while the agent works, it holds from that turn on.
+    expect(result("<system-reminder>x</system-reminder> [allow-secrets] go on")).toBe(VALUE);
+    expect(result("note [allow-all]")).toBe(VALUE);
+  });
+
+  it("takes a tag typed mid-turn in each wire format", () => {
+    const anthropic = (beside: Array<Record<string, unknown>>) =>
+      redactRequest("anthropic", {
+        messages: [
+          { role: "user", content: "show it" },
+          {
+            role: "assistant",
+            content: [{ type: "tool_use", id: "t1", name: "bash", input: { command: "ls" } }],
+          },
+          {
+            role: "user",
+            content: [{ type: "tool_result", tool_use_id: "t1", content: "app" }, ...beside],
+          },
+        ],
+      }).tags;
+    // Claude Code's queued message, then opencode's steered prompt with an
+    // @file after it: the file is not typed, the prompt is.
+    expect(anthropic([{ type: "text", text: "[allow-secrets]\nkeep going" }]).has("secret")).toBe(
+      true,
     );
-    expect(result("note [allow-all]")).toBe(WITHHELD_NOTICE);
+    expect(
+      anthropic([
+        { type: "text", text: "go [allow-pii]" },
+        { type: "text", text: "Called the Read tool with the following input: {}" },
+        { type: "text", text: "[allow-all]" },
+      ]),
+    ).toEqual(new Set(["pii"]));
+    // Text before the result is the harness's own.
+    const before = redactRequest("anthropic", {
+      messages: [
+        { role: "user", content: "show it" },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "[allow-all]" },
+            { type: "tool_result", tool_use_id: "t1", content: "app" },
+          ],
+        },
+      ],
+    }).tags;
+    expect(before.has("all")).toBe(false);
+    // Codex and opencode on Responses and chat: results are items of their
+    // own, and the steered message a user item after them.
+    const responses = redactRequest("responses", {
+      input: [
+        { role: "user", content: [{ type: "input_text", text: "show it" }] },
+        { type: "function_call", call_id: "c1", name: "shell", arguments: "{}" },
+        { type: "function_call_output", call_id: "c1", output: "app" },
+        { role: "user", content: [{ type: "input_text", text: "[allow-secrets] go on" }] },
+      ],
+    }).tags;
+    expect(responses.has("secret")).toBe(true);
+    const chat = redactRequest("chat", {
+      messages: [
+        { role: "user", content: "show it" },
+        { role: "assistant", tool_calls: [{ id: "c1", type: "function" }] },
+        { role: "tool", tool_call_id: "c1", content: "app" },
+        { role: "user", content: "[allow-pii] go on" },
+      ],
+    }).tags;
+    expect(chat.has("pii")).toBe(true);
   });
 
   it("withholds Responses outputs by call id and leaves .env.example alone", () => {
@@ -2106,6 +2165,34 @@ describe("images", () => {
         "images",
       ),
     ).toBe(true);
+  });
+
+  it("[allow-images:session] typed mid-turn lets the turn's next images through", () => {
+    const call = (id: string) => ({
+      role: "assistant",
+      content: [{ type: "tool_use", id, name: "Read", input: { file_path: "a.png" } }],
+    });
+    const result = (id: string, ...beside: unknown[]) => ({
+      role: "user",
+      content: [
+        { type: "tool_result", tool_use_id: id, content: [{ type: "image", source: PNG }] },
+        ...beside,
+      ],
+    });
+    const messages = [
+      { role: "user", content: "look at the dashboard" },
+      call("t1"),
+      result("t1", { type: "text", text: "[allow-images:session]\nfix it too" }),
+      call("t2"),
+      result("t2"),
+    ];
+    const out = (
+      redactRequest("anthropic", { messages }, "s-midturn").body.messages as Array<{
+        content: Array<{ content?: Array<{ type: string }> }>;
+      }>
+    ).map((message) => (Array.isArray(message.content) ? message.content[0]!.content : undefined));
+    expect(out[2]![0]!.type).toBe("image");
+    expect(out[4]![0]!.type).toBe("image");
   });
 
   it("[allow-images:mask] and [mask] end the image switch", () => {
