@@ -36,22 +36,22 @@ interface Block {
   marked: boolean;
 }
 
-function tokensOf(value: unknown): number {
-  return Math.ceil(JSON.stringify(value ?? null).length / 4);
-}
-
-function strip(value: unknown): unknown {
-  return JSON.parse(
-    JSON.stringify(value ?? null, (key, inner) => (key === "cache_control" ? undefined : inner)),
-  );
-}
-
 // The request as the blocks the provider reads, each with a digest of the
-// whole prefix up to and including it.
+// whole prefix up to and including it. Each block is serialized twice, as
+// sent (for its size and markers) and without markers (for the digest): the
+// simulation spends most of its time here, once per block per request.
 function blocksOf(format: Format, body: Fields): Block[] {
-  const raw: Array<{ value: unknown; marked: boolean }> = [];
-  const add = (value: unknown) =>
-    raw.push({ value, marked: JSON.stringify(value ?? null).includes('"cache_control"') });
+  const raw: Array<{ unmarked: string; tokens: number; marked: boolean }> = [];
+  const add = (value: unknown) => {
+    const sent = JSON.stringify(value ?? null);
+    raw.push({
+      unmarked: JSON.stringify(value ?? null, (key, inner) =>
+        key === "cache_control" ? undefined : inner,
+      ),
+      tokens: Math.ceil(sent.length / 4),
+      marked: sent.includes('"cache_control"'),
+    });
+  };
   const each = (list: unknown) =>
     Array.isArray(list) ? list.forEach(add) : list !== undefined && add(list);
   add({ model: body.model, thinking: body.thinking ?? body.reasoning });
@@ -68,9 +68,9 @@ function blocksOf(format: Format, body: Fields): Block[] {
     else add(item);
   }
   const hash = createHash("sha1");
-  return raw.map(({ value, marked }) => {
-    hash.update(JSON.stringify(strip(value)));
-    return { hash: hash.copy().digest("base64"), tokens: tokensOf(value), marked };
+  return raw.map(({ unmarked, tokens, marked }) => {
+    hash.update(unmarked);
+    return { hash: hash.copy().digest("base64"), tokens, marked };
   });
 }
 

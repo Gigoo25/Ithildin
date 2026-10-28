@@ -80,7 +80,9 @@ interface State {
   report: Report;
   kept: Map<string, string>;
   cutoff: number;
-  previous?: { raw: Fields; shaped: Fields };
+  // The previous request's digests (checks.ts parts), kept so each request
+  // is digested once rather than again as the next one's `before`.
+  previous?: { raw: Fields; parts: { raw: string[]; shaped: string[] } };
   on: Cache;
   off: Cache;
   strip: boolean;
@@ -117,9 +119,11 @@ function moved(format: Format, before: Fields, now: Fields, person: boolean): bo
 
 function compare(format: Format, raw: Fields, shaped: Fields, step: boolean, state: State) {
   const before = state.previous;
+  const now = { raw: parts(format, raw), shaped: parts(format, shaped) };
+  state.previous = { raw, parts: now };
   if (!before) return false;
-  if (firstChange(parts(format, before.raw), parts(format, raw)) >= 0) return false;
-  const at = firstChange(parts(format, before.shaped), parts(format, shaped));
+  if (firstChange(before.parts.raw, now.raw) >= 0) return false;
+  const at = firstChange(before.parts.shaped, now.shaped);
   if (at < 0) return false;
   const { breaks } = state.report;
   if (step) breaks.step++;
@@ -162,7 +166,6 @@ export function simulate(format: Format, body: Fields, strip = true): Report {
     report.cost.on += cost(format, on);
     report.cost.off += cost(format, state.off.send(raw));
     if (broke) report.rewritten += on.write + on.uncached;
-    state.previous = { raw, shaped };
   });
   return report;
 }
