@@ -364,6 +364,15 @@ describe("anthropic requests", () => {
     expect(MASK_STEP_TURNS).toBeGreaterThan(0);
     expect(MASK_KEEP_TURNS).toBeGreaterThan(0);
   });
+
+  it("counts a step's rewrite against what it saved, and a request after it at a read's price", () => {
+    const stepped = shapeRequest("anthropic", { messages: messages(2) })!;
+    expect(stepped.step).toBeDefined();
+    expect(stepped.savedCost).toBeLessThan(Math.ceil(stepped.savedChars / 4) * 0.1);
+    const after = shapeRequest("anthropic", { messages: messages(2).concat(turns(5)) })!;
+    expect(after.step).toBeUndefined();
+    expect(after.savedCost).toBe(Math.ceil(after.savedChars / 4) * 0.1);
+  });
 });
 
 // A long first prompt, one old result of `size` characters, then twenty turns

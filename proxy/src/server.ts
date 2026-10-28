@@ -546,6 +546,7 @@ export type Forwarded = {
   compacted: number;
   deduped: number;
   savedChars: number;
+  savedCost: number;
   step?: { from: number; to: number };
 };
 
@@ -1060,6 +1061,7 @@ export function shapeOutgoing(
     compacted: 0,
     deduped: 0,
     savedChars: 0,
+    savedCost: 0,
   };
   try {
     // Reading the session's switch walks the body, so it belongs inside the
@@ -1086,6 +1088,7 @@ export function shapeOutgoing(
       compacted: result.compacted,
       deduped: result.deduped,
       savedChars: result.savedChars,
+      savedCost: result.savedCost,
       ...(result.step ? { step: result.step } : {}),
     };
   } catch (error) {
@@ -1452,6 +1455,7 @@ const NOT_SHAPED: Forwarded = {
   compacted: 0,
   deduped: 0,
   savedChars: 0,
+  savedCost: 0,
 };
 
 // A scanned request: the status badge, what it masked, the request itself, and the

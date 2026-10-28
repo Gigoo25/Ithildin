@@ -97,6 +97,11 @@ export interface Shaped {
   compacted: number;
   deduped: number;
   savedChars: number;
+  // What shaping saved this request, in uncached-input tokens: the characters
+  // left out at a cache read's price, less what a step rewrites at a write's
+  // price instead. The gate's reckoning (pays), so an estimate, and below zero
+  // on a step until the reads after it pay it back.
+  savedCost: number;
   // The turns old before this request and after it, when they differ: a step,
   // read from the body alone, so the journal can name it after a restart.
   step?: { from: number; to: number };
@@ -725,7 +730,14 @@ function shapeConversation(
   const shaped = { ...body, [keyOf(format)]: out.filter((item) => item !== DROPPED) };
   const marked = wire === "anthropic" ? markBoundaries(shaped, out, ats) : shaped;
   const step = cutoff > previous ? { step: { from: previous, to: cutoff } } : {};
-  return { body: marked, ...totals, savedChars, ...step };
+  const tokens = (items: unknown[]) =>
+    items.reduce<number>(
+      (sum, item) => (item === DROPPED ? sum : sum + Math.ceil(JSON.stringify(item).length / 4)),
+      0,
+    );
+  const rewritten = step.step ? tokens(out.slice(price.whole ? 0 : boundary + 1)) : 0;
+  const savedCost = Math.ceil(savedChars / 4) * price.read - rewritten * (price.write - price.read);
+  return { body: marked, ...totals, savedChars, savedCost, ...step };
 }
 
 function keyOf(format: Format): "messages" | "input" {

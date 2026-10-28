@@ -43,7 +43,7 @@ describe("preview", () => {
 describe("event log", () => {
   it("tallies shaping, usage and breaks per session, and drops the oldest past the cap", () => {
     const log = new EventLog();
-    const shaped = { masked: 3, compacted: 1, deduped: 2, savedChars: 900 };
+    const shaped = { masked: 3, compacted: 1, deduped: 2, savedChars: 900, savedCost: 22 };
     log.request(context, 5, 0, shaped);
     log.request({ ...context, session: undefined }, 5, 0, shaped);
     log.usage({ input: 10, cacheRead: 80, cacheWrite: 10, output: 5 }, context);
@@ -58,6 +58,7 @@ describe("event log", () => {
       shapedCompacted: 1,
       shapedDeduped: 2,
       shapedSavedChars: 900,
+      shapedSavedCost: 22,
       usageInput: 10,
       usageCacheRead: 80,
       usageCacheWrite: 10,
@@ -586,6 +587,7 @@ describe("dashboard", () => {
           shapedCompacted: 0,
           shapedDeduped: 2,
           shapedSavedChars: 355276,
+          shapedSavedCost: 8882.4,
           usageReplies: 1,
           usageInput: 1000,
           usageCacheRead: 8000,
@@ -712,6 +714,8 @@ describe("dashboard", () => {
     expect(read("num_shaping")).toEqual([
       "Saved",
       "346.9 KiB",
+      "Cost saved",
+      "about 8,882 input tokens",
       "Per request",
       "346.9 KiB",
       "Stubbed",
@@ -1157,7 +1161,9 @@ describe("dashboard", () => {
   it("says a session's shaping and cache in a line", () => {
     const pick = (name: string) =>
       new RegExp(`function ${name}[\\s\\S]*?\\n\\}`).exec(DASHBOARD_HTML)![0];
-    const source = ["count", "bytes", "breakCounts", "tallyLine"].map(pick).join("\n");
+    const source = ["count", "bytes", "tokensSaved", "breakCounts", "tallyLine"]
+      .map(pick)
+      .join("\n");
     const tallyLine = new Function(`${source}; return tallyLine;`)() as (
       tally?: Record<string, number>,
     ) => string;
@@ -1180,10 +1186,13 @@ describe("dashboard", () => {
       shapedMasked: 4,
       shapedDeduped: 1,
       shapedSavedChars: 2 * 1048576,
+      shapedSavedCost: -1500,
       usageInput: 10,
       usageCacheRead: 90,
     });
-    expect(line).toContain("Shaping: 4 stubbed, 1 repeats, ");
+    expect(line).toContain(
+      "Shaping: 4 stubbed, 1 repeats, 2.0 MiB saved, about -1,500 input tokens",
+    );
     expect(line).toContain("Cache: 90% read of 100 prompt tokens, no breaks");
     expect(line).not.toContain("compacted");
     expect(tallyLine({ ...none, usageCacheRead: 1, cacheBreaksShaping: 2 })).toBe(

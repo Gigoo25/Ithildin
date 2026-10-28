@@ -1793,7 +1793,15 @@ describe("routes", () => {
   const asked = (seen: Seen) => (seen.body as { diagnostics?: unknown }).diagnostics;
 
   it("names a shaping step in the journal, read from the body alone", () => {
-    const shaped = { body: "", on: true, masked: 4, compacted: 0, deduped: 0, savedChars: 90 };
+    const shaped = {
+      body: "",
+      on: true,
+      masked: 4,
+      compacted: 0,
+      deduped: 0,
+      savedChars: 90,
+      savedCost: 0,
+    };
     expect(
       journalLine("anthropic", "/v1/messages", 200, 7, new Set(), 0, {
         ...shaped,

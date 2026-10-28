@@ -762,7 +762,8 @@ function tallyLine(tally) {
     const parts = [count(tally.shapedMasked) + ' stubbed'];
     if (tally.shapedCompacted) parts.push(count(tally.shapedCompacted) + ' compacted');
     if (tally.shapedDeduped) parts.push(count(tally.shapedDeduped) + ' repeats');
-    said.push('Shaping: ' + parts.join(', ') + ', ' + bytes(tally.shapedSavedChars) + ' saved');
+    said.push('Shaping: ' + parts.join(', ') + ', ' + bytes(tally.shapedSavedChars) + ' saved, ' +
+      tokensSaved(tally.shapedSavedCost));
   }
   const read = tally.usageCacheRead;
   const prompt = tally.usageInput + read + tally.usageCacheWrite;
@@ -920,6 +921,13 @@ function count(value) {
   return (Number(value) || 0).toLocaleString();
 }
 
+// Shaping's estimated saving, in what the same tokens cost sent uncached:
+// a read is a tenth of that, a step's rewrite up to twice (shape.ts). Below
+// zero while a step has yet to pay for itself.
+function tokensSaved(cost) {
+  return 'about ' + count(Math.round(cost || 0)) + ' input tokens';
+}
+
 // The traffic since the proxy started, per minute.
 function perMinute(stats) {
   const minutes = (Date.now() - stats.startedAt) / 60000;
@@ -967,6 +975,7 @@ function renderStats(stats, watch) {
   const saved = stats.shapedSavedChars || 0;
   figures('num_shaping', [
     ['Saved', saved === 0 ? 'none yet' : bytes(saved)],
+    ['Cost saved', saved === 0 ? 'none yet' : tokensSaved(stats.shapedSavedCost)],
     ['Per request', stats.requests ? bytes(Math.round(saved / stats.requests)) : 'none yet'],
     ['Stubbed', count(stats.shapedMasked || 0)],
     ['Compacted', count(stats.shapedCompacted || 0)],
