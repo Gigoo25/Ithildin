@@ -9,7 +9,9 @@
 //
 // Only Anthropic's own API knows the header. The proxy adds the field after
 // redaction, so the id goes up as it came down, and drops the whole thing for
-// good the first time Anthropic refuses it.
+// good the first time Anthropic refuses it. Every other main request is
+// measured instead: one that read far less than it shares with its thread's
+// last is a miss, kept the same way (measure).
 //
 // The same requests carry the thinking-binding beta, without its field: a
 // thinking block is bound to the conversation before it, and masking edits
@@ -20,6 +22,7 @@
 
 import { setting } from "../engine/lib/names.ts";
 import type { Miss } from "./misses.ts";
+import type { Usage } from "./usage.ts";
 
 export const BINDING_BETA = "thinking-binding-controls-2026-08-01";
 
@@ -117,16 +120,33 @@ export type MissSaver = (miss: Miss) => void;
 export interface Thread {
   key: string;
   digests: string[];
+  // Each message's size in characters, as digested; for a provider with no
+  // diagnostics (measure).
+  sizes?: number[];
   // The reply it was asked against, once asked; null when there was none.
   against?: Reply | null;
 }
 
 interface Reply {
+  // Anthropic's message id; empty for a reply heard from its usage alone.
   id: string;
   digests: string[];
+  sizes?: number[] | undefined;
+  // The prompt's tokens, cached or not, and its body's characters.
+  prompt?: number;
   // As sent upstream; dropped for all but the newest BODIES_MAX keys.
   body?: string | undefined;
 }
+
+// A provider other than Anthropic's own API says only how much it read from
+// the cache, never why it read less. A request read short when it read under
+// SHORT_READ of what it shares with the earlier reply it carries furthest:
+// the shared characters, the earlier body's head and the messages both carry
+// unchanged, at the earlier prompt's tokens per character. Under
+// SHORT_READ_MIN tokens shared, nothing is expected: providers cache in
+// blocks, and some not below a few thousand tokens.
+export const SHORT_READ = 0.5;
+export const SHORT_READ_MIN = 4096;
 
 // Replies kept per key, and steps apart from them: enough for a thread and a
 // few forks beside it. A step is compared with a step, which may be long ago.
@@ -140,6 +160,16 @@ function shared(a: string[], b: string[]): number {
   let at = 0;
   while (at < a.length && at < b.length && a[at] === b[at]) at++;
   return at;
+}
+
+// The tokens a request should read of an earlier reply's prompt, or undefined
+// when the earlier one left too little to tell.
+function expectedRead(earlier: Reply, now: Thread): number | undefined {
+  const { body, sizes, prompt } = earlier;
+  if (body === undefined || !sizes || !prompt || body.length === 0) return;
+  const kept = shared(earlier.digests, now.digests);
+  const changed = sizes.slice(kept).reduce((sum, size) => sum + size, 0);
+  return Math.round((prompt * Math.max(0, body.length - changed)) / body.length);
 }
 
 function keepNewest(list: Reply[], reply: Reply): Reply[] {
@@ -177,7 +207,8 @@ export class Diagnoses {
     if (this.off || !body.startsWith("{") || body.slice(1).trimStart().startsWith("}")) return;
     const asked = thread(of);
     asked.against = this.closest(asked, step);
-    const previous = asked.against?.id ?? null;
+    // A reply heard from its usage alone has no id to name.
+    const previous = asked.against?.id || null;
     // Added to what the agent sent, never in place of it: dropping its own
     // betas would change how the request is served.
     const betas = (headers.get("anthropic-beta") ?? "").split(",").map((beta) => beta.trim());
@@ -202,6 +233,25 @@ export class Diagnoses {
     if (heard.id) this.remember(asked, step, { id: heard.id, digests: asked.digests, body });
     const thinking = heard.thinking ? ` thinking=${heard.thinking}` : "";
     return (heard.reason ? ` cachemiss=${heard.reason}` : "") + thinking;
+  }
+
+  // Remembers a reply heard from its usage alone, and returns the journal's
+  // words for a short read; the pair is kept as a miss Anthropic names is.
+  measure(of: Thread | string, step: boolean, usage: Usage | undefined, body?: string): string {
+    if (!usage || body === undefined) return "";
+    const asked = thread(of);
+    const against = this.closest(asked, step);
+    const prompt = usage.input + usage.cacheRead + usage.cacheWrite;
+    const expected = (against && expectedRead(against, asked)) ?? 0;
+    const short = expected >= SHORT_READ_MIN && usage.cacheRead < expected * SHORT_READ;
+    const reason = `short_read{"read":${usage.cacheRead},"expected":${expected}}`;
+    if (short) {
+      const session = asked.key.split("\0")[0]!;
+      this.save?.({ session, step, reason, previous: against!.body!, missed: body });
+    }
+    const { digests, sizes } = asked;
+    this.remember(asked, step, { id: "", digests, sizes, body, prompt });
+    return short ? ` cachemiss=${reason}` : "";
   }
 
   private remember(of: Thread, step: boolean, reply: Reply): void {

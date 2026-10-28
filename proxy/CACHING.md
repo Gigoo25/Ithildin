@@ -718,9 +718,18 @@ restarts; the dashboard and the proxy's memory do not.
   `diagnostics.cache_miss_reason.type` (and any other fields, short) is
   logged. `previous_message_not_found` means the proxy's id was unknown
   upstream: after a restart, or more than the server keeps.
+- **`cachemiss=short_read{"read":…,"expected":…}`** on every other main
+  request with a session (Codex, chat, Gemini), which no provider explains.
+  The reply's usage is compared with the reply the request carries furthest:
+  the prompt they share, in characters, at the earlier prompt's tokens per
+  character, is what it should read. Under half of that (`SHORT_READ`) is a
+  miss, once at least 4096 tokens (`SHORT_READ_MIN`) are shared. A Responses
+  request with `previous_response_id` carries only its new items, so it is
+  not measured.
 - **Kept misses** (`misses.ts`). On a miss whose reason names a change
-  (`messages_changed`, `system_changed`, …) the proxy writes the request that
-  missed and the one it was compared with, byte for byte as sent, to
+  (`messages_changed`, `system_changed`, …), or a short read, the proxy
+  writes the request that missed and the one it was compared with, byte for
+  byte as sent, to
   `~/.local/state/ithildin/cachemiss/<time>-<session>/`: `previous.json`,
   `missed.json`, and `meta.json` with the reason, `firstChangedBlock` (the
   first tools, system or message block the two do not share, markers aside,

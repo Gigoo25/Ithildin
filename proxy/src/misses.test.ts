@@ -84,6 +84,35 @@ describe("firstChangedBlock", () => {
     });
   });
 
+  it("reads a Responses body's instructions and items, and a Gemini body's parts", () => {
+    const responses = (output: string) =>
+      JSON.stringify({
+        instructions: "you are",
+        input: [
+          { type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] },
+          { type: "function_call_output", call_id: "c1", output },
+        ],
+      });
+    expect(firstChangedBlock(responses("long"), responses("[masked]"))).toEqual({
+      index: 2,
+      previous: {
+        at: "m1",
+        start: '{"type":"function_call_output","call_id":"c1","output":"long"}',
+      },
+      missed: {
+        at: "m1",
+        start: '{"type":"function_call_output","call_id":"c1","output":"[masked]"}',
+      },
+    });
+    const gemini = (text: string) =>
+      JSON.stringify({ contents: [{ role: "user", parts: [{ text: "hi" }, { text }] }] });
+    expect(firstChangedBlock(gemini("a"), gemini("b"))).toEqual({
+      index: 1,
+      previous: { at: "m0[1]", start: '{"text":"a"}' },
+      missed: { at: "m0[1]", start: '{"text":"b"}' },
+    });
+  });
+
   it("gives up on a body that is not JSON", () => {
     expect(firstChangedBlock("not json", body(first))).toBeUndefined();
     expect(firstChangedBlock(body([null]), body([null]))).toBeNull();

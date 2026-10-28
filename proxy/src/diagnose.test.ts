@@ -7,6 +7,7 @@ import {
   DIAGNOSED_MAX,
   Diagnoses,
   REPLIES_MAX,
+  SHORT_READ_MIN,
   type Thread,
   diagnosingOn,
   heardIn,
@@ -182,6 +183,50 @@ describe("cache diagnostics", () => {
     for (let at = 0; at < REPLIES_MAX; at++)
       diagnoses.answer({ key, digests: [`n${at}`] }, false, { id: `msg_n${at}` });
     expect(asked(["a", "b", "c"]).id).toBe(`msg_n${REPLIES_MAX - 1}`);
+  });
+
+  it("measures a request no provider diagnoses, and keeps a short read", () => {
+    const kept: Miss[] = [];
+    const diagnoses = new Diagnoses((miss) => kept.push(miss));
+    const key = "s\0luna\0first";
+    const usage = (read: number, input: number) => ({
+      input,
+      cacheRead: read,
+      cacheWrite: 0,
+      output: 1,
+    });
+    // 1000 characters: a head of 400, then three messages of 200.
+    const body = "x".repeat(1000);
+    const first = { key, digests: ["a", "b", "c"], sizes: [200, 200, 200] };
+    expect(diagnoses.measure(first, false, usage(0, 50_000), body)).toBe("");
+    // Carrying all three, it should read all 50,000: 40,000 is enough.
+    const next = { key, digests: ["a", "b", "c", "d"], sizes: [200, 200, 200, 200] };
+    expect(diagnoses.measure(next, false, usage(40_000, 20_000), "y".repeat(1200))).toBe("");
+    // A step that changes the last two of four keeps 800 of 1200 characters:
+    // 40,000 of 60,000 tokens. Reading 12,000 is short.
+    const step = { key, digests: ["a", "b", "C", "D"], sizes: [200, 200, 200, 200] };
+    expect(diagnoses.measure(step, true, usage(12_000, 40_000), "step")).toBe(
+      ' cachemiss=short_read{"read":12000,"expected":40000}',
+    );
+    expect(kept).toEqual([
+      {
+        session: "s",
+        step: true,
+        reason: 'short_read{"read":12000,"expected":40000}',
+        previous: "y".repeat(1200),
+        missed: "step",
+      },
+    ]);
+    // Too little shared to expect anything, no usage, or no body: nothing said.
+    const small = { key: "t\0luna\0first", digests: ["a"], sizes: [10] };
+    diagnoses.measure(small, false, usage(0, SHORT_READ_MIN - 1), "z".repeat(100));
+    expect(diagnoses.measure({ ...small, digests: ["a", "b"] }, false, usage(0, 9), "zz")).toBe("");
+    expect(diagnoses.measure(next, false, undefined, "b")).toBe("");
+    expect(diagnoses.measure(next, false, usage(0, 1))).toBe("");
+    expect(kept).toHaveLength(1);
+    // A reply heard from its usage has no id to name when Anthropic is asked.
+    const asked = JSON.parse(diagnoses.ask(next, false, '{"a":1}', new Headers())!);
+    expect(asked.diagnostics.previous_message_id).toBeNull();
   });
 
   it("keeps bodies for only so many sessions", () => {

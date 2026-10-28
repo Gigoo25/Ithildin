@@ -851,9 +851,8 @@ async function forward(
   const asked = request.method !== "GET" && request.method !== "HEAD";
   const heard: Heard = {};
   const counted = usageCounter(events, context);
-  const answered = (usage: Usage | undefined) =>
-    counted(usage) +
-    (reached.asked ? stores.diagnoses.answer(thread!, !!shaped.step, heard, shaped.body) : "");
+  const diagnosed = missDiagnosis(asking, reached.asked, heard, scanned, shaped);
+  const answered = (usage: Usage | undefined) => counted(usage) + diagnosed(usage);
   const hooks = replyHooks(kept, id, heard, request.signal);
   const reply = await relayReply(upstream, { format, asked }, tags, line, tap, answered, hooks);
   // A rewritten stream ends when it does (rewriteSse); any other reply is over.
@@ -914,6 +913,29 @@ function parsedOr(data: string): unknown {
   } catch {
     return undefined;
   }
+}
+
+// What the log says about a reply's cache read. Anthropic says why a request it
+// was asked about missed; for the rest the usage is all there is
+// (diagnose.ts). A Responses request that names its previous response carries
+// only the new items, so there is nothing to compare.
+function missDiagnosis(
+  sent: { stores: Stores; thread: Thread | undefined; format: Format | undefined },
+  asked: boolean,
+  heard: Heard,
+  scanned: Scanned,
+  shaped: Forwarded,
+): (usage: Usage | undefined) => string {
+  const { stores, thread, format } = sent;
+  const carried = (scanned.object as { previous_response_id?: unknown } | undefined)
+    ?.previous_response_id;
+  const measured = thread && !(format === "responses" && carried);
+  return (usage) =>
+    asked
+      ? stores.diagnoses.answer(thread!, !!shaped.step, heard, shaped.body)
+      : measured
+        ? stores.diagnoses.measure(thread, !!shaped.step, usage, shaped.body)
+        : "";
 }
 
 // Sends a request upstream, asking Anthropic why a main Claude request missed

@@ -2,7 +2,8 @@
 // compared with, byte for byte as they went upstream. The open question in
 // CACHING.md needs exactly that pair, and both lived only in memory, so a
 // restart before anyone looked lost them. Now each `*_changed` miss Anthropic
-// names (diagnose.ts) leaves a directory under the state dir:
+// names, and each short read another provider's usage shows (diagnose.ts),
+// leaves a directory under the state dir:
 //
 //   cachemiss/<time>-<session>/previous.json   the earlier request
 //   cachemiss/<time>-<session>/missed.json     the request that missed
@@ -43,7 +44,9 @@ export function firstDifference(a: string, b: string): number {
 
 // A request's cached prompt as Anthropic orders it: tools, system, then each
 // message's blocks, named `tools[i]`, `system[i]`, `m<i>[j]`. A marker is left
-// out: moving one does not change the prefix.
+// out: moving one does not change the prefix. The other formats name their
+// system and messages otherwise, and a Responses item with no content, a
+// function call or its output, is one block.
 function promptBlocks(body: string): Array<{ at: string; text: string }> | undefined {
   let parsed: Record<string, unknown>;
   try {
@@ -59,13 +62,18 @@ function promptBlocks(body: string): Array<{ at: string; text: string }> | undef
     return JSON.stringify(rest);
   };
   const blocks: Array<{ at: string; text: string }> = [];
-  for (const key of ["tools", "system"])
+  for (const key of ["tools", "system", "instructions", "systemInstruction"])
     list(parsed[key]).forEach((block, i) =>
       blocks.push({ at: `${key}[${i}]`, text: unmarked(block) }),
     );
-  list(parsed.messages).forEach((message, m) => {
-    const content = (message as { content?: unknown } | null)?.content;
-    list(content).forEach((block, j) => blocks.push({ at: `m${m}[${j}]`, text: unmarked(block) }));
+  list(parsed.messages ?? parsed.input ?? parsed.contents).forEach((message, m) => {
+    const held = message as { content?: unknown; parts?: unknown } | null;
+    const content = held?.content ?? held?.parts;
+    if (content === undefined) blocks.push({ at: `m${m}`, text: unmarked(message) });
+    else
+      list(content).forEach((block, j) =>
+        blocks.push({ at: `m${m}[${j}]`, text: unmarked(block) }),
+      );
   });
   return blocks;
 }

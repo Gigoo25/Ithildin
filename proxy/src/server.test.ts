@@ -1845,6 +1845,45 @@ describe("routes", () => {
     }
   });
 
+  it("names a short read from the usage of a request no provider diagnoses", async () => {
+    const lines: string[] = [];
+    const spy = spyOn(process.stderr, "write").mockImplementation(
+      ((line: string) => lines.push(line) > 0) as never,
+    );
+    try {
+      const up = fakeUpstream(() =>
+        Response.json({
+          usage: { input_tokens: 50_000, input_tokens_details: { cached_tokens: 0 } },
+        }),
+      );
+      const handler = createHandler(DEFAULT_ROUTES, up.fetch);
+      const item = (text: string) => ({
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text }],
+      });
+      const body = (input: unknown[], more = {}) => ({
+        model: "luna",
+        tools: [{ type: "function", name: "shell" }],
+        input,
+        ...more,
+      });
+      const session = { session_id: "sess-short" };
+      const send = async (sent: unknown) =>
+        (await handler(post("openai-codex/codex/responses", sent, session))).text();
+      await send(body([item("hi")]));
+      await send(body([item("hi"), item("more")]));
+      const short = lines.filter((line) => line.includes(" cachemiss=short_read{"));
+      expect(short).toHaveLength(1);
+      expect(short[0]).toContain('"read":0');
+      // One that names its previous response carries only the new items.
+      await send(body([item("hi")], { previous_response_id: "resp_1" }));
+      expect(lines.filter((line) => line.includes("short_read"))).toHaveLength(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("logs a stand-in a tool read from disk, once per file", async () => {
     const lines: string[] = [];
     const spy = spyOn(process.stderr, "write").mockImplementation(

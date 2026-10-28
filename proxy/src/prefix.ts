@@ -40,8 +40,8 @@ type Fields = Record<string, unknown>;
 // as content. Moving it also turns string content into one text block, to
 // carry the marker, and back on the next turn; the provider reads the two
 // the same, so a string digests as that block.
-function digest(value: unknown, seen: WeakMap<object, string>): string {
-  if (value && typeof value === "object") {
+function digest(value: unknown, seen: WeakMap<object, string>, sizes?: number[]): string {
+  if (value && typeof value === "object" && !sizes) {
     const known = seen.get(value);
     if (known !== undefined) return known;
   }
@@ -49,6 +49,7 @@ function digest(value: unknown, seen: WeakMap<object, string>): string {
     if (key === "cache_control") return undefined;
     return key === "content" && typeof inner === "string" ? [{ type: "text", text: inner }] : inner;
   });
+  sizes?.push(text.length);
   const hash = createHash("sha1").update(text).digest("base64").slice(0, 16);
   if (value && typeof value === "object") seen.set(value, hash);
   return hash;
@@ -104,15 +105,17 @@ function keyOf(format: Format, session: string, body: Fields): string {
 }
 
 // The conversation a request belongs to and its messages' digests, for cache
-// diagnostics (diagnose.ts) to tell a session's threads apart.
+// diagnostics (diagnose.ts) to tell a session's threads apart, with each
+// message's size, to tell how much of a prompt two requests share.
 export function threadOf(
   format: Format,
   session: string,
   body: Fields,
-): { key: string; digests: string[] } {
+): { key: string; digests: string[]; sizes: number[] } {
   const seen = new WeakMap<object, string>();
-  const digests = messages(format, body).map((item) => digest(item, seen));
-  return { key: keyOf(format, session, body), digests };
+  const sizes: number[] = [];
+  const digests = messages(format, body).map((item) => digest(item, seen, sizes));
+  return { key: keyOf(format, session, body), digests, sizes };
 }
 
 export class PrefixWatch {
