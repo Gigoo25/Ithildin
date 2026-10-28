@@ -1167,6 +1167,9 @@ const seenLiterals = new Set<string>();
 // the same. Protected changes (protect.ts) are blocked the same way.
 const blockedCalls = new Map<string, string>();
 const MAX_REMEMBERED = 50_000;
+// Seeded hashes of the items whose literals are in seenLiterals.
+const literalSources = new Set<number | bigint>();
+const LITERALS_SEED = BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER));
 
 // Why a call was blocked, for `ithildin check`.
 export function blockedNotice(callId: string): string | undefined {
@@ -1194,11 +1197,19 @@ function rememberLiterals(format: Format, body: Record<string, unknown>): void {
   } else {
     real.push(list);
   }
-  if (seenLiterals.size > MAX_REMEMBERED) seenLiterals.clear();
+  if (seenLiterals.size > MAX_REMEMBERED || literalSources.size > MAX_REMEMBERED) {
+    seenLiterals.clear();
+    literalSources.clear();
+  }
   for (const value of real) {
     if (value === undefined) continue;
-    for (const match of aliasMatches(typeof value === "string" ? value : JSON.stringify(value)))
-      seenLiterals.add(match.text);
+    const text = typeof value === "string" ? value : JSON.stringify(value);
+    // Every request carries the conversation again: an item read before
+    // added its literals then.
+    const key = Bun.hash(text, LITERALS_SEED);
+    if (literalSources.has(key)) continue;
+    literalSources.add(key);
+    for (const match of aliasMatches(text)) seenLiterals.add(match.text);
   }
 }
 
@@ -1780,24 +1791,48 @@ const FLAT_CONTEXT = /^(\S.*?)-\d+-/;
 // Whether a listed path is a secret file, following links. A name with spaces
 // counts only when it exists: "Loaded .env: 3 vars" is prose, not a path.
 // Memoized per request: every line of every result is a candidate.
-function secretListing(cwd: string): (listed: string) => boolean {
-  const seen = new Map<string, boolean>();
-  return (listed) => {
-    let secret = seen.get(listed);
-    if (secret === undefined) {
-      secret =
-        (!/\s/.test(listed) || existsSync(path.resolve(cwd, listed))) && isSecretPath(listed, cwd);
-      seen.set(listed, secret);
-    }
-    return secret;
-  };
+interface SecretListing {
+  cwd: string;
+  secret: (listed: string) => boolean;
 }
 
-function withholdLines(
+function secretListing(cwd: string): SecretListing {
+  const seen = new Map<string, boolean>();
+  const secret = (listed: string): boolean => {
+    let found = seen.get(listed);
+    if (found === undefined) {
+      found =
+        (!/\s/.test(listed) || existsSync(path.resolve(cwd, listed))) && isSecretPath(listed, cwd);
+      seen.set(listed, found);
+    }
+    return found;
+  };
+  return { cwd, secret };
+}
+
+// What each result's lines came to when first checked, per cwd. A request
+// carries the conversation again, and a result already forwarded went out as
+// decided then; checking it anew costs a path lookup per line and can only
+// change what was sent before. Keyed by a seeded 64-bit hash.
+const WITHHELD_MAX = 50_000;
+const WITHHELD_SEED = BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER));
+const withheldBefore = new Map<number | bigint, { text: string; hits: number }>();
+
+function withholdLines(text: string, secret: SecretListing): { text: string; hits: number } {
+  if (!text.includes(":") && !text.includes("-")) return { text, hits: 0 };
+  const key = Bun.hash(`${secret.cwd}\0${text}`, WITHHELD_SEED);
+  const before = withheldBefore.get(key);
+  if (before) return before;
+  if (withheldBefore.size >= WITHHELD_MAX) withheldBefore.clear();
+  const out = checkLines(text, secret.secret);
+  withheldBefore.set(key, out);
+  return out;
+}
+
+function checkLines(
   text: string,
   secret: (listed: string) => boolean,
 ): { text: string; hits: number } {
-  if (!text.includes(":") && !text.includes("-")) return { text, hits: 0 };
   let hits = 0;
   let group = false;
   const lines = text.split("\n").map((line) => {
@@ -1832,7 +1867,7 @@ function withholdLines(
 // text parts, Responses input_text).
 function withholdSecretLines(
   content: unknown,
-  secret: (listed: string) => boolean,
+  secret: SecretListing,
 ): { content: unknown; hits: number } {
   if (typeof content === "string") {
     const out = withholdLines(content, secret);

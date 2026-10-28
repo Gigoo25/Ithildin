@@ -1170,13 +1170,16 @@ export class AliasBook {
     // wins over the stand-in domain inside it.
     for (const { start, end } of this.recasedWords.find(text, true))
       found.push({ text: text.slice(start, end), start, end });
-    const exact = found.filter(
-      (span) => this.reverse.has(span.text) || this.recased.has(span.text),
-    );
+    // Where an exact stand-in lies: a mark per character, so a composite asks
+    // about its own span and not about every stand-in in the text.
+    const exact = new Uint8Array(text.length + 1);
+    for (const span of found)
+      if (this.reverse.has(span.text) || this.recased.has(span.text))
+        exact.fill(1, span.start, span.end);
     for (const match of text.matchAll(COMPOSITE)) {
       // An exact stand-in inside keeps its case; the parts map is lowercase.
       const end = match.index + match[0].length;
-      if (exact.some((span) => span.start < end && span.end > match.index)) continue;
+      if (exact.subarray(match.index, end).includes(1)) continue;
       if (!/[-_.@]/.test(match[0]) || this.resolve(match[0]) === undefined) continue;
       found.push({ text: match[0], start: match.index, end: match.index + match[0].length });
     }

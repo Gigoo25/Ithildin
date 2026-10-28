@@ -1740,6 +1740,19 @@ describe("secret links and spaced paths", () => {
       `  1: ${WITHHELD_LINE}`,
     ]);
   });
+
+  it("keeps a search result as first forwarded, and checks a new one afresh", () => {
+    const system = `Current working directory: ${dir}`;
+    const grep = (output: string) =>
+      result(request(system, { name: "Grep", input: { pattern: "PLAIN" } }, output));
+    const before = `later.txt:1:${VALUE}`;
+    expect(grep(before)).toBe(before);
+    // The link appears after the result went out; resending the result
+    // changes nothing upstream, so the prefix stays.
+    symlinkSync(".env", join(dir, "later.txt"));
+    expect(grep(before)).toBe(before);
+    expect(grep(`later.txt:2:${VALUE}`)).toBe(`later.txt: ${WITHHELD_LINE}`);
+  });
 });
 
 describe("routes", () => {

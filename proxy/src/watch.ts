@@ -243,11 +243,49 @@ function note(scan: Scan, found: Omit<WatchHit, "start">, text: string): void {
   scan.hits.push({ ...found, start });
 }
 
+// What each string held when it was last scanned, for the lists it was
+// scanned with. A request carries the whole conversation again, so nearly
+// every string in it was scanned on the request before. Keyed by a seeded
+// 64-bit hash, so the map does not hold every conversation a second time.
+// Short strings cost less to scan than to hash, so they are not kept.
+const MEMO_MIN_CHARS = 32;
+const MEMO_MAX = 50_000;
+const MEMO_SEED = BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER));
+const memo = {
+  lists: "",
+  index: indexKnown([]),
+  found: new Map<number | bigint, [string[], string[]]>(),
+};
+
+function memoFor(terms: string[], known: KnownValue[]): KnownIndex {
+  const lists = JSON.stringify([terms, known]);
+  if (lists !== memo.lists) {
+    memo.lists = lists;
+    memo.index = indexKnown(known);
+    memo.found.clear();
+  }
+  return memo.index;
+}
+
+function foundIn(scan: Scan, text: string): [string[], string[]] {
+  const scanned = (): [string[], string[]] => [
+    termsIn(text, scan.terms),
+    [...new Set(knownIn(text, scan.index))],
+  ];
+  if (text.length < MEMO_MIN_CHARS) return scanned();
+  const key = Bun.hash(text, MEMO_SEED);
+  const known = memo.found.get(key);
+  if (known) return known;
+  if (memo.found.size >= MEMO_MAX) memo.found.clear();
+  const found = scanned();
+  memo.found.set(key, found);
+  return found;
+}
+
 function scanText(scan: Scan, text: string, where: string): void {
-  for (const value of termsIn(text, scan.terms))
-    note(scan, { value, source: "watch", where }, text);
-  for (const value of new Set(knownIn(text, scan.index)))
-    note(scan, { value, source: "known", where }, text);
+  const [terms, known] = foundIn(scan, text);
+  for (const value of terms) note(scan, { value, source: "watch", where }, text);
+  for (const value of known) note(scan, { value, source: "known", where }, text);
 }
 
 function walk(scan: Scan, value: unknown, path: string, depth: number): void {
@@ -270,7 +308,8 @@ export function findWatched(
   known: KnownValue[],
   target: { body: unknown; path: string; search: string },
 ): WatchHit[] {
-  const scan: Scan = { terms: policy.terms, index: indexKnown(known), hits: [], counts: new Map() };
+  const index = memoFor(policy.terms, known);
+  const scan: Scan = { terms: policy.terms, index, hits: [], counts: new Map() };
   walk(scan, target.body, "", 0);
   scanText(scan, decoded(target.path), "path");
   scanText(scan, decoded(target.search), "query");

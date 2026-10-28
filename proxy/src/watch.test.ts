@@ -155,6 +155,21 @@ describe("finding watched strings", () => {
 });
 
 describe("finding known values", () => {
+  it("scans a string again once the lists change, and finds it in every place", () => {
+    const text = "the deploy went to zeta-host after the review of the change";
+    const body = messages([
+      { type: "text", text },
+      { type: "text", text },
+    ]);
+    expect(found([], body)).toEqual([]);
+    expect(found([], body, "/", "", [word("zeta-host")]).map((hit) => hit.where)).toEqual([
+      "messages[0].content[0].text",
+      "messages[0].content[1].text",
+    ]);
+    expect(found(["the review"], body).map((hit) => hit.source)).toEqual(["watch", "watch"]);
+    expect(found([], body)).toEqual([]);
+  });
+
   it("finds a value only as a whole word, in any case when its entry allows it", () => {
     const known = [word("Zeta-Host")];
     expect(found([], messages("run on zeta-host now"), "/", "", known)).toHaveLength(1);
