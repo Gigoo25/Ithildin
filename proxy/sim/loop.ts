@@ -8,6 +8,10 @@
 //                harness: the model's text and calls get the real values back
 //   stream       the response the harness reads parses, and agrees with itself
 //   valid        the forwarded body is one the provider would take
+//   wide         each command forwarded starts with a word the harness's
+//                commands start with: a mask past its value garbles the
+//                whole command, and swap-back hides that from every other
+//                check
 //   prefix       each forwarded request extends the one before it, unless the
 //                harness cut the conversation, shaping stepped, or a new
 //                prompt moved what shaping keeps (shape.ts says why each is)
@@ -29,7 +33,7 @@ import { firstChange, parts, valid } from "./checks.ts";
 import { respond, type Turn } from "./model.ts";
 import { Random } from "./random.ts";
 import { plantedBody, route, turnOf, type Sent, type Tape } from "./tape.ts";
-import { listOf } from "./workload.ts";
+import { listKey, listOf, systemOf } from "./workload.ts";
 import { readTurn, streamed } from "./wire.ts";
 import { makeWorld } from "./world.ts";
 import type { Format } from "../src/redact.ts";
@@ -84,6 +88,8 @@ const runs = new Map<string, Run>();
 // By session and model, for a subagent that shares its parent's session.
 const routes = new Map<string, Run>();
 const routeKey = (session: string, model: unknown) => `${session}\0${String(model)}`;
+// The model a request is for: Gemini names it in the path, not the body.
+const modelOf = (url: string, body: Fields) => body.model ?? /\/models\/([^/:]+):/.exec(url)?.[1];
 const SESSION_HEADERS = ["x-claude-code-session-id", "session_id", "x-opencode-session"];
 const caughtKinds = new Map<Kind, boolean>();
 
@@ -212,7 +218,10 @@ class Corpus implements Source {
   ) {
     const items = listOf(format, body) as Fields[];
     const model = (item: Fields) =>
-      item.role === "assistant" || item.type === "reasoning" || item.type === "function_call";
+      item.role === "assistant" ||
+      item.role === "model" ||
+      item.type === "reasoning" ||
+      item.type === "function_call";
     let first = items.findIndex(model);
     if (first < 0) first = items.length;
     this.list = items.slice(0, first);
@@ -230,10 +239,9 @@ class Corpus implements Source {
     return this.steps.length + (last && last.then.length > 0 ? 1 : 0) - this.at;
   }
   next(): Sent {
-    const key = this.format === "responses" ? "input" : "messages";
     const sent: Sent = {
       ...route(this.format, this.session),
-      body: { ...this.body, [key]: structuredClone(this.list) },
+      body: { ...this.body, [listKey(this.format)]: structuredClone(this.list) },
       ...(this.random.chance(0.03) ? { fail: true } : {}),
       ...(this.random.chance(0.05) ? { retry: true } : {}),
     };
@@ -335,6 +343,27 @@ function exposure(run: Run, raw: Fields): void {
     }
 }
 
+// The first word of every command in a body: a call's input, or its
+// arguments as a JSON string.
+function verbs(value: unknown, out = new Set<string>()): Set<string> {
+  if (typeof value === "string" && value.startsWith("{")) {
+    try {
+      verbs(JSON.parse(value), out);
+    } catch {}
+  } else if (Array.isArray(value)) for (const item of value) verbs(item, out);
+  else if (value && typeof value === "object")
+    for (const [key, item] of Object.entries(value))
+      if (key === "command" && typeof item === "string") out.add(item.split(" ")[0]!);
+      else verbs(item, out);
+  return out;
+}
+
+function wide(run: Run, raw: Fields, seen: Seen): void {
+  const sent = verbs(raw);
+  for (const verb of verbs(seen.body))
+    if (!sent.has(verb)) find(run, "wide", `a command forwarded as ${JSON.stringify(verb)}`);
+}
+
 function learnStandIns(run: Run, raw: Fields, seen: Seen): void {
   for (const t of tokens(strings(raw).join("\n"))) run.sentTokens.add(t);
   for (const t of tokens(strings(seen.body).join("\n")))
@@ -412,7 +441,7 @@ const upstream = (async (url: string, init: RequestInit) => {
   const id = SESSION_HEADERS.map((name) => headers.get(name)).find(Boolean);
   const text = String(init.body ?? "");
   const body = JSON.parse(text) as Fields;
-  const run = routes.get(routeKey(String(id), body.model)) ?? runs.get(String(id));
+  const run = routes.get(routeKey(String(id), modelOf(String(url), body))) ?? runs.get(String(id));
   if (!run) return Response.json({ error: `no session ${String(id)}` }, { status: 400 });
   run.forwarded.push({ url: String(url), headers, text, body });
   if (run.failNext) {
@@ -431,10 +460,12 @@ const upstream = (async (url: string, init: RequestInit) => {
 // The index of the last turn shaping counts as typed: what strip-thinking and
 // the reasoning drop key on (lastTyped and lastAsked in shape.ts).
 function typedAt(format: Format, body: Fields): number {
-  const list = ((format === "responses" ? body.input : body.messages) ?? []) as Fields[];
+  const list = listOf(format, body) as Fields[];
   return list.findLastIndex((entry) => {
     if (format === "responses") return entry.type === "message" && entry.role === "user";
     if (entry.role !== "user") return false;
+    if (format === "gemini")
+      return ((entry.parts ?? []) as Fields[]).some((part) => !part.functionResponse);
     if (format === "chat" || !Array.isArray(entry.content)) return true;
     return (entry.content as Fields[]).some((block) => block.type !== "tool_result");
   });
@@ -451,9 +482,7 @@ function where(before: unknown, now: unknown): string {
 }
 
 function partValue(format: Format, body: Fields, index: number): unknown {
-  const system = format === "responses" ? body.instructions : body.system;
-  const list = ((format === "responses" ? body.input : body.messages) ?? []) as unknown[];
-  return [body.model, body.tools, system, ...list][index];
+  return [body.model, body.tools, systemOf(format, body), ...listOf(format, body)][index];
 }
 
 function prefix(run: Run, raw: Fields, seen: Seen, lines: string[]): void {
@@ -481,7 +510,7 @@ function prefix(run: Run, raw: Fields, seen: Seen, lines: string[]): void {
 
 async function send(run: Run, path: string, headers: Record<string, string>, raw: Fields) {
   await booted;
-  routes.set(routeKey(run.source.session, raw.model), run);
+  routes.set(routeKey(run.source.session, modelOf(path, raw)), run);
   const from = journal.length;
   const start = performance.now();
   const request = new Request(`http://127.0.0.1/${path}`, {
@@ -548,6 +577,7 @@ async function sendAll(run: Run, { path, headers, body: raw, fail, retry }: Sent
   for (const v of valid(source.format, seen.body)) find(run, "valid", v.detail);
   prefix(run, raw, seen, sent.lines);
   learnStandIns(run, raw, seen);
+  wide(run, raw, seen);
   exposure(run, raw);
   const read = readTurn(source.format, sent.text);
   for (const problem of read.problems) find(run, "stream", problem);

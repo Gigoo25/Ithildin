@@ -6,7 +6,7 @@ import { generated, requestsOf } from "./workload.ts";
 // A few short seeds per format on every run; `bun proxy/sim/run.ts` runs
 // hundreds of long ones.
 describe("shaping simulator", () => {
-  for (const format of ["anthropic", "responses", "chat"] as const)
+  for (const format of ["anthropic", "responses", "chat", "gemini"] as const)
     test(`${format}: shaped requests are pure, valid and stepped`, () => {
       for (const seed of [1, 2, 3]) {
         const report = simulate(format, generated(format, seed, 70));

@@ -7,8 +7,9 @@
 
 import type { Format } from "../src/redact.ts";
 import { canary } from "./canaries.ts";
-import type { Turn } from "./model.ts";
+import { geminiSignature, type Turn } from "./model.ts";
 import { Random } from "./random.ts";
+import { route } from "./tape.ts";
 import { runTool, type World } from "./world.ts";
 
 type Fields = Record<string, unknown>;
@@ -115,6 +116,8 @@ export class Agent {
         role: "user",
         content: [...notes, text].map((t) => ({ type: "input_text", text: t })),
       });
+    else if (this.format === "gemini")
+      this.list.push({ role: "user", parts: [...notes, text].map((t) => ({ text: t })) });
     else this.list.push({ role: "user", content: [...notes, text].join("\n") });
   }
 
@@ -149,6 +152,16 @@ export class Agent {
       this.list.push({ role: "user", content });
       return;
     }
+    // The AI SDK's shape: the results of a model turn are the parts of one
+    // user turn, each named by its call's tool, as the call carried no id.
+    if (this.format === "gemini") {
+      const parts = turn.calls.map((c, i) => ({
+        functionResponse: { name: c.name, response: { name: c.name, content: outputs[i] } },
+      }));
+      this.list.push({ role: "user", parts });
+      if (typed) this.pushUser(typed, []);
+      return;
+    }
     turn.calls.forEach((c, i) =>
       this.list.push(
         this.format === "responses"
@@ -179,15 +192,17 @@ export class Agent {
       this.epoch++;
       this.pushUser(summary, []);
       this.list.push(
-        this.format === "chat"
-          ? { role: "assistant", content: "Understood." }
-          : this.format === "responses"
-            ? {
-                type: "message",
-                role: "assistant",
-                content: [{ type: "output_text", text: "Understood." }],
-              }
-            : { role: "assistant", content: [{ type: "text", text: "Understood." }] },
+        this.format === "gemini"
+          ? { role: "model", parts: [{ text: "Understood." }] }
+          : this.format === "chat"
+            ? { role: "assistant", content: "Understood." }
+            : this.format === "responses"
+              ? {
+                  type: "message",
+                  role: "assistant",
+                  content: [{ type: "output_text", text: "Understood." }],
+                }
+              : { role: "assistant", content: [{ type: "text", text: "Understood." }] },
       );
     }
   }
@@ -204,6 +219,7 @@ export class Agent {
         },
         body: this.anthropicBody(),
       };
+    if (this.format === "gemini") return this.geminiOutgoing();
     const tools = this.tools.map((name) => ({
       type: "function",
       name,
@@ -236,6 +252,30 @@ export class Agent {
           { role: "system", content: `${this.persona("opencode")}\n\n${this.world.memory}` },
           ...structuredClone(this.list),
         ],
+      },
+    };
+  }
+
+  // opencode's Gemini models, sent through the AI SDK to Gemini's own API.
+  private geminiOutgoing(): Outgoing {
+    const model = this.subagent ? "gemini-4-argon-flash" : "gemini-4-argon";
+    return {
+      ...route("gemini", this.session, model),
+      body: {
+        contents: structuredClone(this.list),
+        systemInstruction: {
+          parts: [{ text: `${this.persona("opencode")}\n\n${this.world.memory}` }],
+        },
+        tools: [
+          {
+            functionDeclarations: this.tools.map((name) => ({
+              name,
+              description: `The ${name} tool.`,
+              parameters: { type: "object" },
+            })),
+          },
+        ],
+        generationConfig: { thinkingConfig: { includeThoughts: true } },
       },
     };
   }
@@ -289,6 +329,7 @@ export function modelItems(format: Format, turn: Turn): Fields[] {
     out.push({ role: "assistant", content });
     return out;
   }
+  if (format === "gemini") return [geminiModelTurn(turn)];
   if (format === "responses") {
     out.push({
       type: "reasoning",
@@ -322,4 +363,22 @@ export function modelItems(format: Format, turn: Turn): Fields[] {
     ...(calls.length > 0 ? { tool_calls: calls } : {}),
   });
   return out;
+}
+
+// A Gemini model turn as the AI SDK sends it back: its thought with the
+// signature the stream gave it (on its first call, or else its thought), its
+// text, and its calls without ids.
+function geminiModelTurn(turn: Turn): Fields {
+  const thoughtSignature = geminiSignature(turn);
+  const parts: Fields[] = [
+    { text: turn.thinking, thought: true, ...(turn.calls.length ? {} : { thoughtSignature }) },
+  ];
+  if (turn.text) parts.push({ text: turn.text });
+  turn.calls.forEach((c, i) =>
+    parts.push({
+      functionCall: { name: c.name, args: c.input },
+      ...(i === 0 ? { thoughtSignature } : {}),
+    }),
+  );
+  return { role: "model", parts };
 }

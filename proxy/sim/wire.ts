@@ -6,9 +6,13 @@
 // Reading the stream back also checks it agrees with itself: a Responses
 // stream says each text three times (deltas, the done event, the completed
 // response), and a harness may read any of them.
+//
+// Gemini streams each event as a whole reply of the parts that are new, its
+// events apart by CRLF as its API sends them; a call comes whole, without an
+// id, and its signature rides on the first call or on an empty last part.
 
 import type { Format } from "../src/redact.ts";
-import type { ModelCall, Turn } from "./model.ts";
+import { geminiSignature, type ModelCall, type Turn } from "./model.ts";
 import type { Usage } from "./cache.ts";
 import { Random } from "./random.ts";
 
@@ -195,6 +199,56 @@ function chatEvents(turn: Turn, usage: Usage, random: Random): Event[] {
   return out;
 }
 
+function geminiParts(turn: Turn, random: Random): Fields[] {
+  const thoughtSignature = geminiSignature(turn);
+  const parts: Fields[] = pieces(random, turn.thinking).map((text) => ({ text, thought: true }));
+  if (turn.text) parts.push(...pieces(random, turn.text).map((text) => ({ text })));
+  turn.calls.forEach((call, i) =>
+    parts.push({
+      functionCall: { name: call.name, args: call.input },
+      ...(i === 0 ? { thoughtSignature } : {}),
+    }),
+  );
+  if (turn.calls.length === 0) parts.push({ text: "", thoughtSignature });
+  return parts;
+}
+
+function geminiEvents(turn: Turn, usage: Usage, random: Random): Event[] {
+  // Parts side by side sometimes share an event, as Gemini batches them.
+  const groups: Fields[][] = [];
+  for (const part of geminiParts(turn, random))
+    if (groups.length === 0 || random.chance(0.7)) groups.push([part]);
+    else groups.at(-1)!.push(part);
+  return groups.map((parts, i) => {
+    const last = i === groups.length - 1;
+    const prompt = usage.read + usage.uncached;
+    return {
+      data: {
+        candidates: [
+          {
+            content: { role: "model", parts },
+            index: 0,
+            ...(last ? { finishReason: "STOP" } : {}),
+          },
+        ],
+        ...(last
+          ? {
+              usageMetadata: {
+                promptTokenCount: prompt,
+                cachedContentTokenCount: usage.read,
+                candidatesTokenCount: 40,
+                thoughtsTokenCount: 10,
+                totalTokenCount: prompt + 50,
+              },
+            }
+          : {}),
+        modelVersion: "gemini-4-argon",
+        responseId: "gemini_sim",
+      },
+    };
+  });
+}
+
 // The turn as an SSE response, its bytes cut at random points.
 export function streamed(format: Format, turn: Turn, usage: Usage, random: Random): Response {
   const events =
@@ -202,11 +256,14 @@ export function streamed(format: Format, turn: Turn, usage: Usage, random: Rando
       ? anthropicEvents(turn, usage, random)
       : format === "responses"
         ? responsesEvents(turn, usage, random)
-        : chatEvents(turn, usage, random);
+        : format === "gemini"
+          ? geminiEvents(turn, usage, random)
+          : chatEvents(turn, usage, random);
+  const end = format === "gemini" ? "\r\n\r\n" : "\n\n";
   const text = events
     .map((e) => {
       const data = typeof e.data === "string" ? e.data : JSON.stringify(e.data);
-      return `${e.event ? `event: ${e.event}\n` : ""}data: ${data}\n\n`;
+      return `${e.event ? `event: ${e.event}\n` : ""}data: ${data}${end}`;
     })
     .join("");
   const bytes = new TextEncoder().encode(text);
@@ -225,9 +282,9 @@ export function streamed(format: Format, turn: Turn, usage: Usage, random: Rando
 }
 
 export function parseEvents(text: string): Fields[] {
-  return text.split("\n\n").flatMap((block) => {
+  return text.split(/\r?\n\r?\n/).flatMap((block) => {
     const data = block
-      .split("\n")
+      .split(/\r?\n/)
       .filter((line) => line.startsWith("data: "))
       .map((line) => line.slice(6))
       .join("\n");
@@ -339,6 +396,36 @@ function readChat(events: Fields[], problems: string[]): Turn {
   return turn;
 }
 
+// Gemini's events read as the AI SDK does: each candidate's new parts in
+// order. Nothing may follow the event that finished the candidate.
+function readGemini(events: Fields[], problems: string[]): Turn {
+  const turn: Turn = { thinking: "", text: "", calls: [] };
+  let finished = false;
+  for (const e of events) {
+    const candidate = (e.candidates as Fields[] | undefined)?.[0];
+    if (!candidate) continue;
+    const parts = ((candidate.content as Fields | undefined)?.parts ?? []) as Fields[];
+    if (finished && parts.length > 0) problems.push("parts came after the finish reason");
+    if (candidate.finishReason !== undefined) finished = true;
+    for (const part of parts) {
+      const call = part.functionCall as Fields | undefined;
+      if (call) {
+        const args = call.args ?? {};
+        if (typeof args !== "object" || Array.isArray(args))
+          problems.push(`a call's arguments are not an object: ${JSON.stringify(args)}`);
+        turn.calls.push({
+          id: String(call.id ?? ""),
+          name: String(call.name),
+          input: args as Record<string, unknown>,
+        });
+      } else if (part.thought === true) turn.thinking += String(part.text ?? "");
+      else if (typeof part.text === "string") turn.text += part.text;
+    }
+  }
+  if (!finished) problems.push("the stream never finished its candidate");
+  return turn;
+}
+
 // What the harness made of the proxy's response, and anything inconsistent
 // in it.
 export function readTurn(format: Format, text: string): Read {
@@ -357,6 +444,8 @@ export function readTurn(format: Format, text: string): Read {
       ? readAnthropic(events, problems)
       : format === "responses"
         ? readResponses(events, problems)
-        : readChat(events, problems);
+        : format === "gemini"
+          ? readGemini(events, problems)
+          : readChat(events, problems);
   return { turn, problems };
 }

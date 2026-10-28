@@ -26,7 +26,7 @@ import { Random } from "./random.ts";
 import { saveTape } from "./tape.ts";
 import { option, parting, pool, Trials } from "./trials.ts";
 
-const FORMATS: Format[] = ["anthropic", "responses", "chat"];
+const FORMATS: Format[] = ["anthropic", "responses", "chat", "gemini"];
 const trials = new Trials("subagents");
 
 interface Result {

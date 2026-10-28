@@ -14,6 +14,7 @@
 
 import { createHash } from "node:crypto";
 import type { Format } from "../src/redact.ts";
+import { listOf, systemOf } from "./workload.ts";
 
 type Fields = Record<string, unknown>;
 
@@ -55,14 +56,15 @@ function blocksOf(format: Format, body: Fields): Block[] {
     Array.isArray(list) ? list.forEach(add) : list !== undefined && add(list);
   add({ model: body.model, thinking: body.thinking ?? body.reasoning });
   each(body.tools);
-  each(format === "responses" ? body.instructions : body.system);
-  const list = format === "responses" ? body.input : body.messages;
-  for (const item of Array.isArray(list) ? list : []) {
+  each(systemOf(format, body));
+  for (const item of listOf(format, body)) {
     const entry = item as Fields;
     // A message's role is part of its first block, so two messages with the
-    // same blocks but different roles do not share a prefix.
-    if (Array.isArray(entry.content) && entry.content.length > 0)
-      entry.content.forEach((block, i) => add(i === 0 ? { role: entry.role, block } : block));
+    // same blocks but different roles do not share a prefix. A Gemini turn's
+    // blocks are its parts.
+    const content = format === "gemini" ? entry.parts : entry.content;
+    if (Array.isArray(content) && content.length > 0)
+      content.forEach((block, i) => add(i === 0 ? { role: entry.role, block } : block));
     else add(item);
   }
   const hash = createHash("sha1");

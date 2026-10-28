@@ -16,6 +16,7 @@ import type { Format } from "../src/redact.ts";
 import { canary, preview, type Canary, type Kind } from "./canaries.ts";
 import type { Turn } from "./model.ts";
 import { Random } from "./random.ts";
+import { listOf } from "./workload.ts";
 
 type Fields = Record<string, unknown>;
 
@@ -65,12 +66,19 @@ export interface Tape {
 }
 
 export function formatOf(body: Fields): Format {
+  if (Array.isArray(body.contents)) return "gemini";
   if (Array.isArray(body.input)) return "responses";
   return Array.isArray(body.system) || body.system !== undefined ? "anthropic" : "chat";
 }
 
 // Where each format's harness sends its requests, and how it names its session.
-export function route(format: Format, session: string): Omit<Sent, "body"> {
+// Gemini names the model in the path: opencode Go serves its Gemini models on
+// Gemini's own API, streamed as SSE.
+export function route(
+  format: Format,
+  session: string,
+  model = "gemini-4-argon",
+): Omit<Sent, "body"> {
   const auth = { authorization: "Bearer sim-token", "content-type": "application/json" };
   if (format === "anthropic")
     return {
@@ -80,7 +88,10 @@ export function route(format: Format, session: string): Omit<Sent, "body"> {
   if (format === "responses")
     return { path: "openai-codex/codex/responses", headers: { ...auth, session_id: session } };
   return {
-    path: "opencode-go/chat/completions",
+    path:
+      format === "gemini"
+        ? `opencode-go/models/${model}:streamGenerateContent?alt=sse`
+        : "opencode-go/chat/completions",
     headers: { ...auth, "x-opencode-session": session, "x-opencode-client": "opencode" },
   };
 }
@@ -183,6 +194,10 @@ function planted(random: Random, c: Canary): string {
 function places(format: Format, list: Fields[]): Array<(add: string) => void> {
   const out: Array<(add: string) => void> = [];
   list.forEach((item, at) => {
+    if (format === "gemini") {
+      geminiPlaces(item, at, out);
+      return;
+    }
     if (format === "responses") {
       if (item.type === "function_call_output" && typeof item.output === "string")
         out.push((add) => (item.output = `${item.output as string}${add}`));
@@ -205,6 +220,19 @@ function places(format: Format, list: Fields[]): Array<(add: string) => void> {
   return out;
 }
 
+// A Gemini user turn's text parts after the first turn, and what its results
+// say.
+function geminiPlaces(item: Fields, at: number, out: Array<(add: string) => void>): void {
+  if (item.role !== "user" || !Array.isArray(item.parts)) return;
+  for (const part of item.parts as Fields[]) {
+    if (typeof part.text === "string" && at > 0)
+      out.push((add) => (part.text = `${part.text as string}${add}`));
+    const response = (part.functionResponse as Fields | undefined)?.response as Fields | undefined;
+    if (response && typeof response.content === "string")
+      out.push((add) => (response.content = `${response.content as string}${add}`));
+  }
+}
+
 // A real body with canaries planted in it, so the leak check has something
 // to look for: the body's own values were masked before it was kept.
 export function plantedBody(
@@ -216,8 +244,7 @@ export function plantedBody(
   const format = formatOf(body);
   const digest = createHash("sha256").update(readFileSync(file)).digest("hex");
   const random = new Random(seed ^ Number.parseInt(digest.slice(0, 8), 16));
-  const list = (format === "responses" ? body.input : body.messages) as Fields[];
-  const spots = places(format, list);
+  const spots = places(format, listOf(format, body) as Fields[]);
   const canaries: Canary[] = [];
   for (let i = 0; i < count && spots.length > 0; i++) {
     const c = canary(random);
@@ -245,12 +272,28 @@ function argsOf(text: unknown): Record<string, unknown> {
   }
 }
 
+// A Gemini model turn's parts: thoughts, text, and calls, which carry no id.
+function geminiTurn(item: Fields, turn: Turn): void {
+  for (const part of (Array.isArray(item.parts) ? item.parts : []) as Fields[]) {
+    const call = part.functionCall as Fields | undefined;
+    if (call)
+      turn.calls.push({
+        id: String(call.id ?? ""),
+        name: String(call.name),
+        input: (call.args ?? {}) as Record<string, unknown>,
+      });
+    else if (part.thought === true) turn.thinking += String(part.text ?? "");
+    else turn.text += String(part.text ?? "");
+  }
+}
+
 // The model's items of one turn, as a body holds them, as the turn the
 // provider streams: its thinking, its text and its calls.
 export function turnOf(format: Format, items: Fields[]): Turn {
   const turn: Turn = { thinking: "", text: "", calls: [] };
   for (const item of items) {
-    if (format === "anthropic") {
+    if (format === "gemini") geminiTurn(item, turn);
+    else if (format === "anthropic") {
       for (const block of (Array.isArray(item.content) ? item.content : []) as Fields[]) {
         if (block.type === "thinking") turn.thinking += String(block.thinking ?? "");
         if (block.type === "text") turn.text += String(block.text ?? "");

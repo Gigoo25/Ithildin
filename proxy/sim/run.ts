@@ -12,20 +12,16 @@
 import { readFileSync } from "node:fs";
 import type { Format } from "../src/redact.ts";
 import { simulate, type Report } from "./sim.ts";
+import { formatOf } from "./tape.ts";
 import { generated } from "./workload.ts";
 
 type Fields = Record<string, unknown>;
 
-const FORMATS: Format[] = ["anthropic", "responses", "chat"];
+const FORMATS: Format[] = ["anthropic", "responses", "chat", "gemini"];
 
 function option(name: string, fallback: number): number {
   const at = process.argv.indexOf(`--${name}`);
   return at < 0 ? fallback : Number(process.argv[at + 1]);
-}
-
-function formatOf(body: Fields): Format {
-  if (Array.isArray(body.input)) return "responses";
-  return Array.isArray(body.system) || body.system !== undefined ? "anthropic" : "chat";
 }
 
 interface Totals {

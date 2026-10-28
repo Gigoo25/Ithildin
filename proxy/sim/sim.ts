@@ -57,6 +57,11 @@ function typedAt(format: Format, list: unknown[], person = false): number {
     const entry = item as Fields;
     if (format === "responses") return entry.type === "message" && entry.role === "user";
     if (entry.role !== "user") return false;
+    // Gemini is read as its Anthropic view: a result part is a tool_result.
+    if (format === "gemini")
+      return ((entry.parts ?? []) as Fields[]).some(
+        (part) => !part.functionResponse && !(person && NOTE.test(String(part.text ?? ""))),
+      );
     if (format === "chat" || !Array.isArray(entry.content)) return true;
     return (entry.content as Fields[]).some(
       (block) => block.type !== "tool_result" && !(person && NOTE.test(String(block.text ?? ""))),

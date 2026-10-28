@@ -6,7 +6,7 @@
 import { createHash } from "node:crypto";
 import { MARKERS_MAX } from "../src/mark.ts";
 import type { Format } from "../src/redact.ts";
-import { listOf } from "./workload.ts";
+import { listOf, systemOf } from "./workload.ts";
 
 type Fields = Record<string, unknown>;
 
@@ -76,10 +76,45 @@ function callPairs(format: Format, list: unknown[]): Violation[] {
   return out;
 }
 
+function partsOf(item: unknown): Fields[] {
+  const parts = record(item)?.parts;
+  return Array.isArray(parts) ? (parts as Fields[]) : [];
+}
+
+// What Gemini refuses: a turn with no parts or a role it does not know, and a
+// turn of results that does not answer the calls of the model turn just
+// before it, one result per call by name (calls carry no id).
+function geminiPairs(list: unknown[]): Violation[] {
+  const out: Violation[] = [];
+  list.forEach((item, at) => {
+    const role = record(item)?.role;
+    if (role !== "user" && role !== "model")
+      out.push({ check: "valid", detail: `turn ${at} has role ${String(role)}` });
+    const parts = partsOf(item);
+    if (parts.length === 0) out.push({ check: "valid", detail: `turn ${at} has no parts` });
+    const results = parts.filter((part) => record(part.functionResponse));
+    if (results.length === 0) return;
+    const before = list[at - 1];
+    const calls = partsOf(before).filter((part) => record(part.functionCall));
+    const names = (list: Fields[], key: string) =>
+      list
+        .map((part) => String(record(part[key])?.name))
+        .sort()
+        .join(",");
+    if (
+      record(before)?.role !== "model" ||
+      names(calls, "functionCall") !== names(results, "functionResponse")
+    )
+      out.push({ check: "valid", detail: `turn ${at} answers calls not just made` });
+  });
+  return out;
+}
+
 // What a provider would refuse.
 export function valid(format: Format, body: Fields): Violation[] {
   const list = listOf(format, body);
   if (format === "anthropic") return [...anthropicPairs(list), ...markerChecks(body)];
+  if (format === "gemini") return geminiPairs(list);
   return callPairs(format, list);
 }
 
@@ -104,8 +139,7 @@ export function parts(format: Format, body: Fields): string[] {
         ),
       )
       .digest("base64");
-  const system = format === "responses" ? body.instructions : body.system;
-  return [body.model, body.tools, system, ...listOf(format, body)].map(digest);
+  return [body.model, body.tools, systemOf(format, body), ...listOf(format, body)].map(digest);
 }
 
 // The first part where `now` stops extending `before`, or -1 when it only

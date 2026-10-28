@@ -16,7 +16,7 @@ import type { Format } from "../src/redact.ts";
 import { recordSession } from "./loop.ts";
 import { option, pool } from "./trials.ts";
 
-const FORMATS: Format[] = ["anthropic", "responses", "chat"];
+const FORMATS: Format[] = ["anthropic", "responses", "chat", "gemini"];
 
 interface Outcome {
   format: Format;

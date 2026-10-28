@@ -71,6 +71,12 @@ describe("turns", () => {
       expect(turnOf(format, modelItems(format, turn))).toEqual(turn);
     });
 
+  // The AI SDK sends a Gemini call back without an id; the proxy names it.
+  test("a gemini turn reads back from its parts, its calls without ids", () => {
+    const calls = turn.calls.map((c) => ({ ...c, id: "" }));
+    expect(turnOf("gemini", modelItems("gemini", turn))).toEqual({ ...turn, calls });
+  });
+
   test("arguments that are not JSON are kept whole", () => {
     const items = [{ type: "function_call", call_id: "c", name: "x", arguments: "not json" }];
     expect(turnOf("responses", items).calls[0]!.input).toEqual({ raw: "not json" });

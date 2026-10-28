@@ -222,6 +222,41 @@ function chatMessages(list: Event[]): Fields[] {
   return out;
 }
 
+// opencode's Gemini models, through the AI SDK: a turn's thought comes back as
+// a thought part with its signature, a call as its name and arguments with no
+// id, and its result under the same name, each result a part of one user turn.
+function geminiContents(list: Event[], thinking: boolean): Fields[] {
+  const think = (text: string) =>
+    thinking
+      ? [
+          {
+            text,
+            thought: true,
+            thoughtSignature: Buffer.from(`sig${text.length}`).toString("base64"),
+          },
+        ]
+      : [];
+  const user = (texts: string[]) => ({ role: "user", parts: texts.map((text) => ({ text })) });
+  return list.flatMap((event): Fields[] => {
+    if (event.kind === "prompt") return [user([...event.notes, event.text])];
+    if (event.kind === "answer")
+      return [{ role: "model", parts: [...think(event.thinking), { text: event.text }] }];
+    const calls = event.calls.map((c) => ({ functionCall: { name: c.name, args: c.input } }));
+    const results = event.calls.map((c) => ({
+      functionResponse: {
+        name: c.name,
+        response: { name: c.name, content: c.output.text || "[image]" },
+      },
+    }));
+    const out: Fields[] = [
+      { role: "model", parts: [...think(event.thinking), ...calls] },
+      { role: "user", parts: results },
+    ];
+    if (event.typed !== undefined) out.push(user([event.typed]));
+    return out;
+  });
+}
+
 const TOOLS = ["Bash", "Read", "Grep", "Write"].map((name) => ({
   name,
   description: `The ${name} tool.`,
@@ -240,6 +275,20 @@ export function generated(format: Format, seed: number, rounds: number): Fields 
     };
   if (format === "chat")
     return { model: "deepseek-v4", tools: TOOLS, messages: chatMessages(list) };
+  if (format === "gemini")
+    return {
+      systemInstruction: { parts: [{ text: "You are opencode." }] },
+      tools: [
+        {
+          functionDeclarations: TOOLS.map(({ name, description }) => ({
+            name,
+            description,
+            parameters: { type: "object" },
+          })),
+        },
+      ],
+      contents: geminiContents(list, features.thinking),
+    };
   return {
     model: "claude-opus-5-5",
     system: [
@@ -256,18 +305,31 @@ export function generated(format: Format, seed: number, rounds: number): Fields 
   };
 }
 
+// Where each format keeps its conversation, and its system prompt.
+export function listKey(format: Format): "input" | "contents" | "messages" {
+  return format === "responses" ? "input" : format === "gemini" ? "contents" : "messages";
+}
+
+export function systemOf(format: Format, body: Fields): unknown {
+  return format === "responses"
+    ? body.instructions
+    : format === "gemini"
+      ? body.systemInstruction
+      : body.system;
+}
+
 export function listOf(format: Format, body: Fields): unknown[] {
-  const list = format === "responses" ? body.input : body.messages;
+  const list = body[listKey(format)];
   return Array.isArray(list) ? list : [];
 }
 
-function withList(format: Format, body: Fields, list: unknown[]): Fields {
-  return { ...body, [format === "responses" ? "input" : "messages"]: list };
+export function withList(format: Format, body: Fields, list: unknown[]): Fields {
+  return { ...body, [listKey(format)]: list };
 }
 
 function modelItem(item: unknown): boolean {
   const entry = item as Fields | undefined;
-  if (entry?.role === "assistant") return true;
+  if (entry?.role === "assistant" || entry?.role === "model") return true;
   return typeof entry?.type === "string" && /^reasoning$|_call$/.test(entry.type);
 }
 

@@ -18,21 +18,29 @@ export interface Turn {
   calls: ModelCall[];
 }
 
+// The signature Gemini gives a turn's thought, as the stream sends it and the
+// harness keeps it.
+export function geminiSignature(turn: Turn): string {
+  return Buffer.from(`sig-${turn.thinking.length}`).toString("base64");
+}
+
 const PATH = /\/[\w.-]+(?:\/[\w.-]+)+/g;
 const EMAIL = /[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g;
+
+// Opaque bytes the provider signed, which the model never reads as text.
+const SIGNED = new Set(["signature", "encrypted_content", "thoughtSignature"]);
 
 function strings(value: unknown, out: string[]): string[] {
   if (typeof value === "string") out.push(value);
   else if (Array.isArray(value)) for (const item of value) strings(item, out);
   else if (value && typeof value === "object")
-    for (const [key, inner] of Object.entries(value))
-      if (key !== "signature" && key !== "encrypted_content") strings(inner, out);
+    for (const [key, inner] of Object.entries(value)) if (!SIGNED.has(key)) strings(inner, out);
   return out;
 }
 
 // What the model can see of the latest exchange: the last few items.
 function recent(body: Record<string, unknown>): string {
-  const list = (body.messages ?? body.input) as unknown[] | undefined;
+  const list = (body.messages ?? body.input ?? body.contents) as unknown[] | undefined;
   return strings(Array.isArray(list) ? list.slice(-6) : [], []).join("\n");
 }
 

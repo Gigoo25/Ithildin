@@ -25,10 +25,8 @@ import { recordCorpus, recordSession, type Finding } from "./loop.ts";
 import { preview } from "./canaries.ts";
 import { loadTape, matches, saveTape, type Sent, type Tape, type Target } from "./tape.ts";
 import { ddmin } from "./ddmin.ts";
-import { listOf } from "./workload.ts";
+import { listOf, withList } from "./workload.ts";
 import { createHash } from "node:crypto";
-
-type Fields = Record<string, unknown>;
 
 const HERE = dirname(new URL(import.meta.url).pathname);
 const TRIALS_MAX = Number(process.env.SIM_SHRINK_TRIALS ?? 800);
@@ -91,10 +89,6 @@ async function fails(tape: Tape, target: Target): Promise<boolean> {
 
 const withRequests = (tape: Tape, requests: Sent[]): Tape => ({ ...tape, requests });
 
-function setList(format: Format, body: Fields, list: unknown[]): Fields {
-  return { ...body, [format === "responses" ? "input" : "messages"]: list };
-}
-
 // A message as itself wherever it stands: its marker moves from request to
 // request and is not part of what it is.
 function identity(item: unknown): string {
@@ -114,7 +108,7 @@ function messages(tape: Tape): string[] {
 function keepMessages(tape: Tape, keep: Set<string>): Tape | undefined {
   const requests = tape.requests.map((sent) => ({
     ...sent,
-    body: setList(
+    body: withList(
       tape.format,
       sent.body,
       listOf(tape.format, sent.body).filter((item) => keep.has(identity(item))),
