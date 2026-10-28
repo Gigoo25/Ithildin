@@ -252,6 +252,27 @@ describe("respelled copies of a masked name", () => {
     expect(redactText(prose).text).toBe(prose);
   });
 
+  // A regex built from a learned name puts its words in the regex source,
+  // which a profiler or crash dump prints in the clear.
+  it("builds no regex from the name's words", () => {
+    redactText(`signed ${NAME}`);
+    const sources: string[] = [];
+    const Native = globalThis.RegExp;
+    globalThis.RegExp = new Proxy(Native, {
+      construct(target, args) {
+        sources.push(String(args[0]));
+        return Reflect.construct(target, args);
+      },
+    });
+    try {
+      redactText(`x ${NAME.toLowerCase()} y`);
+    } finally {
+      globalThis.RegExp = Native;
+    }
+    const words = NAME.toLowerCase().split(" ");
+    expect(sources.filter((src) => words.some((w) => src.toLowerCase().includes(w)))).toEqual([]);
+  });
+
   it("does not join words across a line break", () => {
     redactText(`signed ${NAME}`);
     const [first, last] = NAME.split(" ");

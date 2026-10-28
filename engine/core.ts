@@ -35,7 +35,6 @@ import {
   inventoryStandInValue,
   isPromptOnlyRule,
   GENERALIZE_PATH,
-  escapeRegExp,
   rulesRevision,
 } from "./lib/rules.ts";
 import { AliasBook, aliasKeyPath, isAliasValue, SESSION_KEY_SUFFIX } from "./lib/aliases.ts";
@@ -1445,11 +1444,13 @@ export function saveSwapped(): void {
 const NAME_RULE =
   /^pii-(?:gazetteer-name|labeled-name|titled-name|customer-name|personal-name|inventory-)/;
 
+type Respelling = { ruleId: string; plain: boolean; reversed: boolean };
+
 export function respelledFindings(text: string, raw: LocatedFinding[]): LocatedFinding[] {
   // Lowercased key -> the rule that found it; `plain`: every word is also a
   // first name ("Will Mark"), so lowercased or reversed it is ordinary prose
   // and only capitals or joining punctuation count.
-  const values = new Map<string, { ruleId: string; plain: boolean; reversed: boolean }>();
+  const values = new Map<string, Respelling>();
   const add = (value: string, ruleId: string) => {
     const words = value.split(/[\s_.-]+/).filter(Boolean);
     if (words.length < 2 || !words.every((word) => /^\p{L}{2,}$/u.test(word))) return;
@@ -1467,25 +1468,31 @@ export function respelledFindings(text: string, raw: LocatedFinding[]): LocatedF
   for (const finding of raw)
     if (NAME_RULE.test(finding.ruleId)) add(finding.secretValue, finding.ruleId);
   if (values.size === 0) return [];
-  // Separators on one line only: a name's first word at a line end and a
-  // plain word starting the next are not a name.
-  const pattern = new RegExp(
-    `(?<![\\p{L}\\p{N}])(?:${[...values.keys()]
-      .sort((a, b) => b.length - a.length)
-      .map((key) => key.split(" ").map(escapeRegExp).join("[ _.,-]+"))
-      .join("|")})(?![\\p{L}\\p{N}])`,
-    "giu",
-  );
+  const longest = Math.max(...[...values.keys()].map((key) => key.split(" ").length));
+  // Words, then each run of up to `longest` of them looked up in the map. A
+  // RegExp built from the values held them in its source, and a profiler dump
+  // pasted into a session printed it: the words of every learned name went
+  // upstream, joined by `[ _.,-]+`, which nothing matched. Separators on one
+  // line only: a name's first word at a line end and a plain word starting
+  // the next are not a name.
+  const words = [...text.matchAll(/[\p{L}\p{N}]+/gu)];
   const out: LocatedFinding[] = [];
-  for (const match of text.matchAll(pattern)) {
-    const spelled = match[0];
-    const entry = values.get(
-      spelled
-        .split(/[ _.,-]+/)
-        .join(" ")
-        .toLowerCase(),
-    );
-    if (!entry) continue;
+  for (let i = 0; i < words.length; i++) {
+    let found: { end: number; entry: Respelling } | undefined;
+    let key = words[i]![0].toLowerCase();
+    for (let j = i + 1; j < words.length && j - i < longest; j++) {
+      const gapStart = words[j - 1]!.index + words[j - 1]![0].length;
+      if (!/^[ _.,-]+$/.test(text.slice(gapStart, words[j]!.index))) break;
+      key += ` ${words[j]![0].toLowerCase()}`;
+      const entry = values.get(key);
+      if (entry) found = { end: j, entry };
+    }
+    if (!found) continue;
+    const start = words[i]!.index;
+    const last = words[found.end]!;
+    const spelled = text.slice(start, last.index + last[0].length);
+    const entry = found.entry;
+    i = found.end;
     if (entry.plain && (entry.reversed || (/ /.test(spelled) && spelled !== spelled.toUpperCase())))
       continue;
     out.push({
@@ -1494,8 +1501,8 @@ export function respelledFindings(text: string, raw: LocatedFinding[]): LocatedF
       category: "pii",
       matchRedacted: "[respelled]",
       secretValue: spelled,
-      start: match.index,
-      end: match.index + spelled.length,
+      start,
+      end: start + spelled.length,
     });
   }
   return out;
