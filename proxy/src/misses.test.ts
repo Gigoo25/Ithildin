@@ -159,15 +159,20 @@ describe("saveMiss", () => {
     ]);
   });
 
-  it("drops a turn's miss before any step's, however old the step's", () => {
+  it("counts steps and turns apart, so neither pushes the other out", () => {
     const dir = scratch();
     const turn = { ...miss, step: false };
     const at = (second: number) => new Date(Date.UTC(2026, 9, 8, 12, 0, second));
     saveMiss(miss, dir, 2, at(0));
     for (let second = 1; second < 4; second++) saveMiss(turn, dir, 2, at(second));
+    saveMiss(miss, dir, 2, at(4));
+    saveMiss(miss, dir, 2, at(5));
+    expect(saveMiss(turn, dir, 2, at(6))).toBe(path.join(dir, "2026-10-08T12-00-06-000Z-abcd-123"));
     expect(readdirSync(dir).sort()).toEqual([
-      "2026-10-08T12-00-00-000Z-abcd-123.step",
       "2026-10-08T12-00-03-000Z-abcd-123",
+      "2026-10-08T12-00-04-000Z-abcd-123.step",
+      "2026-10-08T12-00-05-000Z-abcd-123.step",
+      "2026-10-08T12-00-06-000Z-abcd-123",
     ]);
   });
 

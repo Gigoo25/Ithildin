@@ -13,7 +13,7 @@
 // agent sent; still, they are conversations, so the files are the user's
 // only, and only the newest few are kept, bounded by count, age and size.
 
-import { mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { setting, stateDir } from "../engine/lib/names.ts";
 
@@ -128,9 +128,11 @@ function dirBytes(at: string): number {
 const STEP_SUFFIX = ".step";
 
 // Drops the misses past the count, older than the age limit, or, oldest
-// first, past the size limit; returns how many went. A turn's miss goes before
-// any step's: a step is rare and the costly one, and a burst of subagents'
-// turns once pushed the only step's miss of a day out within minutes. Run after each save and
+// first, past the size limit; returns how many went. Steps and turns are
+// counted apart, each up to the count: a burst of subagents' turns once pushed
+// the only step's miss of a day out within minutes, and a full set of steps'
+// misses then left no room for a turn's. Past the size limit a turn's miss
+// goes before any step's, a step being the costly one. Run after each save and
 // at start, so a lowered ITHILDIN_CACHEMISS_KEEP (0 included) takes effect
 // without waiting for the next miss.
 export function pruneMisses(
@@ -153,14 +155,17 @@ export function pruneMisses(
   const ordered = [...sorted.filter((name) => !isStep(name)), ...sorted.filter(isStep)];
   const misses = ordered.map((name) => {
     const at = path.join(dir, name);
-    return { at, age: now - statSync(at).mtimeMs, bytes: dirBytes(at) };
+    return { at, step: isStep(name), age: now - statSync(at).mtimeMs, bytes: dirBytes(at) };
   });
+  const left = { step: 0, turn: 0 };
+  for (const miss of misses) left[miss.step ? "step" : "turn"]++;
   let total = misses.reduce((sum, miss) => sum + miss.bytes, 0);
   let dropped = 0;
   for (const miss of misses) {
-    const left = misses.length - dropped;
-    if (left <= keep && miss.age <= MISS_AGE_MAX_MS && total <= bytesMax) continue;
+    const kind = miss.step ? "step" : "turn";
+    if (left[kind] <= keep && miss.age <= MISS_AGE_MAX_MS && total <= bytesMax) continue;
     rmSync(miss.at, { recursive: true, force: true });
+    left[kind]--;
     total -= miss.bytes;
     dropped++;
   }
@@ -168,7 +173,7 @@ export function pruneMisses(
 }
 
 // Writes one miss and drops what is past the limits (pruneMisses); returns
-// its directory, or undefined when none are kept.
+// its directory, or undefined when none are kept or the limits dropped it.
 export function saveMiss(
   miss: Miss,
   dir = missesDir(),
@@ -189,5 +194,5 @@ export function saveMiss(
   file("missed.json", miss.missed);
   file("meta.json", `${JSON.stringify(missMeta(miss, now), null, 2)}\n`);
   pruneMisses(dir, keep);
-  return at;
+  return existsSync(at) ? at : undefined;
 }

@@ -738,10 +738,11 @@ restarts; the dashboard and the proxy's memory do not.
   characters of each side of it. The
   journal says `cache miss kept: <dir>`; a step's directory ends in `.step`.
   Bodies are kept in memory for the newest 16 conversations only, so a miss
-  right after a restart, or in an older one, is not kept. On disk turns' misses
-  go before steps', and within each the oldest first, past any of three limits:
-  20 misses (`ITHILDIN_CACHEMISS_KEEP`; 0 turns saving off and deletes what
-  was kept), 14 days, or 200 MB in all. The limits are applied after each save
+  right after a restart, or in an older one, is not kept. On disk the oldest go
+  first past any of three limits: 20 steps' misses and 20 turns'
+  (`ITHILDIN_CACHEMISS_KEEP`, counted for each; 0 turns saving off and deletes
+  what was kept), 14 days, or 200 MB in all, where turns' misses go before
+  steps'. The limits are applied after each save
   and when the proxy starts, so a lowered count takes effect on restart; the
   journal says `cache misses dropped: N` then. Files other than the miss
   directories are left alone. This is the pair the first evening lost to a
