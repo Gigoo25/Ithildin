@@ -38,6 +38,33 @@ describe("redaction spans", () => {
     expect(out.text).toBe("cd <pii-inventory-runtime-home:/home/qorvalt>/x");
   });
 
+  it("edits a value inside a JSON string in place, and the whole string past an escape", () => {
+    const plan = (text: string, value: string) => {
+      const start = text.indexOf(value);
+      const scalars = [...text.matchAll(/"(?:[^"\\]|\\.)*"/g)].map((m) => ({
+        start: m.index,
+        end: m.index + m[0].length,
+        jsonKind: "json-string" as const,
+      }));
+      return planRedaction({
+        text,
+        findings: [loc({ secretValue: value, start, end: start + value.length })],
+        trips: [],
+        scalars,
+        replacementFor: (finding) =>
+          "jsonKind" in finding && finding.jsonKind ? '"<whole>"' : '<"part">',
+      }).text;
+    };
+    // Promoted always, the whole command went out as one made-up word.
+    expect(plan('{"command":"ls host.internal/api"}', "host.internal")).toBe(
+      '{"command":"ls <\\"part\\">/api"}',
+    );
+    expect(plan('{"a":"x\\nhost.internal"}', "nhost.internal")).toBe('{"a":"<whole>"}');
+    expect(plan('{"a":"\\u0041host.internal"}', "041host.internal")).toBe('{"a":"<whole>"}');
+    expect(plan('{"a":"x\\"host\\" y"}', 'host\\" y')).toBe('{"a":"<whole>"}');
+    expect(plan('{"a":"x\\\\host"}', "host")).toBe('{"a":"x\\\\<\\"part\\">"}');
+  });
+
   it("prefers a scanning rule over a value remembered for the same span", () => {
     const text = "cd /home/qorvalt/x";
     const start = text.indexOf("/home/");

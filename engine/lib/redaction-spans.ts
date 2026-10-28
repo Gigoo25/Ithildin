@@ -57,11 +57,16 @@ function collectRanges(input: PlanInput, check: () => void): PlanRange[] {
   const ranges: PlanRange[] = [];
   const add = (f: LocatedFinding, start: number, end: number) => {
     check();
-    // Promote edits inside JSON scalars to the raw scalar envelope, including
-    // propagated matches inside quoted strings. Final JSON validation is still
-    // necessary for unions crossing property/container boundaries.
+    // Promote an edit to the raw envelope of a JSON scalar it touches when it
+    // cannot be made in place: a number, a span over the quotes, or one that
+    // holds or splits an escape. An edit wholly inside a string's plain text
+    // stays as it is. Promoted always, `{"command":"ls host.internal"}` came
+    // out as one made-up word for the whole command, which the model could
+    // not read, and its quoting back was learned as a value of its own. Final
+    // JSON validation is still necessary for unions crossing property or
+    // container boundaries.
     for (const scalar of input.scalars ?? []) {
-      if (scalar.start < end && start < scalar.end) {
+      if (scalar.start < end && start < scalar.end && !inPlainString(text, scalar, start, end)) {
         start = Math.min(start, scalar.start);
         end = Math.max(end, scalar.end);
       }
@@ -88,6 +93,21 @@ function collectRanges(input: PlanInput, check: () => void): PlanRange[] {
   }
   for (const t of input.trips) ranges.push({ ...t, members: [], omission: true });
   return ranges;
+}
+
+// Whether [start, end) lies inside a JSON string's quotes, holds no escape,
+// and does not begin inside one (just after a backslash, or in a \\u escape's
+// hex digits).
+function inPlainString(text: string, scalar: ScalarEnvelope, start: number, end: number): boolean {
+  if (scalar.jsonKind !== "json-string" || start <= scalar.start || end >= scalar.end) return false;
+  if (text.slice(start, end).includes("\\")) return false;
+  for (let q = Math.max(scalar.start + 1, start - 5); q < start; q++) {
+    if (text[q] !== "\\") continue;
+    let run = 0;
+    while (text[q - 1 - run] === "\\") run++;
+    if (run % 2 === 0 && q + (text[q + 1] === "u" ? 6 : 2) > start) return false;
+  }
+  return true;
 }
 
 // Every start of `value` in `text`, overlapping ones included, since each
@@ -196,7 +216,15 @@ function editFor(input: PlanInput, r: PlanRange): SpanEdit {
     category: secret ? ("secret" as const) : ("pii" as const),
     jsonKind: scalar?.jsonKind,
   };
-  return { start: r.start, end: r.end, secret, replacement: input.replacementFor(finding) };
+  let replacement = input.replacementFor(finding);
+  // Made in place inside a string, a stand-in is written as that string's text.
+  if (
+    !scalar &&
+    /["\\\u0000-\u001f]/.test(replacement) &&
+    input.scalars?.some((s) => s.jsonKind === "json-string" && s.start < r.start && r.end < s.end)
+  )
+    replacement = JSON.stringify(replacement).slice(1, -1);
+  return { start: r.start, end: r.end, secret, replacement };
 }
 
 export function planRedaction(input: PlanInput): { text: string; edits: SpanEdit[] } {
