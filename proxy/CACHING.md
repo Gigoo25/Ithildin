@@ -73,9 +73,26 @@ follows the change, since there the provider matched the prefix up to it
 showed the bytes before the change identical (the first changed item was the
 result the step masked, 42,948 characters in), yet each of eight steps read
 back 2,304 or 6,016 tokens where 8,784 to 23,276 were unchanged, and no
-earlier request of the session ended near either. Why Codex stops there is
-not known; what it costs is that a step pays for nearly its whole prompt
-again.
+earlier request of the session ended near either. What it costs is that a
+step pays for nearly its whole prompt again.
+
+Probes the same day (`gpt-6-luna`, a fresh `prompt_cache_key` each, a 13.6K
+prompt with user messages near 1.7K, 5.7K and 9.7K, sent twice and then with
+one tool result masked) showed where Codex stops: an earlier request is read
+back only to its end or to the start of its last user message. The unchanged
+prompt read back 13,440; a change past the last user message read back 9,600,
+about where that message starts; a change before it read back nothing. In the
+session, 6,016 sits near the start of Pi's "Todo" user message at item 47,
+and every step that read 6,016 changed something after it; 2,304 is the end
+of the first request. A31 changed item 36, past the user message at item 35,
+yet read 2,304, which the probe does not explain. The simulation's Responses
+cache keeps these two points (`sim/cache.ts`).
+
+Pricing a Responses step from the last user message on when it changes
+nothing before it, and whole otherwise, was tried and lost: over 60 simulated
+Codex sessions it took 957 steps instead of 873, rewrote 36.8M tokens instead
+of 33.7M, and cost 27.85% of unshaped instead of 27.59%, worse in each batch
+of ten. The cheaper price approves steps whose savings do not cover them.
 
 ## What the live data showed
 

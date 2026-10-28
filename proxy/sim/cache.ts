@@ -11,6 +11,11 @@
 // OpenAI and Gemini cache implicitly: the longest prefix any earlier request
 // sent is read back, from 1024 tokens, and the rest is uncached. There is no
 // write premium and no marker to place.
+//
+// Codex (Responses) keeps less: an earlier request is read back only to its
+// end or to the start of its last user message, so a change between the two
+// reads back to that message and a change before it reads back nothing
+// (probed on 2026-10-28, CACHING.md).
 
 import { createHash } from "node:crypto";
 import type { Format } from "../src/redact.ts";
@@ -34,6 +39,8 @@ interface Block {
   hash: string;
   tokens: number;
   marked: boolean;
+  // The first block of a user message.
+  asks: boolean;
 }
 
 // The request as the blocks the provider reads, each with a digest of the
@@ -41,10 +48,11 @@ interface Block {
 // sent (for its size and markers) and without markers (for the digest): the
 // simulation spends most of its time here, once per block per request.
 function blocksOf(format: Format, body: Fields): Block[] {
-  const raw: Array<{ unmarked: string; tokens: number; marked: boolean }> = [];
-  const add = (value: unknown) => {
+  const raw: Array<{ unmarked: string; tokens: number; marked: boolean; asks: boolean }> = [];
+  const add = (value: unknown, asks = false) => {
     const sent = JSON.stringify(value ?? null);
     raw.push({
+      asks,
       unmarked: JSON.stringify(value ?? null, (key, inner) =>
         key === "cache_control" ? undefined : inner,
       ),
@@ -53,7 +61,7 @@ function blocksOf(format: Format, body: Fields): Block[] {
     });
   };
   const each = (list: unknown) =>
-    Array.isArray(list) ? list.forEach(add) : list !== undefined && add(list);
+    Array.isArray(list) ? list.forEach((value) => add(value)) : list !== undefined && add(list);
   add({ model: body.model, thinking: body.thinking ?? body.reasoning });
   each(body.tools);
   each(systemOf(format, body));
@@ -63,14 +71,15 @@ function blocksOf(format: Format, body: Fields): Block[] {
     // same blocks but different roles do not share a prefix. A Gemini turn's
     // blocks are its parts.
     const content = format === "gemini" ? entry.parts : entry.content;
+    const asks = entry.role === "user";
     if (Array.isArray(content) && content.length > 0)
-      content.forEach((block, i) => add(i === 0 ? { role: entry.role, block } : block));
-    else add(item);
+      content.forEach((block, i) => (i === 0 ? add({ role: entry.role, block }, asks) : add(block)));
+    else add(item, asks);
   }
   const hash = createHash("sha1");
-  return raw.map(({ unmarked, tokens, marked }) => {
+  return raw.map(({ unmarked, tokens, marked, asks }) => {
     hash.update(unmarked);
-    return { hash: hash.copy().digest("base64"), tokens, marked };
+    return { hash: hash.copy().digest("base64"), tokens, marked, asks };
   });
 }
 
@@ -81,7 +90,8 @@ export class Cache {
 
   send(body: Fields): Usage {
     const blocks = blocksOf(this.format, body);
-    return this.format === "anthropic" ? this.marked(blocks) : this.implicit(blocks);
+    if (this.format === "anthropic") return this.marked(blocks);
+    return this.format === "responses" ? this.pointed(blocks) : this.implicit(blocks);
   }
 
   private marked(blocks: Block[]): Usage {
@@ -119,6 +129,22 @@ export class Cache {
     const total = blocks.reduce((sum, block) => sum + block.tokens, 0);
     const read = blocks.slice(0, hit + 1).reduce((sum, block) => sum + block.tokens, 0);
     for (const block of blocks) this.entries.add(block.hash);
+    if (read < MIN_PREFIX_TOKENS) return { read: 0, write: 0, uncached: total };
+    return { read, write: 0, uncached: total - read };
+  }
+
+  // The furthest point of an earlier request this one starts with: each request
+  // leaves one at its end and one before its last user message.
+  private pointed(blocks: Block[]): Usage {
+    let hit = -1;
+    blocks.forEach((block, at) => {
+      if (this.entries.has(block.hash)) hit = at;
+    });
+    const total = blocks.reduce((sum, block) => sum + block.tokens, 0);
+    const read = blocks.slice(0, hit + 1).reduce((sum, block) => sum + block.tokens, 0);
+    const asked = blocks.findLastIndex((block) => block.asks);
+    if (asked > 0) this.entries.add(blocks[asked - 1]!.hash);
+    if (blocks.length > 0) this.entries.add(blocks[blocks.length - 1]!.hash);
     if (read < MIN_PREFIX_TOKENS) return { read: 0, write: 0, uncached: total };
     return { read, write: 0, uncached: total - read };
   }
