@@ -251,7 +251,12 @@ interface Price {
 // switch put the cutoff somewhere else and rewrote the conversation from the
 // system prompt on, twice. The model is safe to read: a cache belongs to one
 // model, so a switch rewrites everything whatever the cutoff does.
+// A Responses step is priced whole too: on 2026-10-28 a Codex session's steps
+// read back 2304 or 6016 tokens whatever came before the change, 8784 to
+// 23276 of it byte for byte the same, so each paid for nearly all of its
+// prompt again (CACHING.md).
 function cachePrice(format: Format, model: unknown): Price {
+  if (format === "responses") return { write: CACHE_WRITE.openai, read: CACHE_READ, whole: true };
   if (format !== "anthropic") return { write: CACHE_WRITE.openai, read: CACHE_READ, whole: false };
   return { write: CACHE_WRITE.hour, read: cacheReadPrice(model), whole: true };
 }

@@ -67,6 +67,16 @@ the previous cutoff (`9efbe86`). That approved far more steps (9 in an hour vs
 22 in a day) while the read-back was failing, so `0647461` went back to
 pricing every step as a whole rewrite. The markers stay: a hit is a bonus.
 
+Responses steps are priced whole too. Chat and Gemini still count only what
+follows the change, since there the provider matched the prefix up to it
+(below). On 2026-10-28 a Codex (`gpt-6-luna`) session's kept step misses
+showed the bytes before the change identical (the first changed item was the
+result the step masked, 42,948 characters in), yet each of eight steps read
+back 2,304 or 6,016 tokens where 8,784 to 23,276 were unchanged, and no
+earlier request of the session ended near either. Why Codex stops there is
+not known; what it costs is that a step pays for nearly its whole prompt
+again.
+
 ## What the live data showed
 
 Steps in one session on 2026-10-07, after `9efbe86` was deployed:

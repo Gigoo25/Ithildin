@@ -608,6 +608,49 @@ describe("the cost of a step", () => {
     expect(shapeRequest("anthropic", { system: short, messages: cheap })?.masked).toBe(1);
   });
 
+  it("prices a Responses step as the whole rewrite Codex makes of it", () => {
+    // Eight long answers, then one big result to mask: chat reads the answers
+    // back and the step pays; Codex reads only its instructions back after a
+    // step, so it pays for the answers again and the step does not.
+    const said = (format: "responses" | "chat", text: string) =>
+      format === "responses"
+        ? { type: "message", role: "assistant", content: [{ type: "output_text", text }] }
+        : { role: "assistant", content: text };
+    const asked = (format: "responses" | "chat", text: string) =>
+      format === "responses"
+        ? { type: "message", role: "user", content: [{ type: "input_text", text }] }
+        : { role: "user", content: text };
+    const conversation = (format: "responses" | "chat", head: number) => {
+      const list: Array<Record<string, unknown>> = [asked(format, "start")];
+      for (let i = 0; i < 8; i++)
+        list.push(said(format, "x".repeat(head)), asked(format, `go ${i}`));
+      list.push(
+        ...(format === "responses"
+          ? [
+              { type: "function_call", call_id: "c1", name: "bash", arguments: "{}" },
+              { type: "function_call_output", call_id: "c1", output: big() },
+            ]
+          : [
+              {
+                role: "assistant",
+                content: null,
+                tool_calls: [
+                  { id: "c1", type: "function", function: { name: "bash", arguments: "{}" } },
+                ],
+              },
+              { role: "tool", tool_call_id: "c1", content: big() },
+            ]),
+        asked(format, "next"),
+      );
+      for (let i = 0; i < 12; i++) list.push(said(format, "ok"), asked(format, `more ${i}`));
+      return list;
+    };
+    expect(shapeRequest("chat", { messages: conversation("chat", 40_000) })?.masked).toBe(1);
+    expect(shapeRequest("responses", { input: conversation("responses", 40_000) })).toBeUndefined();
+    // With little before it, the step pays on Codex too.
+    expect(shapeRequest("responses", { input: conversation("responses", 10) })?.masked).toBe(1);
+  });
+
   it("keeps a step it took, however much comes after", () => {
     const first = weighed(160_000, 10);
     const masked = shapeRequest("anthropic", { messages: first });
