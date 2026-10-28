@@ -296,8 +296,12 @@ function sizes(format: Format, list: unknown[], from: Walk): Sized[] {
     const looped = shapeEntry(format, item, asLoop, true, true, false)?.saved ?? 0;
     const old = loops ? (shapeEntry(format, item, asOld, true, false, false)?.saved ?? 0) : looped;
     const recent = shapeEntry(format, item, asNew, false, true, false)?.saved ?? 0;
-    // Every byte, results included: this is what a rewrite sends again.
-    const tokens = Math.ceil(JSON.stringify(item ?? null).length / 4);
+    // Every byte, results included: this is what a rewrite sends again. Not
+    // the cache_control marker: the agent moves it off an item a request
+    // later, and counted it tipped a past step's price, moving the cutoff
+    // where no request stepped.
+    const unmarked = (key: string, value: unknown) => (key === "cache_control" ? undefined : value);
+    const tokens = Math.ceil(JSON.stringify(item ?? null, unmarked).length / 4);
     const gain = (saved: number) => Math.max(0, Math.ceil((saved - recent) / 4));
     return { turn, tokens, gain: gain(old), loopGain: gain(looped), asks: asksAt(format, item) };
   });
