@@ -579,12 +579,10 @@ describe("the cost of a step", () => {
   });
 
   it("counts a read at what the model charges for one", () => {
-    // Worth it where a read is a tenth of input (Sonnet 5.5), not where it is
+    // Worth it where a read is a tenth of input (Sonnet 5), not where it is
     // a twentieth (Opus 5.5): there the masked tokens save half as much.
     const list = weighed(160_000, 5_000);
-    expect(shapeRequest("anthropic", { model: "claude-sonnet-5-5", messages: list })?.masked).toBe(
-      1,
-    );
+    expect(shapeRequest("anthropic", { model: "claude-sonnet-5", messages: list })?.masked).toBe(1);
     expect(shapeRequest("anthropic", { model: "claude-opus-5-5", messages: list })).toBeUndefined();
     // A cheap step is still taken on Opus 5.5.
     const cheap = weighed(160_000, 10);

@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BUILT_IN, cacheReadPrice, DEFAULT_READ, parseReadPrices } from "./prices.ts";
+import { CACHE_PRICES } from "./prices.data.ts";
+import { cachePrices, COMMON, parseReadPrices } from "./prices.ts";
 
 const saved = process.env.ITHILDIN_CONFIG;
 let dir = "";
@@ -20,34 +21,50 @@ afterEach(() => {
   else process.env.ITHILDIN_CONFIG = saved;
 });
 
-describe("cache read prices", () => {
+describe("cache prices", () => {
   it("knows the current models, with a date or a variant after the name", () => {
-    expect(cacheReadPrice("claude-opus-5-5")).toBe(0.05);
-    expect(cacheReadPrice("claude-opus-5-5[1m]")).toBe(0.05);
-    expect(cacheReadPrice("claude-opus-5-5-20260401")).toBe(0.05);
-    expect(cacheReadPrice("claude-fable-5-1")).toBe(0.025);
-    expect(cacheReadPrice("claude-sonnet-5-5")).toBe(0.1);
+    expect(cachePrices("claude-opus-5-5", "anthropic")).toEqual({ read: 0.05, write: 1.25 });
+    expect(cachePrices("claude-opus-5-5[1m]", "anthropic").read).toBe(0.05);
+    expect(cachePrices("claude-opus-5-5-20260401", "anthropic").read).toBe(0.05);
+    expect(cachePrices("claude-fable-5-1", "anthropic").read).toBe(0.025);
+    expect(cachePrices("claude-sonnet-5-5", "anthropic").read).toBe(0.05);
     // A shorter name is a different model, not a prefix of a longer one.
-    expect(cacheReadPrice("claude-opus-5")).toBe(0.1);
+    expect(cachePrices("claude-opus-5", "anthropic").read).toBe(0.1);
   });
 
-  it("never prices a read above a tenth, so no entry makes a step look better", () => {
-    for (const [model, price] of BUILT_IN) {
-      expect(price).toBeLessThanOrEqual(0.1);
-      expect(cacheReadPrice(model)).toBe(price);
+  it("prices a route at what its provider charges", () => {
+    expect(cachePrices("deepseek-v4.1-flash", "opencode-go")).toEqual({ read: 0.02, write: 1 });
+    expect(cachePrices("gpt-6-luna", "openai-codex")).toEqual({ read: 0.1, write: 1.25 });
+  });
+
+  it("takes a model's maker's price on a route the table does not know", () => {
+    expect(cachePrices("claude-opus-5-5", "litellm-lan").read).toBe(0.05);
+    expect(cachePrices("gpt-6-luna")).toEqual({ read: 0.1, write: 1.25 });
+    const log = spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      expect(cachePrices("ornith-1.5-35b", "litellm-lan")).toEqual(COMMON);
+      expect(log).not.toHaveBeenCalled();
+    } finally {
+      log.mockRestore();
     }
   });
 
-  it("gives a model it does not know the lowest price, and says so once", () => {
+  it("gives a model its route's list does not name the cautious price, and says so once", () => {
+    const listed = Object.values(CACHE_PRICES["anthropic"]!);
+    const cautious = {
+      read: Math.min(...listed.map(([read]) => read)),
+      write: Math.max(...listed.map(([, write]) => write)),
+    };
     const log = spyOn(process.stderr, "write").mockImplementation(() => true);
     try {
-      expect(cacheReadPrice("claude-opus-6")).toBe(0.025);
-      expect(cacheReadPrice("claude-opus-6")).toBe(0.025);
+      expect(cachePrices("claude-opus-6", "anthropic")).toEqual(cautious);
+      expect(cachePrices("claude-opus-6", "anthropic")).toEqual(cautious);
       const said = log.mock.calls.map(([text]) => String(text));
-      expect(said.filter((text) => text.includes("claude-opus-6"))).toHaveLength(1);
+      expect(said).toHaveLength(1);
+      expect(said[0]).toContain("claude-opus-6 on anthropic");
       expect(said[0]).toContain('"cacheReadPrices"');
-      // Not a Claude model: priced the same, but nothing to warn about.
-      expect(cacheReadPrice("selftest")).toBe(0.025);
+      // The proxy's own self-test: priced the same, but nothing to warn about.
+      expect(cachePrices("selftest", "anthropic")).toEqual(cautious);
       expect(log.mock.calls).toHaveLength(1);
     } finally {
       log.mockRestore();
@@ -55,17 +72,32 @@ describe("cache read prices", () => {
   });
 
   it("takes the common price when the request names no model", () => {
-    expect(cacheReadPrice(undefined)).toBe(DEFAULT_READ);
-    expect(cacheReadPrice("")).toBe(DEFAULT_READ);
+    expect(cachePrices(undefined, "anthropic")).toEqual(COMMON);
+    expect(cachePrices("", "anthropic")).toEqual(COMMON);
   });
 
-  it("lets the user config add a model or override one", () => {
+  it("lists only prices that are ratios to input", () => {
+    for (const table of Object.values(CACHE_PRICES))
+      for (const [read, write] of Object.values(table)) {
+        expect(read).toBeGreaterThan(0);
+        expect(read).toBeLessThanOrEqual(1);
+        expect(write).toBeGreaterThan(0);
+      }
+  });
+
+  it("lets the user config set a read price, with no warning for a model it names", () => {
     writeFileSync(
       config,
       JSON.stringify({ cacheReadPrices: { "claude-opus-7*": 0.04, "claude-opus-5-5": 0.08 } }),
     );
-    expect(cacheReadPrice("claude-opus-7-1")).toBe(0.04);
-    expect(cacheReadPrice("claude-opus-5-5")).toBe(0.08);
+    const log = spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      expect(cachePrices("claude-opus-7-1", "anthropic").read).toBe(0.04);
+      expect(cachePrices("claude-opus-5-5", "anthropic")).toEqual({ read: 0.08, write: 1.25 });
+      expect(log).not.toHaveBeenCalled();
+    } finally {
+      log.mockRestore();
+    }
   });
 
   it("leaves out entries that are not a price", () => {
@@ -87,7 +119,7 @@ describe("cache read prices", () => {
     writeFileSync(config, JSON.stringify({ cacheReadPrices: { "claude-opus-5-5": "cheap" } }));
     const log = spyOn(process.stderr, "write").mockImplementation(() => true);
     try {
-      expect(cacheReadPrice("claude-opus-5-5")).toBe(0.05);
+      expect(cachePrices("claude-opus-5-5", "anthropic").read).toBe(0.05);
       expect(log.mock.calls.map(([text]) => String(text)).join("")).toContain("ignoring");
     } finally {
       log.mockRestore();

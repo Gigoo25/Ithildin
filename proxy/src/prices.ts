@@ -1,51 +1,49 @@
-// What a cache read costs on each model, relative to uncached input, for the
-// step gate in shape.ts. Neither the Models API nor a reply's usage says what
-// a model charges, so this is a table, and a table goes stale on a release.
+// What a cache read and a cache write cost on each model, relative to
+// uncached input, for the step gate in shape.ts. Neither the Models API nor a
+// reply's usage says what a model charges, so this is a table
+// (prices.data.ts, built from models.dev by prices-update.ts), and a table
+// goes stale on a release.
 //
-// A model the table does not name gets the lowest price in it, and the proxy
-// says so once. A lower read price makes a step look worth less, so the gate
-// takes fewer of them: a wrong guess costs a saving missed, never a rewrite
-// that did not pay (the mistake this table exists to stop, on 2026-10-09).
+// A route is priced from its provider's list: OpenCode Go resells a model at
+// its own price, and that price is what its allowance counts. A route the
+// table does not know (a LAN server, a provider added in routes.json) takes a
+// model's price from its maker's list, and the common price for anything else.
 //
-// The user config overrides or adds to the table, under "cacheReadPrices",
-// keyed by model name with * and ? globs:
+// A model its route's list does not name gets the lowest read and the highest
+// write in it, and the proxy says so once. Both make a step look worth less,
+// so the gate takes fewer of them: a wrong guess costs a saving missed, never a
+// rewrite that did not pay (the mistake this table exists to stop, on
+// 2026-10-09).
+//
+// The user config overrides a read price, under "cacheReadPrices", keyed by
+// model name with * and ? globs:
 //
 //   "cacheReadPrices": { "claude-opus-6*": 0.05 }
 
 import { globRegExp } from "../engine/core.ts";
 import { readConfigFile } from "../engine/lib/rules.ts";
 import { configKey, guardConfigFile } from "./policy.ts";
+import { CACHE_PRICES } from "./prices.data.ts";
+import type { Ratios } from "./prices-update.ts";
 
-// Read price over input price, from Anthropic's pricing page, model by model:
-// a family glob would let next year's model pass as known.
-const TENTH = [
-  "claude-sonnet-5-5",
-  "claude-sonnet-5",
-  "claude-sonnet-4-6",
-  "claude-haiku-5-5",
-  "claude-haiku-4-5",
-  "claude-opus-5",
-  "claude-opus-4-8",
-  "claude-opus-4-7",
-  "claude-opus-4-6",
-  "claude-fable-5",
-];
-export const BUILT_IN: ReadonlyArray<[string, number]> = [
-  ["claude-opus-5-5", 0.2 / 4],
-  ["claude-fable-5-1", 0.25 / 10],
-  ["claude-mythos-5-1", 0.25 / 10],
-  ...TENTH.map((model): [string, number] => [model, 0.1]),
-];
+// The models.dev provider each built-in route pays.
+export const ROUTE_PROVIDERS: Readonly<Record<string, string>> = {
+  anthropic: "anthropic",
+  "openai-codex": "openai",
+  "opencode-go": "opencode-go",
+};
+const MAKERS = ["anthropic", "openai", "google"];
 
-// A request with no model names nothing to price; the common price stands.
-export const DEFAULT_READ = 0.1;
-
-interface Prices {
-  entries: Array<[RegExp, number]>;
-  lowest: number;
+export interface CachePrices {
+  read: number;
+  write: number;
 }
 
-let cached: { key: string; prices: Prices } | undefined;
+// A request with no model names nothing to price, and a model no list knows
+// on a route none prices gets this: a tenth to read, no write premium.
+export const COMMON: CachePrices = { read: 0.1, write: 1 };
+
+let cached: { key: string; entries: Array<[RegExp, number]> } | undefined;
 const warned = new Set<string>();
 
 // The config's entries, checked; problems go to the log and are left out.
@@ -66,7 +64,7 @@ export function parseReadPrices(config: unknown): {
   return { entries, problems };
 }
 
-function prices(): Prices {
+function overrides(): Array<[RegExp, number]> {
   const file = guardConfigFile();
   const key = configKey(file);
   if (cached?.key !== key) {
@@ -75,12 +73,13 @@ function prices(): Prices {
       : parseReadPrices(readConfigFile(file, "user config"));
     for (const problem of parsed.problems)
       process.stderr.write(`ithildin: user config: ${problem}, ignoring\n`);
-    // The user's entries first, so they win over the built-in ones.
-    const all = [...parsed.entries, ...BUILT_IN];
-    const entries = all.map(([model, price]): [RegExp, number] => [globRegExp(model), price]);
-    cached = { key, prices: { entries, lowest: Math.min(...all.map(([, price]) => price)) } };
+    const entries = parsed.entries.map(([model, price]): [RegExp, number] => [
+      globRegExp(model),
+      price,
+    ]);
+    cached = { key, entries };
   }
-  return cached.prices;
+  return cached.entries;
 }
 
 // A model is matched whole, and also with a date or a variant after it
@@ -90,21 +89,46 @@ function modelBase(model: string): string {
   return model.replace(/\[.*\]$/, "").replace(/-\d{8}$/, "");
 }
 
-export function cacheReadPrice(model: unknown): number {
-  if (typeof model !== "string" || model === "") return DEFAULT_READ;
-  const { entries, lowest } = prices();
-  const base = modelBase(model);
-  const known = entries.find(([pattern]) => pattern.test(model) || pattern.test(base));
-  if (known) return known[1];
-  // Only a Claude name is a release the table missed. Anything else on this
-  // format (the proxy's own self-test, a model behind a gateway) still gets
-  // the cautious price, without a warning nobody can act on.
-  if (/^claude-/.test(model) && !warned.has(model)) {
-    warned.add(model);
+function listed(provider: string, model: string): Ratios | undefined {
+  const table = CACHE_PRICES[provider];
+  return table?.[model] ?? table?.[modelBase(model)];
+}
+
+// The cautious price for a model the route's list does not name.
+function cautious(provider: string): CachePrices {
+  const all = Object.values(CACHE_PRICES[provider] ?? {});
+  return {
+    read: Math.min(...all.map(([read]) => read)),
+    write: Math.max(...all.map(([, write]) => write)),
+  };
+}
+
+function fromTables(model: string, route: string | undefined, warn: boolean): CachePrices {
+  const provider = route === undefined ? undefined : ROUTE_PROVIDERS[route];
+  for (const name of provider ? [provider] : MAKERS) {
+    const known = listed(name, model);
+    if (known) return { read: known[0], write: known[1] };
+  }
+  if (!provider) return COMMON;
+  const price = cautious(provider);
+  // The proxy's own self-test names no real model: nothing to act on.
+  if (model === "selftest") return price;
+  const said = `${route}\0${model}`;
+  if (warn && !warned.has(said)) {
+    warned.add(said);
     process.stderr.write(
-      `ithildin: cache read price unknown for ${model}; assuming ${lowest}x, ` +
-        `add it under "cacheReadPrices" in config.json\n`,
+      `ithildin: cache price unknown for ${model} on ${route}; assuming ${price.read}x to ` +
+        `read and ${price.write}x to write, run proxy/src/prices-update.ts or add it ` +
+        `under "cacheReadPrices" in config.json\n`,
     );
   }
-  return lowest;
+  return price;
+}
+
+export function cachePrices(model: unknown, route?: string): CachePrices {
+  if (typeof model !== "string" || model === "") return COMMON;
+  const base = modelBase(model);
+  const override = overrides().find(([pattern]) => pattern.test(model) || pattern.test(base));
+  const price = fromTables(model, route, override === undefined);
+  return override ? { ...price, read: override[1] } : price;
 }

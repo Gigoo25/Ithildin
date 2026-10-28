@@ -812,7 +812,13 @@ async function forward(
   // the conversation the dashboard keeps is the one that arrived and only the
   // forwarded copy is shaped. It is pure and fails open: a request it cannot
   // shape goes upstream exactly as redaction left it.
-  const shaped = shapeOutgoing(scanned, format ?? "chat", session?.id ?? null, stores.originals);
+  const shaped = shapeOutgoing(
+    scanned,
+    format ?? "chat",
+    session?.id ?? null,
+    stores.originals,
+    name,
+  );
   const sent = redactUrl(rest, url.search, headers, scanned, redact);
   if (sent instanceof Response) return sent;
   const routed = routeFor(route, name, sent.rest, sent.search, headers, format);
@@ -1044,6 +1050,7 @@ export function shapeOutgoing(
   format: Format,
   session: string | null,
   originals?: Originals,
+  route?: string,
 ): Forwarded {
   const object = scanned.object as Record<string, unknown>;
   const off: Forwarded = {
@@ -1063,7 +1070,13 @@ export function shapeOutgoing(
     // says, and the badge says so.
     if (!shapingOn()) return { ...off, on: false };
     if (state.on === false) return { ...off, on: false };
-    const result = shapeRequest(format, object, retrievalFor(object, originals));
+    const result = shapeRequest(
+      format,
+      object,
+      retrievalFor(object, originals),
+      stripThinkingOn(),
+      route,
+    );
     if (!result) return { ...off, on: state.on };
     return {
       body: JSON.stringify(result.body),

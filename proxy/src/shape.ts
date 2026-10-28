@@ -41,7 +41,7 @@ import { compact } from "./compact.ts";
 import { crushJson } from "./crush.ts";
 import { shapedGemini } from "./gemini.ts";
 import { markBoundaries } from "./mark.ts";
-import { cacheReadPrice } from "./prices.ts";
+import { cachePrices } from "./prices.ts";
 import { asksForSummary, type Format } from "./redact.ts";
 
 // Ported from Pi's output-shaping extension (mask.ts), which could only shape
@@ -52,14 +52,10 @@ export const MASK_STEP_TURNS = 10;
 // A stub is about 150 characters, so a result is worth one from about 400.
 export const MASK_MIN_CHARS = 400;
 export const MASK_THRESHOLD_TOKENS = 30_000;
-// Prices relative to uncached input. Anthropic charges 1.25x for a cache
-// write, 2x when it is asked to keep it an hour; OpenAI's caching writes at the
-// plain price. A read is about a tenth on OpenAI, and on Anthropic whatever
-// the model charges (prices.ts): Opus 5.5 reads at a twentieth, and a step
-// priced at a tenth there counts on twice the saving it gets.
 export const MASK_HORIZON_TURNS = 20;
-const CACHE_READ = 0.1;
-const CACHE_WRITE = { hour: 2, openai: 1 };
+// Anthropic charges 1.25x for a cache write, 2x when it is asked to keep it an
+// hour. Every other price is the model's on its route (prices.ts).
+const HOUR_WRITE = 2;
 
 // ITHILDIN_SHAPE=off (or raw) shapes nothing, on any route.
 export function shapingOn(env: Record<string, string | undefined> = process.env): boolean {
@@ -255,10 +251,10 @@ interface Price {
 // read back 2304 or 6016 tokens whatever came before the change, 8784 to
 // 23276 of it byte for byte the same, so each paid for nearly all of its
 // prompt again (CACHING.md).
-function cachePrice(format: Format, model: unknown): Price {
-  if (format === "responses") return { write: CACHE_WRITE.openai, read: CACHE_READ, whole: true };
-  if (format !== "anthropic") return { write: CACHE_WRITE.openai, read: CACHE_READ, whole: false };
-  return { write: CACHE_WRITE.hour, read: cacheReadPrice(model), whole: true };
+function cachePrice(format: Format, model: unknown, route?: string): Price {
+  const { read, write } = cachePrices(model, route);
+  if (format === "anthropic") return { write: HOUR_WRITE, read, whole: true };
+  return { write, read, whole: format === "responses" };
 }
 
 // What each item is: the turn it belongs to, its size, and how much masking it
@@ -380,13 +376,11 @@ function cutoffFor(
   list: unknown[],
   walk: Walk,
   body: Record<string, unknown>,
-  wire: Format,
+  write: Price,
 ): { cutoff: number; previous: number } {
   const forked = isSubagent(format, body) ? forkedAt(list) : -1;
   if (isSubagent(format, body) && forked < 1) return { cutoff: 0, previous: 0 };
-  const model = body.model;
   const items = sizes(format, list, walk);
-  const write = cachePrice(wire, model);
   let cutoff = 0;
   let previous = 0;
   let turns = 0;
@@ -646,37 +640,44 @@ export function shapeRequest(
   body: Record<string, unknown>,
   retrieval?: Retrieval,
   strip = stripThinkingOn(),
+  route?: string,
 ): Shaped | undefined {
-  if (format === "gemini") return shapeGemini(body, retrieval);
-  return shapeConversation(format, body, retrieval, strip, format);
+  if (format === "gemini") return shapeGemini(body, retrieval, route);
+  return shapeConversation(format, body, retrieval, strip, { wire: format, route });
 }
 
 // A Gemini request is shaped as the Anthropic view of it, the one the rest of
 // the proxy reads it through, and written back into its own parts (gemini.ts).
 // Priced as its API caches, not as Anthropic's: implicitly, with no write
 // premium and no markers to place.
-function shapeGemini(body: Record<string, unknown>, retrieval?: Retrieval): Shaped | undefined {
+function shapeGemini(
+  body: Record<string, unknown>,
+  retrieval?: Retrieval,
+  route?: string,
+): Shaped | undefined {
   let result: Shaped | undefined;
   const contents = shapedGemini(body, (view) => {
-    result = shapeConversation("anthropic", view, retrieval, false, "gemini");
+    result = shapeConversation("anthropic", view, retrieval, false, { wire: "gemini", route });
     return result?.body;
   });
   return result && contents ? { ...result, body: { ...body, contents } } : undefined;
 }
 
 // `wire` is the API the request goes to, which sets the cache's price and
-// whether it takes markers; `format` is the shape the body is read in.
+// whether it takes markers, and `route` the provider it pays; `format` is the
+// shape the body is read in.
 function shapeConversation(
   format: Format,
   body: Record<string, unknown>,
   retrieval: Retrieval | undefined,
   strip: boolean,
-  wire: Format,
+  { wire, route }: { wire: Format; route: string | undefined },
 ): Shaped | undefined {
   const list = conversation(format, body);
   if (!list) return;
   const walk: Walk = { calls: new Map(), outputs: new Map(), retrieval, compacted: new Map() };
-  const { cutoff, previous } = cutoffFor(format, list, walk, body, wire);
+  const price = cachePrice(wire, body.model, route);
+  const { cutoff, previous } = cutoffFor(format, list, walk, body, price);
   const kept = latestNotes(format, list, cutoff);
   const asked = lastAsked(format, list);
   // Only once something is old: the API drops nothing from an unshaped request.
