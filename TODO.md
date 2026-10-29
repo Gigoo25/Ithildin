@@ -39,6 +39,15 @@ small (CACHING.md). Replay an opencode session at the new prices and check
 its prompts stay under the model's context; if not, force a step above some
 size. Hold the proxy restart until this is done.
 
+opencode traffic goes through the `opencode-ai` route (`routes.json`), which
+`prices.ts` does not know, so today it is priced at the common 0.1x read and
+`3b774f4` changes nothing there; mapping it to `opencode-go` is what brings
+the risk in. The sim can price a replay on either:
+`bun proxy/sim/run.ts --route opencode-go --replay <captured.json>` prints
+the largest prompt shaped and raw. Left: a long `mimo-v2.6-flash` session
+(hundreds of tool calls, 0.02x read; `-free` is not in the table) captured
+with `capture.ts`, replayed at both prices.
+
 ## Cap or label "cost saved" on opencode routes
 
 The dashboard estimate (`c34971f`) assumes the unshaped request could have
@@ -77,9 +86,10 @@ after dropped thinking on the 5.5 models) is not confirmed.
 
 ## Routes and models in the sim
 
-The sim sends no route and prices every format at fixed rates, so it cannot
-show what per-route prices (`3b774f4`) do. Give its workloads a route and
-real model names, so the opencode checks above can be measured there.
+Replays take a route (`--route`, or the one `capture.ts` saved) and are
+shaped and costed at its prices. Seeded runs still send no route and fixed
+model names, so they price every format at fixed rates; give the generated
+workloads a route and real model names too.
 
 ## Subagent steps at 1.25x
 
@@ -92,8 +102,10 @@ decide from the sim comparison of 2x against 1.25x step pricing.
 
 OpenCode Go's docs give `https://opencode.ai/inference/go/` (`openai/v1/...`,
 `anthropic/v1/messages`, `google/v1beta/...`); the proxy routes to
-`https://opencode.ai/zen/go` (`server.ts`). Still served today; untested
-whether the new one takes the same paths.
+`https://opencode.ai/zen/go` (`server.ts`). Still served today. Through the
+`opencode-ai` route, `inference/go/openai/v1/chat/completions` and
+`.../responses` answered 200 (2026-10-29); `anthropic/v1/messages` and
+`google/v1beta/...` are untested.
 
 ## Untracked repro
 
