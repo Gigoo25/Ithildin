@@ -570,6 +570,30 @@ describe("reply text", () => {
     }
   });
 
+  it("names the request an unreachable upstream refused", async () => {
+    const lines: string[] = [];
+    const spy = spyOn(process.stderr, "write").mockImplementation(
+      ((line: string) => lines.push(line) > 0) as never,
+    );
+    try {
+      const res = await handler(() => {
+        throw new Error("The connection was closed.");
+      })(
+        post(
+          "opencode-go/chat/completions",
+          { model: "deepseek-v4.1-flash", messages: [{ role: "user", content: "hi" }] },
+          { "x-ithildin-session": "ses_refused1" },
+        ),
+      );
+      expect(res.status).toBe(502);
+      const logged = lines.join("");
+      expect(logged).toContain("refused (502): upstream unreachable (The connection was closed.)");
+      expect(logged).toMatch(/opencode-go\/chat\/completions 502 .*model=deepseek-v4\.1-flash/);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("logs a stream's usage when the client stops reading before the upstream closes", async () => {
     const lines: string[] = [];
     const spy = spyOn(process.stderr, "write").mockImplementation(

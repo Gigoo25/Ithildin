@@ -855,7 +855,12 @@ async function forward(
       : undefined;
   const asking = { stores, thread, main, format };
   const reached = await sendAsking(asking, fetchUpstream, routed.target, request, headers, shaped);
-  if ("refused" in reached) return reached.refused;
+  // The refusal's own line names no request; this one says whose it was.
+  if ("refused" in reached) {
+    const trail = cacheTrail(format, context.session, false, shaped.object ?? scanned.object);
+    log(scannedLine(name, sent.rest, reached.refused.status, scanned, shaped) + trail);
+    return reached.refused;
+  }
   const { upstream } = reached;
   book.noteLimits(name, upstream.headers);
   if (session && ask && upstream.ok) noteTitle(upstream.clone(), ask, session.id, names, renamed);
