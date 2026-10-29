@@ -553,6 +553,23 @@ describe("reply text", () => {
     expect(text).not.toContain(standIn);
   });
 
+  it("shapes nothing on a request with no body, and says no failure", async () => {
+    const lines: string[] = [];
+    const spy = spyOn(process.stderr, "write").mockImplementation(
+      ((line: string) => lines.push(line) > 0) as never,
+    );
+    try {
+      const res = await handler(() => new Response("ok"))(
+        new Request("http://127.0.0.1/anthropic/api/hello"),
+      );
+      expect(res.status).toBe(200);
+      expect(lines.join("")).toContain("anthropic/api/hello 200");
+      expect(lines.join("")).not.toContain("shaping failed");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("logs a stream's usage when the client stops reading before the upstream closes", async () => {
     const lines: string[] = [];
     const spy = spyOn(process.stderr, "write").mockImplementation(

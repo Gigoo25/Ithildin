@@ -1073,6 +1073,9 @@ export function shapeOutgoing(
     savedChars: 0,
     savedCost: 0,
   };
+  // A request with no body (a GET, Claude Code's /api/hello) has nothing to
+  // shape, and is no shaping failure.
+  if (!object || typeof object !== "object") return off;
   try {
     // Reading the session's switch walks the body, so it belongs inside the
     // guard with the shaping itself: a body that throws leaves shaping
