@@ -18,6 +18,7 @@
 // (probed on 2026-10-28, CACHING.md).
 
 import { createHash } from "node:crypto";
+import type { CachePrices } from "../src/prices.ts";
 import type { Format } from "../src/redact.ts";
 import { listOf, systemOf } from "./workload.ts";
 
@@ -73,7 +74,9 @@ function blocksOf(format: Format, body: Fields): Block[] {
     const content = format === "gemini" ? entry.parts : entry.content;
     const asks = entry.role === "user";
     if (Array.isArray(content) && content.length > 0)
-      content.forEach((block, i) => (i === 0 ? add({ role: entry.role, block }, asks) : add(block)));
+      content.forEach((block, i) =>
+        i === 0 ? add({ role: entry.role, block }, asks) : add(block),
+      );
     else add(item, asks);
   }
   const hash = createHash("sha1");
@@ -150,8 +153,10 @@ export class Cache {
   }
 }
 
-// What a usage costs, in uncached-input tokens.
-export function cost(format: Format, usage: Usage): number {
-  const write = format === "anthropic" ? PRICE.write : PRICE.openaiWrite;
-  return usage.read * PRICE.read + usage.write * write + usage.uncached;
+// What a usage costs, in uncached-input tokens: at the fixed prices above, or
+// at a route's (prices.ts) when given.
+export function cost(format: Format, usage: Usage, prices?: CachePrices): number {
+  const read = prices?.read ?? PRICE.read;
+  const write = prices?.write ?? (format === "anthropic" ? PRICE.write : PRICE.openaiWrite);
+  return usage.read * read + usage.write * write + usage.uncached;
 }

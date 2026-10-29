@@ -7,9 +7,10 @@
 // to find each place the cached prefix broke and say why.
 
 import { createHash } from "node:crypto";
+import { cachePrices, type CachePrices } from "../src/prices.ts";
 import { shapeRequest, type Retrieval } from "../src/shape.ts";
 import type { Format } from "../src/redact.ts";
-import { Cache, cost } from "./cache.ts";
+import { Cache, cost, type Usage } from "./cache.ts";
 import { firstChange, keepsTail, parts, valid, type Violation } from "./checks.ts";
 import { listOf, requestsOf } from "./workload.ts";
 
@@ -29,6 +30,8 @@ export interface Report {
   breaks: { step: number; typed: number; note: number; unexplained: number };
   // What the run cost against the cache model, in uncached-input tokens.
   cost: { on: number; off: number };
+  // The largest prompt sent, in tokens, with shaping on and off.
+  largest: { on: number; off: number };
   // Tokens written to the cache by requests whose shaped prefix broke.
   rewritten: number;
   violations: Found[];
@@ -86,6 +89,7 @@ interface State {
   on: Cache;
   off: Cache;
   strip: boolean;
+  route: string | undefined;
 }
 
 function shapeOnce(format: Format, raw: Fields, state: State, at: number) {
@@ -94,8 +98,10 @@ function shapeOnce(format: Format, raw: Fields, state: State, at: number) {
       if (state.report.violations.length < VIOLATIONS_MAX)
         state.report.violations.push({ ...v, request: at });
   };
-  const result = shapeRequest(format, structuredClone(raw), retrieval(state.kept), state.strip);
-  const again = shapeRequest(format, structuredClone(raw), retrieval(state.kept), state.strip);
+  const shape = () =>
+    shapeRequest(format, structuredClone(raw), retrieval(state.kept), state.strip, state.route);
+  const result = shape();
+  const again = shape();
   if (JSON.stringify(result?.body) !== JSON.stringify(again?.body))
     add([{ check: "pure", detail: "the same request shaped two ways" }]);
   const shaped = result?.body ?? raw;
@@ -136,12 +142,23 @@ function compare(format: Format, raw: Fields, shaped: Fields, step: boolean, sta
   return true;
 }
 
-export function simulate(format: Format, body: Fields, strip = true): Report {
+// Priced as shape.ts prices a step on `route`: the route's prices, with every
+// Anthropic write at the hour's. With no route, the fixed prices in cache.ts.
+function routePrices(format: Format, body: Fields, route?: string): CachePrices | undefined {
+  if (route === undefined) return undefined;
+  const prices = cachePrices(body.model, route);
+  return format === "anthropic" ? { ...prices, write: 2 } : prices;
+}
+
+const sent = (usage: Usage) => usage.read + usage.write + usage.uncached;
+
+export function simulate(format: Format, body: Fields, strip = true, route?: string): Report {
   const report: Report = {
     requests: 0,
     steps: 0,
     breaks: { step: 0, typed: 0, note: 0, unexplained: 0 },
     cost: { on: 0, off: 0 },
+    largest: { on: 0, off: 0 },
     rewritten: 0,
     violations: [],
   };
@@ -152,7 +169,9 @@ export function simulate(format: Format, body: Fields, strip = true): Report {
     on: new Cache(format),
     off: new Cache(format),
     strip,
+    route,
   };
+  const prices = routePrices(format, body, route);
   requestsOf(format, body).forEach((raw, at) => {
     report.requests++;
     const { shaped, step, add } = shapeOnce(format, raw, state, at);
@@ -163,8 +182,11 @@ export function simulate(format: Format, body: Fields, strip = true): Report {
         { check: "prefix", detail: "the shaped prefix changed with no step and no new prompt" },
       ]);
     const on = state.on.send(shaped);
-    report.cost.on += cost(format, on);
-    report.cost.off += cost(format, state.off.send(raw));
+    const off = state.off.send(raw);
+    report.cost.on += cost(format, on, prices);
+    report.cost.off += cost(format, off, prices);
+    report.largest.on = Math.max(report.largest.on, sent(on));
+    report.largest.off = Math.max(report.largest.off, sent(off));
     if (broke) report.rewritten += on.write + on.uncached;
   });
   return report;
