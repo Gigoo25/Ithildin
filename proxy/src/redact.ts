@@ -1073,7 +1073,10 @@ export function redactRequest(
 // every request of every session: the word "run" was remembered from one
 // tool call, and each cache was written again before anyone could tell the
 // change was ours and not the agent's. Said once per change, with the first
-// difference to read it by.
+// difference to read it by. A change a rule found is not said: the system
+// prompt carries the user's home path and the tool list their hosts, and a
+// rule masking those is the redaction working. A remembered value is what
+// spread "run".
 const harnessChanges = new Set<string>();
 
 export function noteHarnessChange(
@@ -1094,17 +1097,19 @@ export function noteHarnessChange(
     const change = `${key}: ${word(was) || "…"} -> ${word(now) || "…"}`;
     if (harnessChanges.has(change)) continue;
     if (harnessChanges.size < 64) harnessChanges.add(change);
+    const rules = rulesAt(was, at);
+    if (rules === undefined) continue;
     process.stderr.write(
-      `ithildin: warning: redaction changed the agent's ${change} by ${rulesAt(was, at)} ` +
+      `ithildin: warning: redaction changed the agent's ${change} by ${rules} ` +
         `(masked a value it should not)\n`,
     );
   }
 }
 
-// Which rules found what changed: the word alone did not say whether a rule
-// is too broad or a value was remembered, and the body that would tell is
-// gone once it is sent. Scanned only for a change not said before.
-function rulesAt(text: string, at: number): string {
+// What found what changed, when no rule did: a remembered value, or a scan
+// that ran out of time and could not tell. Undefined when a rule found it.
+// Scanned only for a change not seen before.
+function rulesAt(text: string, at: number): string | undefined {
   let ids: string[];
   try {
     ids = scanRules(text)
@@ -1113,7 +1118,7 @@ function rulesAt(text: string, at: number): string {
   } catch {
     return "a rule (the scan ran out of time)";
   }
-  return ids.length ? [...new Set(ids)].sort().join(",") : "no rule (a remembered value)";
+  return ids.length ? undefined : "no rule (a remembered value)";
 }
 
 function redactWithCorpus(

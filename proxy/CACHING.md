@@ -445,7 +445,9 @@ Three changes keep it from coming back:
 - The proxy says so when redaction changes a request's system prompt,
   instructions or tool list (`noteHarnessChange` in `redact.ts`), once per
   change, with the words: `redaction changed the agent's system: run -> …`.
-  Nothing of the user's is in those, so any change there is the engine.
+  Only a change no rule found is said (2026-10-29): those fields do hold the
+  user's home path and hosts, and a rule masking them warned on every
+  restart. A remembered value is how "run" spread.
 
 What first masked the word in one file of one session is not known: a fresh
 engine leaves that file alone. The memory is what spread it everywhere.

@@ -538,7 +538,7 @@ describe("a change to the agent's own instructions", () => {
     }
   });
 
-  it("names the rules that found what changed", () => {
+  it("is not said when a rule found what changed", () => {
     const said: string[] = [];
     const write = spyOn(process.stderr, "write").mockImplementation((chunk) => {
       said.push(String(chunk));
@@ -547,7 +547,7 @@ describe("a change to the agent's own instructions", () => {
     try {
       const before = { system: "Connect to nastrel.lan first." };
       noteHarnessChange("anthropic", before, { system: "Connect to vudrom.lan first." });
-      expect(said[0]).toMatch(/system: nastrel\.lan -> vudrom\.lan by \S*host/);
+      expect(said).toEqual([]);
     } finally {
       write.mockRestore();
     }
