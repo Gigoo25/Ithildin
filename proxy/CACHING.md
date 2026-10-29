@@ -15,7 +15,7 @@ Update 2026-10-23: the kept pairs point at a typed user turn after dropped
 thinking on the 5.5 models (see [Step misses on the 5.5
 models](#step-misses-on-the-55-models-2026-10-23)). Confirmed 2026-10-29:
 with thinking stripped before a typed turn, no Opus 5.5 step since has read
-only the system prompt; Sonnet 5.5 is untested.
+only the system prompt, nor did Sonnet 5.5's one later step.
 
 ## The problem
 
@@ -709,8 +709,10 @@ it off.
 were not a session's first, from the default going on (2026-10-23 17:40) to
 2026-10-29, all on Opus 5.5 across 11 sessions, read back to the old cutoff
 (29K to 227K); none read only the system prompt, against 19 of 55 on Opus 5.5
-before. By chance at the old rate that is about 1 in 140,000. Sonnet 5.5 has
-not stepped on the main thread since, so it is untested there.
+before. By chance at the old rate that is about 1 in 140,000. Sonnet 5.5's first
+later step, `30>60` in session `b81fab11` that afternoon, read back 32.9K
+and wrote 19.7K, where the system prompt alone is about 14K: one step, not
+yet a rate, against 11 of 24 missed before.
 
 **Forks.** In the same session, Claude Code's forked agents cost more than
 any step: a fork carries the parent's whole history, and as a subagent it

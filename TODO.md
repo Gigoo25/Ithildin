@@ -60,28 +60,15 @@ Decide together: map `opencode-ai` to `opencode-go` in `prices.ts`, and
 give that route a larger step, once a captured session (the check above)
 and the models' context limits show the larger prompt fits.
 
-## Check Pi's user messages on Codex on real sessions
-
-`asksAt` now counts a Responses item with `role: "user"` and no `type` as a
-user message, as Pi sends them, so a Pi session on Codex keeps reasoning only
-in the loop its last message started. Judge it on real Pi sessions (the sim
-sends Codex CLI's shape).
-
-## Check a Sonnet 5.5 main-thread step
-
-Stripping thinking stopped Opus 5.5 steps reading only the system prompt
-(0 of 28 since 2026-10-23, CACHING.md). Sonnet 5.5 missed 11 of 24 before
-and has not stepped on the main thread since. On its next steps, check the
-read count with the step listing.
-
 ## OpenCode Go's new endpoint
 
 OpenCode Go's docs give `https://opencode.ai/inference/go/` (`openai/v1/...`,
 `anthropic/v1/messages`, `google/v1beta/...`); the proxy routes to
 `https://opencode.ai/zen/go` (`server.ts`). Still served today. Through the
 `opencode-ai` route, `inference/go/openai/v1/chat/completions` and
-`.../responses` answered 200 (2026-10-29); `anthropic/v1/messages` and
-`google/v1beta/...` are untested.
+`.../responses` answered 200 (2026-10-29), and
+`google/v1beta/...:streamGenerateContent` answered 200 with cache reads
+growing (2026-10-20); `anthropic/v1/messages` is untested.
 
 ## Untracked repro
 
