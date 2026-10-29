@@ -30,6 +30,8 @@ export interface Report {
   breaks: { step: number; typed: number; note: number; unexplained: number };
   // What the run cost against the cache model, in uncached-input tokens.
   cost: { on: number; off: number };
+  // What it read, wrote and sent uncached, in tokens, with shaping on and off.
+  usage: { on: Usage; off: Usage };
   // The largest prompt sent, in tokens, with shaping on and off.
   largest: { on: number; off: number };
   // Tokens written to the cache by requests whose shaped prefix broke.
@@ -38,6 +40,12 @@ export interface Report {
 }
 
 const VIOLATIONS_MAX = 20;
+
+export function tally(total: Usage, usage: Usage): void {
+  total.read += usage.read;
+  total.write += usage.write;
+  total.uncached += usage.uncached;
+}
 
 function retrieval(kept: Map<string, string>): Retrieval {
   return {
@@ -159,6 +167,7 @@ export function simulate(format: Format, body: Fields, strip = true, route?: str
     steps: 0,
     breaks: { step: 0, typed: 0, note: 0, unexplained: 0 },
     cost: { on: 0, off: 0 },
+    usage: { on: { read: 0, write: 0, uncached: 0 }, off: { read: 0, write: 0, uncached: 0 } },
     largest: { on: 0, off: 0 },
     rewritten: 0,
     violations: [],
@@ -186,6 +195,8 @@ export function simulate(format: Format, body: Fields, strip = true, route?: str
     const off = state.off.send(raw);
     report.cost.on += cost(format, on, prices);
     report.cost.off += cost(format, off, prices);
+    tally(report.usage.on, on);
+    tally(report.usage.off, off);
     report.largest.on = Math.max(report.largest.on, sent(on));
     report.largest.off = Math.max(report.largest.off, sent(off));
     if (broke) report.rewritten += on.write + on.uncached;

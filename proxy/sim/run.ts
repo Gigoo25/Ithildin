@@ -17,7 +17,8 @@
 
 import { readFileSync } from "node:fs";
 import type { Format } from "../src/redact.ts";
-import { simulate, type Report } from "./sim.ts";
+import type { Usage } from "./cache.ts";
+import { simulate, tally, type Report } from "./sim.ts";
 import { formatOf } from "./tape.ts";
 import { generated } from "./workload.ts";
 
@@ -49,6 +50,7 @@ function empty(): Totals {
       steps: 0,
       breaks: { step: 0, typed: 0, note: 0, unexplained: 0 },
       cost: { on: 0, off: 0 },
+      usage: { on: { read: 0, write: 0, uncached: 0 }, off: { read: 0, write: 0, uncached: 0 } },
       largest: { on: 0, off: 0 },
       rewritten: 0,
       violations: [],
@@ -68,6 +70,8 @@ function add(totals: Totals, name: string, report: Report): void {
   t.breaks.unexplained += report.breaks.unexplained;
   t.cost.on += report.cost.on;
   t.cost.off += report.cost.off;
+  tally(t.usage.on, report.usage.on);
+  tally(t.usage.off, report.usage.off);
   t.largest.on = Math.max(t.largest.on, report.largest.on);
   t.largest.off = Math.max(t.largest.off, report.largest.off);
   t.rewritten += report.rewritten;
@@ -86,6 +90,8 @@ function print(label: string, totals: Totals): void {
       `largest prompt ${r.largest.on} shaped vs ${r.largest.off} raw; ` +
       `rewrote ${r.rewritten} tokens; ${failing.length} failing`,
   );
+  const said = (u: Usage) => `read ${u.read} / write ${u.write} / uncached ${u.uncached}`;
+  console.log(`  shaped: ${said(r.usage.on)}; raw: ${said(r.usage.off)}`);
   for (const { name, report } of failing.slice(0, 5)) {
     console.log(`  ${name}`);
     for (const v of report.violations.slice(0, 3))
