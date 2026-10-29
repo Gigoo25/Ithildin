@@ -89,12 +89,14 @@ export interface Stats {
   swappedCalls: number;
   // What context shaping took off the wire: results and inputs stubbed,
   // results compacted, repeats noted, the characters all saved, and what that
-  // saved in uncached-input tokens, estimated (shape.ts).
+  // saved in uncached-input tokens, estimated (shape.ts); of that, the part
+  // from clients that do not prune, which is no estimate (server.ts).
   shapedMasked: number;
   shapedCompacted: number;
   shapedDeduped: number;
   shapedSavedChars: number;
   shapedSavedCost: number;
+  shapedSavedCostUnpruned: number;
   // What the replies said they cost (usage.ts): tokens sent fresh, read from
   // the provider's prompt cache, written to it, and generated.
   usageReplies: number;
@@ -122,6 +124,7 @@ export interface Tally {
   shapedDeduped: number;
   shapedSavedChars: number;
   shapedSavedCost: number;
+  shapedSavedCostUnpruned: number;
   usageInput: number;
   usageCacheRead: number;
   usageCacheWrite: number;
@@ -356,6 +359,7 @@ function newStats(startedAt: number): Stats {
     shapedDeduped: 0,
     shapedSavedChars: 0,
     shapedSavedCost: 0,
+    shapedSavedCostUnpruned: 0,
     usageReplies: 0,
     usageInput: 0,
     usageCacheRead: 0,
@@ -377,6 +381,7 @@ function newTally(): Tally {
     shapedDeduped: 0,
     shapedSavedChars: 0,
     shapedSavedCost: 0,
+    shapedSavedCostUnpruned: 0,
     usageInput: 0,
     usageCacheRead: 0,
     usageCacheWrite: 0,
@@ -490,6 +495,7 @@ export class EventLog {
       deduped?: number;
       savedChars: number;
       savedCost?: number;
+      unpruned?: boolean;
     } = {
       masked: 0,
       compacted: 0,
@@ -505,6 +511,8 @@ export class EventLog {
     this.stats.shapedDeduped += shaped.deduped ?? 0;
     this.stats.shapedSavedChars += shaped.savedChars;
     this.stats.shapedSavedCost += shaped.savedCost ?? 0;
+    const unpruned = shaped.unpruned ? (shaped.savedCost ?? 0) : 0;
+    this.stats.shapedSavedCostUnpruned += unpruned;
     const tally = this.tally(context);
     if (tally) {
       tally.shapedMasked += shaped.masked;
@@ -512,6 +520,7 @@ export class EventLog {
       tally.shapedDeduped += shaped.deduped ?? 0;
       tally.shapedSavedChars += shaped.savedChars;
       tally.shapedSavedCost += shaped.savedCost ?? 0;
+      tally.shapedSavedCostUnpruned += unpruned;
     }
     this.add(context, { type: "request", ms, count: masked });
   }

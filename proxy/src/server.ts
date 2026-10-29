@@ -547,8 +547,17 @@ export type Forwarded = {
   deduped: number;
   savedChars: number;
   savedCost: number;
+  // Sent to a host whose client keeps all old tool output (opencode): the
+  // unshaped request might not have fit, so savedCost is no estimate there.
+  unpruned?: boolean;
   step?: { from: number; to: number };
 };
+
+// Hosts whose clients send every tool result they ever got. opencode does
+// not prune, so its requests arrive larger than a context window and the
+// saving shaping computes is against a request that could not be sent
+// (CACHING.md).
+const UNPRUNED_HOSTS = new Set(["opencode.ai"]);
 
 function unscanned(): Scanned {
   return {
@@ -820,6 +829,7 @@ async function forward(
     stores.originals,
     name,
   );
+  if (UNPRUNED_HOSTS.has(new URL(route.upstream).hostname)) shaped.unpruned = true;
   const sent = redactUrl(rest, url.search, headers, scanned, redact);
   if (sent instanceof Response) return sent;
   const routed = routeFor(route, name, sent.rest, sent.search, headers, format);

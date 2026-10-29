@@ -59,6 +59,7 @@ describe("event log", () => {
       shapedDeduped: 2,
       shapedSavedChars: 900,
       shapedSavedCost: 22,
+      shapedSavedCostUnpruned: 0,
       usageInput: 10,
       usageCacheRead: 80,
       usageCacheWrite: 10,
@@ -221,6 +222,40 @@ describe("dashboard", () => {
       next: number;
       stats: Record<string, unknown>;
     }>;
+
+  it("leaves opencode's requests out of the estimate it counts", async () => {
+    // An old result big enough to be stubbed, with twenty turns after it.
+    const output = Array.from({ length: 7_000 }, (_, i) => `line ${i} of output`).join("\n");
+    const list: unknown[] = [
+      { role: "user", content: "go" },
+      { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "Bash", input: {} }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: output }] },
+    ];
+    for (let i = 0; i < 20; i++)
+      list.push({ role: "user", content: `do ${i}` }, { role: "assistant", content: "ok" });
+    const handler = createHandler(
+      DEFAULT_ROUTES,
+      upstream(() => Response.json({ content: [] })),
+    );
+    const post = (path: string) =>
+      handler(
+        new Request(`http://127.0.0.1/${path}`, {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-ithildin-session": "abcdef123456" },
+          body: JSON.stringify({ model: "m", messages: list }),
+        }),
+      );
+    await post("anthropic/v1/messages");
+    const once = (await activity(handler)).stats;
+    expect(once.shapedSavedCost).not.toBe(0);
+    expect(once.shapedSavedCostUnpruned).toBe(0);
+    await post("opencode-go/v1/messages");
+    const twice = (await activity(handler)).stats;
+    expect(twice.shapedSavedCostUnpruned).toBe(
+      (twice.shapedSavedCost as number) - (once.shapedSavedCost as number),
+    );
+    expect(twice.shapedSavedCostUnpruned).not.toBe(0);
+  });
 
   it("shows what a request masked, without the real value", async () => {
     const handler = createHandler(
@@ -1161,7 +1196,7 @@ describe("dashboard", () => {
   it("says a session's shaping and cache in a line", () => {
     const pick = (name: string) =>
       new RegExp(`function ${name}[\\s\\S]*?\\n\\}`).exec(DASHBOARD_HTML)![0];
-    const source = ["count", "bytes", "tokensSaved", "breakCounts", "tallyLine"]
+    const source = ["count", "bytes", "tokensSaved", "costSaved", "breakCounts", "tallyLine"]
       .map(pick)
       .join("\n");
     const tallyLine = new Function(`${source}; return tallyLine;`)() as (
@@ -1194,6 +1229,13 @@ describe("dashboard", () => {
       "Shaping: 4 stubbed, 1 repeats, 2.0 MiB saved, about -1,500 input tokens",
     );
     expect(line).toContain("Cache: 90% read of 100 prompt tokens, no breaks");
+    const shaped = { ...none, shapedMasked: 1, shapedSavedChars: 1024, shapedSavedCost: 900 };
+    expect(tallyLine({ ...shaped, shapedSavedCostUnpruned: 600 })).toBe(
+      "Shaping: 1 stubbed, 1.0 KiB saved, about 300 input tokens, opencode not counted",
+    );
+    expect(tallyLine({ ...shaped, shapedSavedCostUnpruned: 900 })).toBe(
+      "Shaping: 1 stubbed, 1.0 KiB saved, not estimated on opencode",
+    );
     expect(line).not.toContain("compacted");
     expect(tallyLine({ ...none, usageCacheRead: 1, cacheBreaksShaping: 2 })).toBe(
       "Cache: 100% read of 1 prompt tokens, 0 agent / 2 shaping breaks",

@@ -763,7 +763,7 @@ function tallyLine(tally) {
     if (tally.shapedCompacted) parts.push(count(tally.shapedCompacted) + ' compacted');
     if (tally.shapedDeduped) parts.push(count(tally.shapedDeduped) + ' repeats');
     said.push('Shaping: ' + parts.join(', ') + ', ' + bytes(tally.shapedSavedChars) + ' saved, ' +
-      tokensSaved(tally.shapedSavedCost));
+      costSaved(tally));
   }
   const read = tally.usageCacheRead;
   const prompt = tally.usageInput + read + tally.usageCacheWrite;
@@ -928,6 +928,17 @@ function tokensSaved(cost) {
   return 'about ' + count(Math.round(cost || 0)) + ' input tokens';
 }
 
+// The estimate, less what opencode's requests contributed: it sends every
+// tool result it ever got, so the unshaped request it is measured against
+// often could not have been sent.
+function costSaved(shaped) {
+  const unpruned = shaped.shapedSavedCostUnpruned || 0;
+  const counted = (shaped.shapedSavedCost || 0) - unpruned;
+  if (unpruned === 0) return tokensSaved(counted);
+  if (counted === 0) return 'not estimated on opencode';
+  return tokensSaved(counted) + ', opencode not counted';
+}
+
 // The traffic since the proxy started, per minute.
 function perMinute(stats) {
   const minutes = (Date.now() - stats.startedAt) / 60000;
@@ -975,7 +986,7 @@ function renderStats(stats, watch) {
   const saved = stats.shapedSavedChars || 0;
   figures('num_shaping', [
     ['Saved', saved === 0 ? 'none yet' : bytes(saved)],
-    ['Cost saved', saved === 0 ? 'none yet' : tokensSaved(stats.shapedSavedCost)],
+    ['Cost saved', saved === 0 ? 'none yet' : costSaved(stats)],
     ['Per request', stats.requests ? bytes(Math.round(saved / stats.requests)) : 'none yet'],
     ['Stubbed', count(stats.shapedMasked || 0)],
     ['Compacted', count(stats.shapedCompacted || 0)],
