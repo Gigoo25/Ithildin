@@ -571,6 +571,29 @@ Non-step breaks in the same window were few: 13 `system(agent)` and 7
 `messageN(agent)` on `go/openai` responses (its lower read share), 12
 `messageN(agent)` on `openai` responses.
 
+### Cheap reads and the step size, in the sim (2026-10-29)
+
+`3b774f4` prices `opencode-go`'s cheap models at a 0.02x read, so a step
+must save five times as much to pay. On seeded chat sessions (20 of 300
+rounds, `run.ts --format chat --route opencode-go --model mimo-v2.6-flash`)
+against fixed prices (0.1x read), by `MASK_STEP_TURNS`:
+
+| Step | Fixed: cost vs raw | opencode-go: cost vs raw | opencode-go: largest prompt | opencode-go: steps |
+| ---- | ------------------ | ------------------------ | --------------------------- | ------------------ |
+| 10   | 26.5%              | 54.6%                    | 114K                        | 434                |
+| 15   | 26.1%              | 51.8%                    | 124K                        | 316                |
+| 20   | 26.4%              | 50.7%                    | 118K                        | 253                |
+| 30   | 27.7%              | 48.6%                    | 138K                        | 167                |
+
+At fixed prices step 10 is as good as any. At the cheap read, steps fall
+by a quarter at step 10, the largest prompt grows from 95K to 114K, and the
+rewrite is most of what shaping costs, so a step of 30 is 11% cheaper there
+at the price of a 138K prompt. Raw prompts reach 685K, so shaping still
+bounds them. Nothing changed: opencode traffic goes through `opencode-ai`,
+which `prices.ts` does not price, so it still steps at fixed prices. A
+larger step on that route is worth it only once it is priced as
+`opencode-go`, and only for models whose context holds the larger prompt.
+
 To list opencode steps:
 
 ```sh

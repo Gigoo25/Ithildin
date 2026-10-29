@@ -45,16 +45,20 @@ opencode traffic goes through the `opencode-ai` route (`routes.json`), which
 the risk in. The sim can price a replay on either:
 `bun proxy/sim/run.ts --route opencode-go --replay <captured.json>` prints
 the largest prompt shaped and raw; seeded runs take `--route` and `--model`
-too. Left: a long `mimo-v2.6-flash` session
+too. Seeded sessions stayed bounded (114K largest, against 685K raw).
+Left: a long `mimo-v2.6-flash` session
 (hundreds of tool calls, 0.02x read; `-free` is not in the table) captured
 with `capture.ts`, replayed at both prices.
 
-## Measure a larger step on opencode chat
+## Decide opencode's route prices and step size
 
-On `go/openai` chat a step came every 11 requests and steps were 48% of the
-route's uncached input (CACHING.md). Measure a larger `MASK_STEP_TURNS`
-there, together with the opencode check above, since the new prices change
-how often it steps.
+In the sim (CACHING.md, "Cheap reads and the step size"), a 0.02x read
+grows the largest shaped prompt from 95K to 114K at step 10, and a step of
+30 is 11% cheaper there with a 138K prompt. opencode traffic is on
+`opencode-ai`, which gets no route prices, so none of it applies yet.
+Decide together: map `opencode-ai` to `opencode-go` in `prices.ts`, and
+give that route a larger step, once a captured session (the check above)
+and the models' context limits show the larger prompt fits.
 
 ## Check Pi's user messages on Codex on real sessions
 
