@@ -462,7 +462,8 @@ const upstream = (async (url: string, init: RequestInit) => {
 function typedAt(format: Format, body: Fields): number {
   const list = listOf(format, body) as Fields[];
   return list.findLastIndex((entry) => {
-    if (format === "responses") return entry.type === "message" && entry.role === "user";
+    if (format === "responses")
+      return (entry.type ?? "message") === "message" && entry.role === "user";
     if (entry.role !== "user") return false;
     if (format === "gemini")
       return ((entry.parts ?? []) as Fields[]).some((part) => !part.functionResponse);

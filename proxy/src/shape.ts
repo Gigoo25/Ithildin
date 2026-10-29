@@ -901,9 +901,12 @@ function lastAsked(format: Format, list: unknown[]): number {
   return list.findLastIndex((item) => asksAt(format, item));
 }
 
+// Codex CLI types its user messages; Pi sends them with only a role, which
+// the Responses API takes as a message too.
 function asksAt(format: Format, item: unknown): boolean {
   const entry = record(item);
-  if (format === "responses") return entry?.type === "message" && entry.role === "user";
+  if (format === "responses")
+    return (entry?.type ?? "message") === "message" && entry?.role === "user";
   return format === "chat" && entry?.role === "user";
 }
 

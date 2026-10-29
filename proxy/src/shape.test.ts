@@ -785,25 +785,32 @@ describe("responses requests", () => {
     expect(shapeRequest("responses", { input })?.masked).toBe(1);
   });
 
-  it("drops old reasoning, and keeps it in the loop the last typed turn started", () => {
-    const input: Array<Record<string, unknown>> = [];
-    for (let i = 0; i < 20; i++) {
-      input.push({ type: "message", role: "user", content: [{ type: "input_text", text: "go" }] });
-      input.push({ type: "reasoning", id: `rs_${i}`, encrypted_content: "e".repeat(400) });
-      input.push({ type: "message", role: "assistant", content: pad(i) });
-    }
-    input.splice(3, 0, { type: "function_call_output", call_id: "r1", output: big() });
-    // The last typed turn's loop: reasoning before a call, which must go back.
-    input.push({ type: "reasoning", id: "rs_loop", encrypted_content: "e".repeat(400) });
-    input.push({ type: "function_call", call_id: "r9", name: "bash", arguments: "{}" });
-    const shaped = shapeRequest("responses", { input })!;
-    const ids = (shaped.body.input as Array<{ type: string; id?: string }>)
-      .filter((item) => item.type === "reasoning")
-      .map((item) => item.id);
-    expect(ids).not.toContain("rs_0");
-    expect(ids).toContain("rs_19");
-    expect(ids).toContain("rs_loop");
-  });
+  // Codex CLI types its user messages; Pi sends them with only a role.
+  it.each([
+    ["typed", { type: "message", role: "user" }],
+    ["untyped", { role: "user" }],
+  ])(
+    "drops old reasoning, and keeps it in the loop the last %s user message started",
+    (_, user) => {
+      const input: Array<Record<string, unknown>> = [];
+      for (let i = 0; i < 20; i++) {
+        input.push({ ...user, content: [{ type: "input_text", text: "go" }] });
+        input.push({ type: "reasoning", id: `rs_${i}`, encrypted_content: "e".repeat(400) });
+        input.push({ type: "message", role: "assistant", content: pad(i) });
+      }
+      input.splice(3, 0, { type: "function_call_output", call_id: "r1", output: big() });
+      // The last typed turn's loop: reasoning before a call, which must go back.
+      input.push({ type: "reasoning", id: "rs_loop", encrypted_content: "e".repeat(400) });
+      input.push({ type: "function_call", call_id: "r9", name: "bash", arguments: "{}" });
+      const shaped = shapeRequest("responses", { input })!;
+      const ids = (shaped.body.input as Array<{ type: string; id?: string }>)
+        .filter((item) => item.type === "reasoning")
+        .map((item) => item.id);
+      expect(ids).not.toContain("rs_0");
+      expect(ids).toContain("rs_19");
+      expect(ids).toContain("rs_loop");
+    },
+  );
 
   it("counts each round of a tool loop as a turn, message or not", () => {
     // Codex's shape: one typed turn, then a loop of reasoning and calls with no

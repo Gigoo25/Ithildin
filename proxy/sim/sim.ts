@@ -58,7 +58,8 @@ const NOTE = /^\s*<([a-z][\w-]*)>[\s\S]*<\/\1>\s*$/;
 function typedAt(format: Format, list: unknown[], person = false): number {
   return list.findLastIndex((item) => {
     const entry = item as Fields;
-    if (format === "responses") return entry.type === "message" && entry.role === "user";
+    if (format === "responses")
+      return (entry.type ?? "message") === "message" && entry.role === "user";
     if (entry.role !== "user") return false;
     // Gemini is read as its Anthropic view: a result part is a tool_result.
     if (format === "gemini")
