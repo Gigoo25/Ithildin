@@ -1,16 +1,19 @@
 # TODO
 
-## Check Pi's Gemini and NVIDIA providers
+## Retry Pi's deepseek on NVIDIA
 
-Run real Pi sessions through the proxy on the providers in
-`~/.pi/agent/models.json` that are not covered yet, and check redaction,
-swap-back, shaping and cache hits on the dashboard as for the others.
+On 2026-10-29 Pi on `nvidia` (`http://127.0.0.1:18733/nvidia`) worked on
+`meta/muse-glimmer-30b`: 200s, redaction and swap-back, but no cache read
+reported in two requests. `deepseek-ai/deepseek-v4.1-flash` failed once with
+`upstream unreachable (The connection was closed.)`, NVIDIA dropping the
+connection, and `google/gemma-3-4b-it` got a 404 from NVIDIA. Retry deepseek
+after a rebuild with `c7b9e0a`, which names the model on a refusal, and see
+whether NVIDIA ever reports a cache read.
 
-- `nvidia`: routed at `http://127.0.0.1:18733/nvidia`; no models are listed
-  there, so Pi's built-in list for it applies.
-- Gemini: the Gemini models under `opencode-go` (routed at
-  `http://127.0.0.1:18733/opencode-go`), which use Gemini's own format
-  (`:generateContent` / `:streamGenerateContent`).
+Pi on Gemini cannot be checked: Pi's `opencode-go` provider has "no API
+implementation for google-generative-ai", so it sends nothing. The proxy's
+Gemini path through opencode-go is covered by opencode's own requests
+(2026-10-20).
 
 ## Verification runs on the committed code
 
