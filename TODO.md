@@ -44,16 +44,10 @@ opencode traffic goes through the `opencode-ai` route (`routes.json`), which
 `3b774f4` changes nothing there; mapping it to `opencode-go` is what brings
 the risk in. The sim can price a replay on either:
 `bun proxy/sim/run.ts --route opencode-go --replay <captured.json>` prints
-the largest prompt shaped and raw. Left: a long `mimo-v2.6-flash` session
+the largest prompt shaped and raw; seeded runs take `--route` and `--model`
+too. Left: a long `mimo-v2.6-flash` session
 (hundreds of tool calls, 0.02x read; `-free` is not in the table) captured
 with `capture.ts`, replayed at both prices.
-
-## Cap or label "cost saved" on opencode routes
-
-The dashboard estimate (`c34971f`) assumes the unshaped request could have
-been sent. On opencode many could not (CACHING.md: `saved=` came to four
-times everything read), so there it overstates. Fine for Claude Code and
-Codex.
 
 ## Measure a larger step on opencode chat
 
@@ -72,31 +66,17 @@ Candidates, none checked: the 2x write lets fewer steps pay, so less is
 masked; the markers limit where the cache is reused; the sim's workloads
 differ by format.
 
-## Read Pi's user messages on Codex
+## Check Pi's user messages on Codex on real sessions
 
-Pi sends user messages to Codex without `type: "message"`, so `asksAt` does
-not see them and treats a whole Pi session as one agent turn, which changes
-what reasoning is kept. Count an item with `role: "user"` and no `type` as a
-message, and judge it on real Pi sessions (the sim sends Codex CLI's shape).
+`asksAt` now counts a Responses item with `role: "user"` and no `type` as a
+user message, as Pi sends them, so a Pi session on Codex keeps reasoning only
+in the loop its last message started. Judge it on real Pi sessions (the sim
+sends Codex CLI's shape).
 
 ## Main-thread Anthropic steps that read only the system prompt
 
 Open since 2026-10-10 (CACHING.md); the 2026-10-23 lead (a typed user turn
 after dropped thinking on the 5.5 models) is not confirmed.
-
-## Routes and models in the sim
-
-Replays take a route (`--route`, or the one `capture.ts` saved) and are
-shaped and costed at its prices. Seeded runs still send no route and fixed
-model names, so they price every format at fixed rates; give the generated
-workloads a route and real model names too.
-
-## Subagent steps at 1.25x
-
-Claude Code's subagents cache for 5 minutes (942 of 950 writes in 14 days)
-and their pauses are under 5 minutes, but `shape.ts` prices every Anthropic
-write at 2x (`HOUR_WRITE`). Only forks step, so the gain may be small;
-decide from the sim comparison of 2x against 1.25x step pricing.
 
 ## OpenCode Go's new endpoint
 
