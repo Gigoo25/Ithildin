@@ -208,6 +208,12 @@ describe("cache diagnostics", () => {
     expect(diagnoses.measure(step, true, usage(12_000, 40_000), "step")).toBe(
       ' cachemiss=short_read{"read":12000,"expected":40000}',
     );
+    // The same step on Codex, which reads back only the prompt's start
+    // whatever came before the change, is not short.
+    const codex = { ...step, key: "c\0luna\0first" };
+    diagnoses.measure({ ...first, key: codex.key }, false, usage(0, 50_000), body);
+    diagnoses.measure({ ...next, key: codex.key }, false, usage(40_000, 20_000), "y".repeat(1200));
+    expect(diagnoses.measure(codex, true, usage(2_304, 50_000), "step", true)).toBe("");
     expect(kept).toEqual([
       {
         session: "s",

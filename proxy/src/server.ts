@@ -940,7 +940,8 @@ function parsedOr(data: string): unknown {
 // What the log says about a reply's cache read. Anthropic says why a request it
 // was asked about missed; for the rest the usage is all there is
 // (diagnose.ts). A Responses request that names its previous response carries
-// only the new items, so there is nothing to compare.
+// only the new items, so there is nothing to compare. A Responses step reads
+// back only the prompt's start, so it is not measured as a short read.
 function missDiagnosis(
   sent: { stores: Stores; thread: Thread | undefined; format: Format | undefined },
   asked: boolean,
@@ -956,7 +957,13 @@ function missDiagnosis(
     asked
       ? stores.diagnoses.answer(thread!, !!shaped.step, heard, shaped.body)
       : measured
-        ? stores.diagnoses.measure(thread, !!shaped.step, usage, shaped.body)
+        ? stores.diagnoses.measure(
+            thread,
+            !!shaped.step,
+            usage,
+            shaped.body,
+            format === "responses",
+          )
         : "";
 }
 

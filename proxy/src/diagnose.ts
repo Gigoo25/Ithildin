@@ -237,13 +237,22 @@ export class Diagnoses {
 
   // Remembers a reply heard from its usage alone, and returns the journal's
   // words for a short read; the pair is kept as a miss Anthropic names is.
-  measure(of: Thread | string, step: boolean, usage: Usage | undefined, body?: string): string {
+  // A `whole` step is expected to read back only the prompt's start, as a
+  // Codex step does (shape.ts prices it so), so its read is never short.
+  measure(
+    of: Thread | string,
+    step: boolean,
+    usage: Usage | undefined,
+    body?: string,
+    whole = false,
+  ): string {
     if (!usage || body === undefined) return "";
     const asked = thread(of);
     const against = this.closest(asked, step);
     const prompt = usage.input + usage.cacheRead + usage.cacheWrite;
     const expected = (against && expectedRead(against, asked)) ?? 0;
-    const short = expected >= SHORT_READ_MIN && usage.cacheRead < expected * SHORT_READ;
+    const short =
+      !(whole && step) && expected >= SHORT_READ_MIN && usage.cacheRead < expected * SHORT_READ;
     const reason = `short_read{"read":${usage.cacheRead},"expected":${expected}}`;
     if (short) {
       const session = asked.key.split("\0")[0]!;
