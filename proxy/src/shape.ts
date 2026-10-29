@@ -54,7 +54,10 @@ export const MASK_MIN_CHARS = 400;
 export const MASK_THRESHOLD_TOKENS = 30_000;
 export const MASK_HORIZON_TURNS = 20;
 // Anthropic charges 1.25x for a cache write, 2x when it is asked to keep it an
-// hour. Every other price is the model's on its route (prices.ts).
+// hour. Every other price is the model's on its route (prices.ts). Subagents
+// write at 5 minutes but are priced the same: one never steps (isSubagent),
+// and a fork must reach the cutoff its parent did, which a cheaper write
+// would move.
 const HOUR_WRITE = 2;
 
 // ITHILDIN_SHAPE=off (or raw) shapes nothing, on any route.
