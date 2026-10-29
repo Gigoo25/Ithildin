@@ -56,16 +56,6 @@ route's uncached input (CACHING.md). Measure a larger `MASK_STEP_TURNS`
 there, together with the opencode check above, since the new prices change
 how often it steps.
 
-## Why shaped Anthropic reads more than chat
-
-Shaped Anthropic still reads about 44% more than chat (369M against 256M
-tokens over 20 sim sessions); about a third of its gap to the other formats
-(the rest is the 2x write). Not thinking: shaping already drops old turns'
-thinking and, on the 5.x models, all of it before the last typed turn.
-Candidates, none checked: the 2x write lets fewer steps pay, so less is
-masked; the markers limit where the cache is reused; the sim's workloads
-differ by format.
-
 ## Check Pi's user messages on Codex on real sessions
 
 `asksAt` now counts a Responses item with `role: "user"` and no `type` as a

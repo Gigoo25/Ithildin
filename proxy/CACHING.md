@@ -94,6 +94,16 @@ Codex sessions it took 957 steps instead of 873, rewrote 36.8M tokens instead
 of 33.7M, and cost 27.85% of unshaped instead of 27.59%, worse in each batch
 of ten. The cheaper price approves steps whose savings do not cover them.
 
+Whole pricing is also why shaped Anthropic reads more than chat (369M
+against 256M tokens over 20 simulated sessions of 300 rounds, 2026-10-29).
+Priced from the change instead, Anthropic took 471 steps instead of 120 and
+read 248M, below chat, but wrote 23.7M instead of 17.3M and cost 38.9% of
+unshaped instead of 38.5%. The 2x hour write alone is about 60% of the gap
+(at 1x: 211 steps, 301M read, 37.2%). Markers are none of it: cached like
+chat, with no markers and no lookback, it read 370M. Nor is the workload: raw
+traffic is the same size in both formats. The extra reads buy fewer writes,
+and the trade comes out about even, so nothing changed.
+
 ## What the live data showed
 
 Steps in one session on 2026-10-07, after `9efbe86` was deployed:
