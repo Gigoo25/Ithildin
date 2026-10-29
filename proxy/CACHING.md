@@ -13,7 +13,9 @@ not be. opencode's routes, with automatic caching and no markers, read back
 through their steps (see [opencode](#opencode-the-same-shaping-without-markers-2026-10-07-to-10-12)).
 Update 2026-10-23: the kept pairs point at a typed user turn after dropped
 thinking on the 5.5 models (see [Step misses on the 5.5
-models](#step-misses-on-the-55-models-2026-10-23)); not yet confirmed.
+models](#step-misses-on-the-55-models-2026-10-23)). Confirmed 2026-10-29:
+with thinking stripped before a typed turn, no Opus 5.5 step since has read
+only the system prompt; Sonnet 5.5 is untested.
 
 ## The problem
 
@@ -677,6 +679,13 @@ request wrote under 1K, so no step miss; at most a few thinking blocks in the
 newest loop were dropped. A typed message cost about the loop before it,
 2.8-33.5K. So it is on by default now; `ITHILDIN_STRIP_THINKING=off` turns
 it off.
+
+**Confirmed (2026-10-29).** From the journal, the 28 main-thread steps that
+were not a session's first, from the default going on (2026-10-23 17:40) to
+2026-10-29, all on Opus 5.5 across 11 sessions, read back to the old cutoff
+(29K to 227K); none read only the system prompt, against 19 of 55 on Opus 5.5
+before. By chance at the old rate that is about 1 in 140,000. Sonnet 5.5 has
+not stepped on the main thread since, so it is untested there.
 
 **Forks.** In the same session, Claude Code's forked agents cost more than
 any step: a fork carries the parent's whole history, and as a subagent it

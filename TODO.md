@@ -63,10 +63,12 @@ user message, as Pi sends them, so a Pi session on Codex keeps reasoning only
 in the loop its last message started. Judge it on real Pi sessions (the sim
 sends Codex CLI's shape).
 
-## Main-thread Anthropic steps that read only the system prompt
+## Check a Sonnet 5.5 main-thread step
 
-Open since 2026-10-10 (CACHING.md); the 2026-10-23 lead (a typed user turn
-after dropped thinking on the 5.5 models) is not confirmed.
+Stripping thinking stopped Opus 5.5 steps reading only the system prompt
+(0 of 28 since 2026-10-23, CACHING.md). Sonnet 5.5 missed 11 of 24 before
+and has not stepped on the main thread since. On its next steps, check the
+read count with the step listing.
 
 ## OpenCode Go's new endpoint
 
