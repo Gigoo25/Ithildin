@@ -35,6 +35,7 @@ import {
   inventoryStandInValue,
   isPromptOnlyRule,
   GENERALIZE_PATH,
+  isProgramName,
   rulesRevision,
 } from "./lib/rules.ts";
 import { AliasBook, aliasKeyPath, isAliasValue, SESSION_KEY_SUFFIX } from "./lib/aliases.ts";
@@ -269,9 +270,7 @@ export function isSyntheticValue(value: string): boolean {
     return true;
   // Two outputs joined as an address: a password's stand-in at a host's.
   const at = value.lastIndexOf("@");
-  return (
-    at > 0 && isSyntheticValue(value.slice(0, at)) && isSyntheticValue(value.slice(at + 1))
-  );
+  return at > 0 && isSyntheticValue(value.slice(0, at)) && isSyntheticValue(value.slice(at + 1));
 }
 // Provider payload fields carrying authenticated ciphertext must remain byte-for-byte
 // unchanged. Redacting one character invalidates Codex reasoning and compaction
@@ -1313,6 +1312,7 @@ const SWAPPED_MAX = 2_000;
 // catch a name in prose without the memory.
 export function rememberSwapped(value: string, ruleId: string): void {
   if (value.length < 3 || /^\p{L}+$/u.test(value) || SWAPPED.has(value)) return;
+  if (isProgramName(value)) return;
   keepSwapped(value, ruleId, ++swapGeneration);
   learned = true;
 }
@@ -1510,8 +1510,11 @@ export function respelledFindings(text: string, raw: LocatedFinding[]): LocatedF
 
 function swappedFindings(text: string): LocatedFinding[] {
   const seen = firstSeen(text);
+  // A program name saved before rememberSwapped turned it away is dropped as
+  // it is found, so the next save leaves it out.
   if (recall)
-    for (const { value, ruleId, since } of recall.find(text)) keepSwapped(value, ruleId, since);
+    for (const { value, ruleId, since } of recall.find(text))
+      if (!isProgramName(value)) keepSwapped(value, ruleId, since);
   if (SWAPPED.size === 0) return [];
   const lower = text.toLowerCase();
   const out: LocatedFinding[] = [];

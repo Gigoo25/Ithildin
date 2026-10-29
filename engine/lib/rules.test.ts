@@ -302,6 +302,9 @@ describe("local rule additions", () => {
       "// names a via host: the endpoint suffix on",
       "the server: one process per port",
       "const server = app;",
+      "Server: python3 -m http.server 8000",
+      'host: python3 -c "print(1)"',
+      "server = node --watch index.js",
     ]) {
       expect(scan(text).some((f) => f.ruleId === "pii-labeled-host")).toBe(false);
     }

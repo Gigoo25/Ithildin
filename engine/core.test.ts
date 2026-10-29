@@ -5,6 +5,7 @@ import path from "node:path";
 import { compileGeneralizeEntry, RULES, withScanBudget } from "./lib/rules.ts";
 import { type ActivityEvent, observeActivity } from "./lib/activity.ts";
 import { AliasBook } from "./lib/aliases.ts";
+import { Recall } from "./lib/recall.ts";
 import {
   aliases,
   asUserText,
@@ -564,6 +565,19 @@ describe("values swapped into tool calls", () => {
     expect(redactText(echoed).text).toBe(before);
     clearCaches();
     saveSwapped(); // nothing loaded: nothing to write, and no throw
+  });
+
+  it("drops a program name remembered before it was turned away", () => {
+    clearCaches();
+    const file = path.join(mkdtempSync(path.join(tmpdir(), "swapped-")), "swapped.json");
+    const key = Buffer.alloc(32, 7);
+    const saved = new Recall(key);
+    saved.save(file, [saved.entry("python3", "pii-labeled-host", 0)!]);
+    loadSwapped(key, file);
+    expect(redactText("run it with python3 -m pytest").text).toBe("run it with python3 -m pytest");
+    rememberSwapped("python3", "pii-labeled-host");
+    expect(redactText("then python3 again").text).toBe("then python3 again");
+    clearCaches();
   });
 
   it("still masks a remembered value echoed where no rule would catch it", () => {

@@ -746,6 +746,19 @@ const PLACEHOLDER_NAMES = new RegExp(
   "i",
 );
 
+// Interpreters and package runners, which follow a host label in a command
+// (`Server: python3 -m http.server`) and are never a host. python3 was
+// remembered this way and masked in Codex's instructions after each restart.
+const PROGRAM_NAMES = new RegExp(
+  String.raw`^(?:python[0-9.]*|pip[0-9.]*|node|nodejs|bun|bunx|deno|npm|npx|pnpm|yarn|uv|uvx|` +
+    String.raw`ruby|perl|php|java|bash|sh|zsh)$`,
+  "i",
+);
+
+export function isProgramName(value: string): boolean {
+  return PROGRAM_NAMES.test(value);
+}
+
 // Whether a labeled match is a code assignment with an expression on the
 // right: `const user = msg.role === "user"`, `this.owner = pick(...)`,
 // `user = a ?? b`. A name in code is a string literal, so only an unquoted
@@ -1475,6 +1488,7 @@ const LOCAL_RULES: Rule[] = [
     validate: (value: string, match?: RegExpMatchArray) =>
       !TYPE_NAMES.test(value) &&
       !HOST_STEMS.test(value) &&
+      !PROGRAM_NAMES.test(value) &&
       !PLACEHOLDER_NAMES.test(value) &&
       !codeAssignment(match),
     category: "pii",
