@@ -5,11 +5,14 @@
 //   bun proxy/sim/run.ts --seed 1234 --format anthropic   one seed, in full
 //   bun proxy/sim/run.ts --replay a.json b.json           real bodies
 //   bun proxy/sim/run.ts --route opencode-go --replay a.json   priced on a route
+//   bun proxy/sim/run.ts --format chat --route opencode-go --model mimo-v2.6-flash
 //
 // A replayed body is a whole session as its last request carried it, such as
 // a cache-miss dump (missed.json) or a captured one (capture.ts), which names
 // its route. It is read locally and never sent anywhere. Shaping and the cost
 // are priced on --route, else the captured route, else at fixed prices.
+// Seeds are priced on --route too, as --model when given, else as the
+// workload's own model.
 // Exits 1 when any check fails, naming the seed that reproduces it.
 
 import { readFileSync } from "node:fs";
@@ -25,6 +28,11 @@ const FORMATS: Format[] = ["anthropic", "responses", "chat", "gemini"];
 function option(name: string, fallback: number): number {
   const at = process.argv.indexOf(`--${name}`);
   return at < 0 ? fallback : Number(process.argv[at + 1]);
+}
+
+function text(name: string): string | undefined {
+  const at = process.argv.indexOf(`--${name}`);
+  return at < 0 ? undefined : process.argv[at + 1];
 }
 
 interface Totals {
@@ -86,8 +94,7 @@ function print(label: string, totals: Totals): void {
 }
 
 function replay(files: string[]): boolean {
-  const at = process.argv.indexOf("--route");
-  const route = at < 0 ? undefined : process.argv[at + 1];
+  const route = text("route");
   let ok = true;
   for (const file of files) {
     const read = JSON.parse(readFileSync(file, "utf8")) as Fields;
@@ -110,16 +117,22 @@ function seeds(): boolean {
   const rounds = option("rounds", 150);
   const only = process.argv.indexOf("--format");
   const formats = only < 0 ? FORMATS : [process.argv[only + 1] as Format];
+  const route = text("route");
+  const model = text("model");
+  const priced = (route ? ` --route ${route}` : "") + (model ? ` --model ${model}` : "");
   let ok = true;
   for (const format of formats) {
     const totals = empty();
-    for (let seed = from; seed < from + count; seed++)
+    for (let seed = from; seed < from + count; seed++) {
+      const body = generated(format, seed, rounds);
+      if (model) body.model = model;
       add(
         totals,
-        `--seed ${seed} --format ${format} --rounds ${rounds}`,
-        simulate(format, generated(format, seed, rounds), !process.argv.includes("--no-strip")),
+        `--seed ${seed} --format ${format} --rounds ${rounds}${priced}`,
+        simulate(format, body, !process.argv.includes("--no-strip"), route),
       );
-    print(format, totals);
+    }
+    print(`${format}${priced}`, totals);
     ok &&= totals.failing.length === 0;
   }
   return ok;
