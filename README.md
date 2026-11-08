@@ -299,7 +299,9 @@ The left column lists the sessions, in the order the proxy first saw them.
 A session goes by the title its agent gave it, read from the agent's own
 naming request (Claude Code and opencode make one; Pi does not), or by your
 `/rename` in Claude Code, and otherwise by its agent and number (`claude 1`,
-`opencode 2`, `pi 1`). An agent that names none still gets a name, taken from
+`opencode 2`, `pi 1`). A client that sends `x-ithildin-session` can name itself
+with `x-ithildin-client`, a short lowercase word (mini-harness sends `mini`);
+neither header is forwarded. An agent that names none still gets a name, taken from
 the first thing you asked it; a title from an agent replaces that, and your own
 name replaces both. A naming request the proxy does not recognise is logged, so
 an agent that rewords its prompt says so instead of going unnamed in silence. A

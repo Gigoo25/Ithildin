@@ -278,6 +278,12 @@ const SESSION_HEADERS: [string, string][] = [
   ["session-id", "codex"],
 ];
 const CLIENT_HEADER = "x-opencode-client";
+// A client that sends the proxy's own session header may name itself with
+// this one (mini-harness sends "mini"), so the dashboard calls its sessions
+// "mini 1" rather than "pi 1". Never forwarded. A name that is not a short
+// lowercase word is ignored: it would be shown on the dashboard as written.
+const OWN_CLIENT_HEADER = "x-ithildin-client";
+const CLIENT_NAME = /^[a-z][a-z0-9-]{0,23}$/;
 // One trailing slash is forgiven: `/dashboard/` is the same page.
 const OWN_PATH = /^\/(?:(selftest|health|mcp)|(dashboard)(?:\/(activity|requests|request))?)\/?$/;
 // Set by refuse() and removed by the handler, which logs the refusal for the
@@ -1277,6 +1283,10 @@ function sessionOf(request: Request): { id: string; client: string } | undefined
   for (const [header, client] of SESSION_HEADERS) {
     const id = request.headers.get(header);
     if (!id) continue;
+    if (header === SESSION_HEADERS[0]![0]) {
+      const own = request.headers.get(OWN_CLIENT_HEADER) ?? "";
+      return { id, client: CLIENT_NAME.test(own) ? own : client };
+    }
     const named = header === "x-opencode-session" ? request.headers.get(CLIENT_HEADER) : null;
     return { id, client: named === "pi" ? "pi" : client };
   }
@@ -1290,6 +1300,7 @@ function forwardedHeaders(request: Request): Headers {
   // A compressed body was decoded to be scanned, and goes on as plain JSON.
   headers.delete("content-encoding");
   headers.delete(SESSION_HEADERS[0]![0]);
+  headers.delete(OWN_CLIENT_HEADER);
   // The proxy names the upstream, never the agent: a client's own routing
   // header is dropped whether or not this route goes through a via host.
   for (const name of [...headers.keys()]) {

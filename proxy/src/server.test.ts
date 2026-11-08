@@ -326,6 +326,36 @@ describe("requests", () => {
     expect(up.seen.at(-1)!.headers.get("x-ithildin-session")).toBeNull();
   });
 
+  it("names a session by the client the proxy's own header carries", async () => {
+    const up = fakeUpstream(() => Response.json({ content: [] }));
+    const handler = createHandler(DEFAULT_ROUTES, up.fetch);
+    const send = (headers: Record<string, string>) =>
+      handler(
+        new Request("http://127.0.0.1/anthropic/v1/messages", {
+          method: "POST",
+          headers: { "content-type": "application/json", ...headers },
+          body: JSON.stringify({
+            messages: [
+              { role: "user", content: "hi" },
+              { role: "assistant", content: "hello" },
+              { role: "user", content: "again" },
+            ],
+          }),
+        }),
+      );
+    await send({ "x-ithildin-session": "client-mini", "x-ithildin-client": "mini" });
+    await send({ "x-ithildin-session": "client-bad", "x-ithildin-client": "<b>x</b>" });
+    await send({ "x-ithildin-session": "client-pi" });
+    expect(up.seen[0]!.headers.get("x-ithildin-client")).toBeNull();
+    const activity = (await (
+      await handler(new Request("http://127.0.0.1/dashboard/activity"))
+    ).json()) as { sessions: Array<{ id: string; name: string }> };
+    const named = activity.sessions.map((session) => session.name);
+    expect(named.filter((name) => /^mini \d+$/.test(name))).toHaveLength(1);
+    expect(named.filter((name) => /^pi \d+$/.test(name)).length).toBeGreaterThanOrEqual(2);
+    expect(named.some((name) => name.includes("<"))).toBe(false);
+  });
+
   it("refuses unknown routes and encodings it cannot decode", async () => {
     const up = fakeUpstream(() => Response.json({}));
     const handler = createHandler(DEFAULT_ROUTES, up.fetch);
