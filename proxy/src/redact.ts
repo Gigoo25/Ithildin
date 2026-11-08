@@ -84,7 +84,7 @@ import {
   unguardedTools,
   UNTRUSTED_SEND,
 } from "./trust.ts";
-import { BASH_TOOLS, LOCAL_TOOLS, shellCommand, writeTargets } from "./tools.ts";
+import { BASH_TOOLS, isMcpTool, LOCAL_TOOLS, shellCommand, writeTargets } from "./tools.ts";
 import { argsKey, initReplay, recordOriginal, replayOriginal, saveReplay } from "./replay.ts";
 import { geminiView, mapGeminiResults, noteGeminiCalls } from "./gemini.ts";
 import { type HiddenAt, revealHidden } from "./hidden.ts";
@@ -2082,9 +2082,10 @@ export function withholdImages(
 // guessing why a value came through whole or what the tag in a notice means.
 
 // ── swap-back ───────────────────────────────────────────────────────────────
-// Only tools that run on this machine get real values. Anything else (web
-// tools, MCP servers, subagent prompts) keeps the stand-ins: a real value
-// must not leave the machine through a tool the proxy cannot see into.
+// Only tools that run on this machine get real values. Web tools and
+// subagent prompts keep the stand-ins: a real value must not leave the
+// machine through a tool the proxy cannot see into. MCP calls holding a
+// stand-in are refused instead (swapArguments), unless [allow-pii].
 
 // planSwapBack's tool vocabulary: "bash" gets the network-destination check,
 // "web_fetch" treats every position as egress.
@@ -2266,9 +2267,22 @@ function swapArguments(
   if (mangled.length > 0) return block(callId, mangledBlocked(mangled));
   // A shell command sending a stand-in somewhere other than the user's own
   // hosts: swapped, the real value leaves; unswapped, the call does the
-  // wrong thing. Web and MCP tools keep their stand-ins (they are meant to).
-  if (swap.egress.length > 0 && swapToolName(toolName) === "bash")
-    return block(callId, egressBlocked([...new Set(swap.egress)]));
+  // wrong thing. An MCP server may drive real infrastructure or post to
+  // real people: a stand-in name, address or IP it keeps is silently
+  // written into a firewall rule or a message. Its destination is unknown,
+  // so any stand-in the book resolves is refused, not only IPs, rather than
+  // restored or sent as is. Web searches still work with the text as shown.
+  if (swap.egress.length > 0) {
+    if (swapToolName(toolName) === "bash")
+      return block(callId, egressBlocked([...new Set(swap.egress)]));
+    if (isMcpTool(toolName))
+      return block(
+        callId,
+        "Not run: this call contains substituted values that this tool cannot use safely. " +
+          "Use existing object or network IDs instead of typed addresses or names, or ask " +
+          `the user to include ${allowHint("pii")}.`,
+      );
+  }
   // Swap per span. A stand-in the book cannot resolve (often a stand-in-shaped
   // literal in source or docs), or one bound off the machine, stays a stand-in
   // in swap.input: that span fails on a name that does not exist rather than

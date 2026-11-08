@@ -417,6 +417,55 @@ describe("query and stream fidelity", () => {
     expect(redactPath("/v1/%", new Set()).path).toBe("/v1/%");
   });
 
+  it("refuses MCP calls holding stand-ins, including nested batch arguments", () => {
+    const ip = "192.168.57.2";
+    const standIn = aliases().standIn("pii-ipv4", ip);
+    const update = { source: { ips: [standIn] } };
+    const tags = new Set<string>();
+    for (const [name, args] of [
+      ["mcp__unifi-network__unifi_execute", { arguments: { update_data: update } }],
+      ["mcp__unifi-network__unifi_batch", { operations: [{ arguments: update }] }],
+    ] as const) {
+      const callId = `blocked-ip-${name}`;
+      expect(swapToolArguments(name, args, tags, callId)).toEqual({
+        args: {},
+        swapped: 0,
+        blocked: true,
+      });
+      const next = redactRequest("anthropic", {
+        messages: [
+          {
+            role: "user",
+            content: [{ type: "tool_result", tool_use_id: callId, content: "bad args" }],
+          },
+        ],
+      }).body as { messages: Array<{ content: Array<{ content: string }> }> };
+      const refusal = next.messages[0]!.content[0]!.content;
+      expect(refusal).toContain("Not run:");
+      expect(refusal).toContain("[allow-pii]");
+      expect(refusal).not.toContain(ip);
+      expect(refusal).not.toContain(standIn);
+    }
+    const safe = { network_id: "network-object-id", enabled: true };
+    expect(swapToolArguments("mcp__unifi-network__unifi_execute", safe, tags)).toEqual({
+      args: safe,
+      swapped: 0,
+    });
+    expect(
+      swapToolArguments("mcp__unifi-network__unifi_execute", update, new Set(["pii"])),
+    ).toMatchObject({ args: { source: { ips: [ip] } }, swapped: 1 });
+    // Any resolvable stand-in, not only an IP, and Codex's older server__tool name.
+    const real = ["Ty", "rell ", "Os", "goode"].join("");
+    const name = aliases().standIn("pii-gazetteer-name", real);
+    expect(swapToolArguments("slack__post", { text: `ping ${name}` }, tags)).toMatchObject({
+      blocked: true,
+    });
+    expect(swapToolArguments("WebSearch", { query: standIn }, tags)).toMatchObject({
+      args: { query: standIn },
+      swapped: 0,
+    });
+  });
+
   it("ignores non-string leaves when swapping tool arguments", () => {
     const result = swapToolArguments("write", { path: "a.md", content: 42 }, new Set());
     expect(result.blocked).toBeUndefined();

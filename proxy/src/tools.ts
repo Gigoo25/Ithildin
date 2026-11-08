@@ -34,6 +34,13 @@ export const LOCAL_TOOLS = new Set([
   "LS",
 ]);
 
+// An MCP server's tool. Claude Code and Codex qualify the name as
+// mcp__server__tool; older Codex wrote server__tool. No built-in tool of
+// either harness has a double underscore, so that is the mark.
+export function isMcpTool(name: string): boolean {
+  return name.includes("__");
+}
+
 const SHELLS = new Set(["bash", "sh", "zsh", "dash", "ksh"]);
 
 function quoteWord(word: string): string {

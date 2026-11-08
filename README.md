@@ -127,6 +127,12 @@ A shell command that reads such a file and runs a network client (`curl`,
 `scp`, `nc`, a git push) doesn't run at all: by the time its result could be
 withheld, the data would be gone. `[allow-secrets]` lifts both.
 
+**MCP calls.** The proxy does not know where an MCP server sends its arguments.
+A call containing known stand-ins is refused rather than sending real values
+or silently writing substitute addresses into real settings. Use existing
+object or network IDs instead. `[allow-pii]` permits restoring real values
+for the prompt, including MCP calls; use it only when you trust the destination.
+
 **Images.** Inline images are withheld, since their text can't be scanned.
 `[allow-images]` lets one prompt's through, `[allow-images:session]` the rest
 of the session's.
