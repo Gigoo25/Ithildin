@@ -167,10 +167,13 @@ type Candidate = KnownValue & { text: string; lead: number };
 interface KnownIndex {
   byWord: Map<string, Candidate[]>;
   loose: Candidate[];
+  // Whether any word-bounded value ignores case: the lowercased pass is
+  // skipped when none does.
+  insensitive: boolean;
 }
 
 function indexKnown(values: KnownValue[]): KnownIndex {
-  const index: KnownIndex = { byWord: new Map(), loose: [] };
+  const index: KnownIndex = { byWord: new Map(), loose: [], insensitive: false };
   for (const value of values) {
     const first = new RegExp(TOKEN).exec(value.literal)!;
     const text = value.caseSensitive ? value.literal : value.literal.toLowerCase();
@@ -180,7 +183,10 @@ function indexKnown(values: KnownValue[]): KnownIndex {
       continue;
     }
     const word = value.caseSensitive ? first[0] : first[0].toLowerCase();
-    index.byWord.set(word, [...(index.byWord.get(word) ?? []), candidate]);
+    if (!value.caseSensitive) index.insensitive = true;
+    const listed = index.byWord.get(word);
+    if (listed) listed.push(candidate);
+    else index.byWord.set(word, [candidate]);
   }
   return index;
 }
@@ -196,17 +202,23 @@ function knownIn(text: string, index: KnownIndex): string[] {
   if (index.byWord.size === 0 && index.loose.length === 0) return [];
   const lower = text.toLowerCase();
   const found: string[] = [];
-  for (const match of text.matchAll(TOKEN)) {
-    const word = match[0];
-    const candidates = new Set([
-      ...(index.byWord.get(word) ?? []),
-      ...(index.byWord.get(word.toLowerCase()) ?? []),
-    ]);
-    for (const candidate of candidates) {
-      const subject = candidate.caseSensitive ? text : lower;
-      if (stands(subject, candidate, match.index - candidate.lead)) found.push(candidate.literal);
+  // Each value is looked up in the string it is compared in: lowercasing can
+  // lengthen a text ("İ"), and a word's place in one is then not its place in
+  // the other.
+  const scan = (subject: string, caseSensitive: boolean) => {
+    for (const match of subject.matchAll(TOKEN)) {
+      const candidates = index.byWord.get(match[0]);
+      if (!candidates) continue;
+      for (const candidate of candidates)
+        if (
+          candidate.caseSensitive === caseSensitive &&
+          stands(subject, candidate, match.index - candidate.lead)
+        )
+          found.push(candidate.literal);
     }
-  }
+  };
+  scan(text, true);
+  if (index.insensitive) scan(lower, false);
   for (const candidate of index.loose)
     if ((candidate.caseSensitive ? text : lower).includes(candidate.text))
       found.push(candidate.literal);
