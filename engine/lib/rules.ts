@@ -677,7 +677,17 @@ export function compileGeneralizeList(entries: unknown[]): Rule[] {
 }
 
 // IBAN mod-97: rearrange, expand letters (A=10..Z=35), remainder must be 1.
+// Written in groups, the last group may be a word that follows the number
+// ("... 0130 00 EUR" reads on into a group of four): it is tried without it.
 function ibanValid(value: string): boolean {
+  const groups = value.split(" ");
+  return (
+    ibanSum(groups.join("")) || (groups.length > 4 && ibanSum(groups.slice(0, -1).join("")))
+  );
+}
+
+function ibanSum(value: string): boolean {
+  if (value.length < 15 || value.length > 34) return false;
   const rearranged = value.slice(4) + value.slice(0, 4);
   let remainder = 0;
   for (const char of rearranged) {
@@ -892,8 +902,78 @@ const LOCAL_RULES: Rule[] = [
   {
     id: "iban",
     description: "IBAN (mod-97 validated)",
-    regex: /\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b/g,
+    // Run together, or in the groups of four it is printed in.
+    regex: /\b[A-Z]{2}\d{2}(?:[A-Z0-9]{11,30}|(?: [A-Z0-9]{4}){2,7}(?: [A-Z0-9]{1,3})?)\b/g,
     validate: ibanValid,
+    category: "pii",
+  },
+  {
+    // A password told in a sentence, where no assignment marks it. A word of
+    // prose after "password is" ("required", "incorrect") has no digit, and
+    // one that has ("sha256-hashed") is masked at no cost but a stand-in.
+    id: "password-prose",
+    description: "Password stated in prose",
+    regex: new RegExp(
+      String.raw`\b(?:password|passwd|passphrase|passcode|pwd)\s+(?:is|was|to)\s*[:=]?\s*` +
+        "[\"'`]?" +
+        "([^\\s\"'`]{7,127}[^\\s\"'`.,;:!?)\\]}])",
+      "gi",
+    ),
+    secretGroup: 1,
+    entropyThreshold: 3,
+    validate: (value: string) => /\d/.test(value) && /\p{L}/u.test(value),
+    category: "secret",
+  },
+  {
+    // A secret handed to a command as the word after its flag; with "=" it is
+    // an assignment (env-assignment). A placeholder (PASSWORD, <token>, $VAR)
+    // or another flag is not one, and "-p" alone names too many other things.
+    id: "cli-secret-flag",
+    description: "Secret passed as a command-line flag's value",
+    regex: new RegExp(
+      String.raw`(?<![\w-])--?(?:[a-z0-9]+[-_]){0,3}(?:password|passwd|passphrase|pass|pwd|secret|token|api[-_]?key)` +
+        String.raw`[ \t]+["']?(?![-$<{\[])([^\s"'<>|&;]{8,256})`,
+      "gi",
+    ),
+    secretGroup: 1,
+    entropyThreshold: 3,
+    validate: (value: string) => !/^[./~]|^[A-Za-z]:\\/.test(value),
+    category: "secret",
+  },
+  {
+    // The default's words, "ip" and "ipv4", are whole words: a label that
+    // holds one (server_ip=) or an address named by what it is (host, server)
+    // was not context. The octet check keeps a version number out.
+    id: "pii-ipv4-public",
+    description: "Public IPv4 Address",
+    regex: /\b\d{1,3}(?:\.\d{1,3}){3}\b/g,
+    requireContext: true,
+    contextWords: [
+      "ip",
+      "ipv4",
+      "ips",
+      "ip_address",
+      "ip-address",
+      "ipaddress",
+      "ip_addr",
+      "ipaddr",
+      "server_ip",
+      "host_ip",
+      "public_ip",
+      "external_ip",
+      "remote_ip",
+      "client_ip",
+      "remote_addr",
+      "address",
+      "addr",
+      "host",
+      "hostname",
+      "server",
+      "ssh",
+      "ping",
+    ],
+    validate: (value: string) =>
+      value.split(".").every((octet) => Number(octet) <= 255) && !isReservedIpv4(value),
     category: "pii",
   },
   {

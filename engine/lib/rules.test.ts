@@ -99,6 +99,51 @@ describe("upstream PII parity", () => {
 });
 
 describe("generic secret detection", () => {
+  const found = (text: string, id: string) =>
+    scan(text)
+      .filter((f) => f.ruleId === id)
+      .map((f) => f.secretValue);
+
+  it("detects a password told in a sentence, not the prose after the word", () => {
+    const secret = ["Tr0ub4dor", "3xyz"].join("&");
+    expect(found(`my password is ${secret} for the site`, "password-prose")).toEqual([secret]);
+    expect(found(`set the password to '${secret}'.`, "password-prose")).toEqual([secret]);
+    for (const prose of [
+      "the password is required.",
+      "the password is incorrect, try again",
+      "password is stored in the vault",
+    ])
+      expect(found(prose, "password-prose")).toEqual([]);
+  });
+
+  it("detects a secret given as a flag's value, not a placeholder or a path", () => {
+    const secret = ["Tr0ub4dor", "3xyz"].join("");
+    expect(found(`tool --password ${secret} run`, "cli-secret-flag")).toEqual([secret]);
+    expect(found(`tool --db-password ${secret}`, "cli-secret-flag")).toEqual([secret]);
+    expect(found(`curl --api-key '${secret}' url`, "cli-secret-flag")).toEqual([secret]);
+    for (const not of [
+      "tool --password PASSWORD",
+      "tool --token <your-token>",
+      "tool --token $GITHUB_TOKEN",
+      "tool --password --verbose",
+      "tool --password-file /etc/app/secret.txt",
+      "tool --secret ./secrets/prod.json",
+    ])
+      expect(found(not, "cli-secret-flag")).toEqual([]);
+  });
+
+  it("takes a label holding ip, or a host or server, as context for a public address", () => {
+    const address = [81, 2, 69, 142].join(".");
+    for (const text of [`host ${address} up`, `server_ip=${address}`, `ssh deploy@${address}`])
+      expect(found(text, "pii-ipv4-public")).toEqual([address]);
+    for (const not of [
+      `bumped to ${address} today`,
+      "server 120.0.6099.109 released",
+      "host 127.0.0.1 up",
+    ])
+      expect(found(not, "pii-ipv4-public")).toEqual([]);
+  });
+
   it("detects values behind quoted JSON keys", () => {
     const value = "0123456789abcdef".repeat(3).slice(0, 40);
     const findings = scan(JSON.stringify({ apiKey: value }));
@@ -472,6 +517,15 @@ describe("local rule additions", () => {
       expect(findings.some((f) => f.ruleId === id && f.secretValue === secretValue)).toBe(true);
     }
     expect(scan("iban DE00123456789012345678").some((f) => f.ruleId === "iban")).toBe(false);
+    // In the groups of four it is printed in, without the word after it.
+    for (const [text, secretValue] of [
+      ["IBAN GB82 WEST 1234 5698 7654 32", "GB82 WEST 1234 5698 7654 32"],
+      ["pay DE89 3704 0044 0532 0130 00 EUR now", "DE89 3704 0044 0532 0130 00"],
+    ] as const)
+      expect(scan(text).filter((f) => f.ruleId === "iban").map((f) => f.secretValue)).toEqual([
+        secretValue,
+      ]);
+    expect(scan("AB12 THIS IS NOT ONE").some((f) => f.ruleId === "iban")).toBe(false);
     expect(scan("0x1234").some((f) => f.ruleId === "eth-address")).toBe(false);
   });
 
