@@ -153,9 +153,15 @@ export function pruneMisses(
   const sorted = found.sort();
   const isStep = (name: string) => name.endsWith(STEP_SUFFIX);
   const ordered = [...sorted.filter((name) => !isStep(name)), ...sorted.filter(isStep)];
-  const misses = ordered.map((name) => {
+  // One that goes while it is measured (another prune, a manual removal) is
+  // skipped, not the end of the prune.
+  const misses = ordered.flatMap((name) => {
     const at = path.join(dir, name);
-    return { at, step: isStep(name), age: now - statSync(at).mtimeMs, bytes: dirBytes(at) };
+    try {
+      return [{ at, step: isStep(name), age: now - statSync(at).mtimeMs, bytes: dirBytes(at) }];
+    } catch {
+      return [];
+    }
   });
   const left = { step: 0, turn: 0 };
   for (const miss of misses) left[miss.step ? "step" : "turn"]++;
