@@ -414,6 +414,13 @@ export const DASHBOARD_HTML = `<!doctype html>
 <script>
 'use strict';
 const POLL_MS = 1000;
+// A tab out of sight polls this many times slower: it still has leaks to
+// notify of and its icon to turn, but nothing to draw each second.
+const HIDDEN_POLLS = 5;
+// A search in a body past this many characters waits for a pause in the
+// typing: each rebuild lays the whole conversation out again.
+const SEARCH_WAIT_CHARS = 200000;
+const SEARCH_WAIT_MS = 150;
 const FEED_MAX = 5000;
 const MARKS_MAX = 1000;
 const ICON = ${JSON.stringify(FAVICON)};
@@ -437,6 +444,9 @@ let firstPoll = true;
 let lastStats;
 let lastWatch;
 const texts = new Map();
+// The shown request's text as JSON, and its fields outside the conversation
+// as text, read once: megabytes to go through again on each rebuild.
+let shownBody = { id: 0 };
 // What each of those requests masked, from the proxy, by the same id.
 const values = new Map();
 // The thinking of each one's reply so far, and whether the reply is over.
@@ -1760,11 +1770,13 @@ function renderLegend(raw, beyond = []) {
 // marks them, so without a note its count and the conversation's disagree.
 const SHOWN_FIELDS = ['system', 'instructions', 'messages', 'input'];
 
-function outside(body, wants) {
+// \`rest\` keeps each field's text between calls on one body.
+function outside(body, wants, rest = {}) {
   if (!body || typeof body !== 'object') return [];
   return Object.keys(body).flatMap((field) => {
     if (SHOWN_FIELDS.includes(field)) return [];
-    const count = standInsIn(JSON.stringify(body[field]) || '', wants).length;
+    rest[field] ??= JSON.stringify(body[field]) || '';
+    const count = standInsIn(rest[field], wants).length;
     return count ? [{ count, field }] : [];
   });
 }
@@ -1793,12 +1805,15 @@ function showText(place) {
   const viewer = byId('viewer');
   const needle = byId('detail_search').value.trim();
   const marks = marksFor(chosen, values.get(shownId) || []);
-  let body;
-  try {
-    body = JSON.parse(text);
-  } catch {
-    body = undefined;
+  if (shownBody.id !== shownId || shownBody.text !== text) {
+    shownBody = { id: shownId, text, body: undefined, rest: {} };
+    try {
+      shownBody.body = JSON.parse(text);
+    } catch {
+      // Not JSON: shown raw.
+    }
   }
+  const body = shownBody.body;
   const items = body && typeof body === 'object'
     ? withReply(withEarlier(turns(body), earlier.get(shownId)), replies.get(shownId)) : [];
   const raw = view === 'raw' || items.length === 0;
@@ -1826,7 +1841,7 @@ function showText(place) {
       if (scrolls.has(body.dataset.key)) body.scrollTop = scrolls.get(body.dataset.key);
   }
   byId('detail_count').textContent = needle ? plural(matches, 'match') : '';
-  renderLegend(raw, raw ? [] : outside(body, marks.plain));
+  renderLegend(raw, raw ? [] : outside(body, marks.plain, shownBody.rest));
   const first = needle ? viewer.querySelector('mark[data-type=found]') : null;
   if (first && place === 'find') {
     first.classList.add('at');
@@ -1843,7 +1858,12 @@ for (const button of document.querySelectorAll('.view'))
     view = button.dataset.view;
     showText('top');
   });
-byId('detail_search').addEventListener('input', () => showText('find'));
+let searching;
+byId('detail_search').addEventListener('input', () => {
+  clearTimeout(searching);
+  if ((texts.get(shownId) || '').length <= SEARCH_WAIT_CHARS) showText('find');
+  else searching = setTimeout(() => showText('find'), SEARCH_WAIT_MS);
+});
 for (const section of document.querySelectorAll('.section')) {
   const key = 'ithildin.' + section.id;
   const saved = localStorage.getItem(key);
@@ -1857,8 +1877,23 @@ byId('sessions').addEventListener('mouseleave', renderSessions);
 byId('verdict').addEventListener('click', () =>
   goTo(feed.find((entry) => entry.type === 'leaked')));
 offerNotifications();
-poll();
-setInterval(poll, POLL_MS);
+// One poll at a time: a second one started while the first still loads a
+// conversation would ask from the same place and add its entries twice.
+let polling = false;
+let skipped = 0;
+async function tick() {
+  if (polling) return;
+  if (document.hidden && ++skipped < HIDDEN_POLLS) return;
+  skipped = 0;
+  polling = true;
+  try {
+    await poll();
+  } finally {
+    polling = false;
+  }
+}
+tick();
+setInterval(tick, POLL_MS);
 setInterval(() => lastStats && renderStats(lastStats, lastWatch), 60000);
 </script>
 </body>
