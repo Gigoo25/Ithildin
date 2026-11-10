@@ -109,6 +109,9 @@ export interface Stats {
   cacheBreaksAgent: number;
   cacheBreaksRedaction: number;
   cacheBreaksShaping: number;
+  // Tokens written to the cache by the replies to requests whose prefix
+  // shaping broke: what its breaks cost, as the provider counted it.
+  usageCacheWriteShaping: number;
   lastBreak?: string;
   blocked: number;
   refused: number;
@@ -132,6 +135,9 @@ export interface Tally {
   cacheBreaksAgent: number;
   cacheBreaksRedaction: number;
   cacheBreaksShaping: number;
+  // Tokens written to the cache by the replies to requests whose prefix
+  // shaping broke: what its breaks cost, as the provider counted it.
+  usageCacheWriteShaping: number;
 }
 
 // Bounds memory over a long run; the oldest are dropped first.
@@ -142,6 +148,7 @@ export const TALLIES_MAX = 200;
 // comes back is logged again.
 export const SEEN_MAX = 1000;
 const SESSION_CHARS = 8;
+const BROKE_MAX = 1000;
 // Characters of the sent request shown on each side of a stand-in.
 const AROUND_CHARS = 100;
 const PREVIEW_HEAD = 2;
@@ -368,6 +375,7 @@ function newStats(startedAt: number): Stats {
     cacheBreaksAgent: 0,
     cacheBreaksRedaction: 0,
     cacheBreaksShaping: 0,
+    usageCacheWriteShaping: 0,
     blocked: 0,
     refused: 0,
     leaked: 0,
@@ -389,6 +397,7 @@ function newTally(): Tally {
     cacheBreaksAgent: 0,
     cacheBreaksRedaction: 0,
     cacheBreaksShaping: 0,
+    usageCacheWriteShaping: 0,
   };
 }
 
@@ -406,6 +415,8 @@ export class EventLog {
   private readonly leaks = new Set<string>();
   private readonly stats: Stats;
   private readonly tallies = new Map<string, Tally>();
+  // Turns whose prefix shaping broke, until their reply says what it wrote.
+  private readonly shapingBroke = new Set<number>();
   private readonly now: () => number;
   private lastId = 0;
 
@@ -532,12 +543,15 @@ export class EventLog {
     this.stats.usageCacheRead += usage.cacheRead;
     this.stats.usageCacheWrite += usage.cacheWrite;
     this.stats.usageOutput += usage.output;
+    const shapingBroke = context?.turn !== undefined && this.shapingBroke.delete(context.turn);
+    if (shapingBroke) this.stats.usageCacheWriteShaping += usage.cacheWrite;
     const tally = this.tally(context);
     if (!tally) return;
     tally.usageInput += usage.input;
     tally.usageCacheRead += usage.cacheRead;
     tally.usageCacheWrite += usage.cacheWrite;
     tally.usageOutput += usage.output;
+    if (shapingBroke) tally.usageCacheWriteShaping += usage.cacheWrite;
   }
 
   // A request whose cached prefix broke, named by where and in which session.
@@ -546,6 +560,11 @@ export class EventLog {
     this.stats[field]++;
     const tally = this.tally(context);
     if (tally) tally[field]++;
+    if (found.cause === "shaping" && context.turn !== undefined) {
+      // A reply that never reports usage leaves its turn here.
+      if (this.shapingBroke.size >= BROKE_MAX) this.shapingBroke.clear();
+      this.shapingBroke.add(context.turn);
+    }
     const where = context.sessionName ? ` in ${context.sessionName}` : "";
     this.stats.lastBreak = `${found.at}${where} (${found.cause})`;
   }

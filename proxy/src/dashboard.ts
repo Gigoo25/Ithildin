@@ -102,6 +102,7 @@ export const DASHBOARD_HTML = `<!doctype html>
   }
   #state.up::before { background: var(--swapped); }
   #state.down { color: var(--alert); }
+  #viewer.stale, #sessions.stale { opacity: .55; }
   #state.down::before { background: var(--alert); }
   #verdict {
     flex: 1; min-width: 0; padding-left: 22px; border-left: 1px solid var(--edge);
@@ -399,7 +400,7 @@ export const DASHBOARD_HTML = `<!doctype html>
     <div id="alerts"></div>
   </div>
   <div class="find">
-    <input id="detail_search" type="search" placeholder="Search this conversation"
+    <input id="detail_search" type="search" placeholder="Search this conversation (Enter: next, Shift+Enter: previous)"
       aria-label="Search this conversation">
     <span id="detail_count" class="count"></span>
     <div id="legend"></div>
@@ -422,6 +423,8 @@ const HIDDEN_POLLS = 5;
 const SEARCH_WAIT_CHARS = 200000;
 const SEARCH_WAIT_MS = 150;
 const FEED_MAX = 5000;
+// The match the search last went to, among those marked.
+let foundAt = 0;
 const MARKS_MAX = 1000;
 const ICON = ${JSON.stringify(FAVICON)};
 const ICON_ALERT = ${JSON.stringify(FAVICON_ALERT)};
@@ -779,7 +782,7 @@ function tallyLine(tally) {
   const prompt = tally.usageInput + read + tally.usageCacheWrite;
   if (prompt > 0) {
     said.push('Cache: ' + Math.round((read / prompt) * 100) + '% read of ' + count(prompt) +
-      ' prompt tokens, ' + breakCounts(tally, ' / ', ' breaks'));
+      ' prompt tokens, ' + breakCounts(tally, ' / ', ' breaks') + shapingWrote(tally, ', '));
   }
   return said.join(' \\u00b7 ');
 }
@@ -1020,6 +1023,12 @@ function breakCounts(counts, joiner, tail) {
   return said.join(joiner) + tail;
 }
 
+// What shaping's breaks wrote to the cache again, said only when they did.
+function shapingWrote(counts, lead) {
+  const wrote = counts.usageCacheWriteShaping || 0;
+  return wrote ? lead + count(wrote) + ' tokens rewritten by shaping' : '';
+}
+
 // whether shaping's savings are real: a result already cached costs a tenth.
 function renderCache(stats) {
   const read = stats.usageCacheRead || 0;
@@ -1030,6 +1039,7 @@ function renderCache(stats) {
     ['Prompt tokens', count(prompt) + ' (' + count(write) + ' written)'],
     ['Output tokens', count(stats.usageOutput || 0)],
     ['Prefix breaks', breakCounts(stats, ', ', '')],
+    ['Shaping rewrote', count(stats.usageCacheWriteShaping || 0) + ' tokens'],
     ['Last break', stats.lastBreak || 'none'],
   ]);
 }
@@ -1065,12 +1075,23 @@ function notifyLeaks(entries) {
   new Notification('Ithildin: ' + plural(leaks.length, 'leak') + ' found', { body: places });
 }
 
+// What is shown dims while the proxy does not answer: it is as of then.
+function setStale(stale) {
+  for (const id of ['viewer', 'sessions']) byId(id).classList.toggle('stale', stale);
+}
+
+// When the proxy last answered, and what it said then: a poll that brings
+// nothing new draws nothing.
+let heardAt = 0;
+let drawn = '';
 async function poll() {
   try {
     const response = await fetch('${ACTIVITY_PATH}?since=' + since, { cache: 'no-store' });
     if (!response.ok) throw new Error('HTTP ' + response.status);
     const data = await response.json();
     setState('proxy up', 'up');
+    heardAt = Date.now();
+    setStale(false);
     if (data.next < since) {
       feed.length = 0;
       sessions.clear();
@@ -1089,7 +1110,10 @@ async function poll() {
     lastStats = data.stats;
     lastWatch = data.watch;
     tallies = data.tallies || {};
-    renderStats(data.stats, data.watch);
+    const said = JSON.stringify([data.stats, data.watch, data.tallies, data.sessions]);
+    const fresh = firstPoll || data.entries.length > 0 || said !== drawn;
+    drawn = said;
+    if (fresh) renderStats(data.stats, data.watch);
     alertTab(data.stats.leaked);
     // At first, the session that sent last; after that, the one picked.
     if (chosen === undefined || !sessions.has(chosen)) {
@@ -1097,7 +1121,7 @@ async function poll() {
         .sort((a, b) => b.last - a.last)[0];
       chosen = latest ? latest.id : sessions.has(OTHER) ? OTHER : undefined;
     }
-    renderSessions();
+    if (fresh) renderSessions();
     if (firstPoll || deferred ||
       data.entries.some((entry) => (entry.session || OTHER) === chosen))
       await showSession();
@@ -1105,7 +1129,8 @@ async function poll() {
     if (!firstPoll) notifyLeaks(data.entries);
     firstPoll = false;
   } catch (error) {
-    setState('proxy not answering', 'down');
+    setState('proxy not answering' + (heardAt ? ', shown as of ' + clock(heardAt) : ''), 'down');
+    setStale(true);
   }
 }
 
@@ -1841,6 +1866,7 @@ function showText(place) {
       if (scrolls.has(body.dataset.key)) body.scrollTop = scrolls.get(body.dataset.key);
   }
   byId('detail_count').textContent = needle ? plural(matches, 'match') : '';
+  foundAt = 0;
   renderLegend(raw, raw ? [] : outside(body, marks.plain, shownBody.rest));
   const first = needle ? viewer.querySelector('mark[data-type=found]') : null;
   if (first && place === 'find') {
@@ -1858,6 +1884,26 @@ for (const button of document.querySelectorAll('.view'))
     view = button.dataset.view;
     showText('top');
   });
+// Enter goes to the next match and Shift+Enter to the one before, round.
+function stepFound(by) {
+  const viewer = byId('viewer');
+  const marks = [...viewer.querySelectorAll('mark[data-type=found]')];
+  if (marks.length === 0) return;
+  foundAt = (foundAt + by + marks.length) % marks.length;
+  const mark = marks[foundAt];
+  for (const at of viewer.querySelectorAll('mark.at')) at.classList.remove('at');
+  for (let open = mark.closest('details'); open; open = open.parentElement.closest('details'))
+    open.open = true;
+  void mark.offsetWidth;
+  mark.classList.add('at');
+  mark.scrollIntoView({ block: 'center' });
+  byId('detail_count').textContent = (foundAt + 1) + ' of ' + plural(marks.length, 'match');
+}
+byId('detail_search').addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter') return;
+  event.preventDefault();
+  stepFound(event.shiftKey ? -1 : 1);
+});
 let searching;
 byId('detail_search').addEventListener('input', () => {
   clearTimeout(searching);

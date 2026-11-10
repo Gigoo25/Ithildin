@@ -41,6 +41,19 @@ describe("preview", () => {
 });
 
 describe("event log", () => {
+  it("counts what the reply to a request shaping broke wrote to the cache", () => {
+    const log = new EventLog();
+    log.cacheBreak({ ...context, turn: 1 }, { at: "message 4", cause: "shaping" });
+    log.cacheBreak({ ...context, turn: 2 }, { at: "message 6", cause: "agent" });
+    log.usage({ input: 1, cacheRead: 5, cacheWrite: 300, output: 1 }, { ...context, turn: 1 });
+    log.usage({ input: 1, cacheRead: 5, cacheWrite: 70, output: 1 }, { ...context, turn: 2 });
+    // The turn is counted once: a second usage for it adds nothing.
+    log.usage({ input: 1, cacheRead: 5, cacheWrite: 9, output: 1 }, { ...context, turn: 1 });
+    const { tallies, stats } = log.snapshot(0);
+    expect(stats.usageCacheWriteShaping).toBe(300);
+    expect(Object.values(tallies)[0]!.usageCacheWriteShaping).toBe(300);
+  });
+
   it("tallies shaping, usage and breaks per session, and drops the oldest past the cap", () => {
     const log = new EventLog();
     const shaped = { masked: 3, compacted: 1, deduped: 2, savedChars: 900, savedCost: 22 };
@@ -67,6 +80,7 @@ describe("event log", () => {
       cacheBreaksAgent: 1,
       cacheBreaksRedaction: 1,
       cacheBreaksShaping: 1,
+      usageCacheWriteShaping: 0,
     });
     expect(stats.cacheBreaksRedaction).toBe(1);
     expect(stats.shapedMasked).toBe(6);
@@ -770,6 +784,8 @@ describe("dashboard", () => {
       "420",
       "Prefix breaks",
       "1 agent, 0 shaping",
+      "Shaping rewrote",
+      "0 tokens",
       "Last break",
       "system in claude 1 (agent)",
     ]);
@@ -1196,7 +1212,7 @@ describe("dashboard", () => {
   it("says a session's shaping and cache in a line", () => {
     const pick = (name: string) =>
       new RegExp(`function ${name}[\\s\\S]*?\\n\\}`).exec(DASHBOARD_HTML)![0];
-    const source = ["count", "bytes", "tokensSaved", "costSaved", "breakCounts", "tallyLine"]
+    const source = ["count", "bytes", "tokensSaved", "costSaved", "breakCounts", "shapingWrote", "tallyLine"]
       .map(pick)
       .join("\n");
     const tallyLine = new Function(`${source}; return tallyLine;`)() as (
@@ -1242,6 +1258,11 @@ describe("dashboard", () => {
     );
     expect(tallyLine({ ...none, usageCacheRead: 1, cacheBreaksRedaction: 1 })).toBe(
       "Cache: 100% read of 1 prompt tokens, 0 agent / 1 redaction / 0 shaping breaks",
+    );
+    const rewrote = { ...none, usageCacheRead: 1, cacheBreaksShaping: 1 };
+    expect(tallyLine({ ...rewrote, usageCacheWriteShaping: 2500 })).toBe(
+      "Cache: 100% read of 1 prompt tokens, 0 agent / 1 shaping breaks, " +
+        "2,500 tokens rewritten by shaping",
     );
   });
 
