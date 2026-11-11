@@ -329,6 +329,34 @@ describe("a home directory's stand-ins", () => {
   });
 });
 
+// pi-claude-code names Pi's tools mcp__pi__<tool> for the Claude Code CLI.
+describe("Pi's tools called through the Claude Code relay", () => {
+  it("get real values like Pi's own, and are not refused as an MCP server's", () => {
+    const home = "/home/zqxhomer";
+    refreshIdentity(() => [
+      { id: "runtime-home", literal: home, match: "phrase", caseSensitive: true },
+    ]);
+    const standIn = aliases().standIn("pii-inventory-runtime-home", home);
+    for (const [name, key] of [
+      ["mcp__pi__bash", "command"],
+      ["mcp__pi__read", "path"],
+    ] as const) {
+      const written = { [key]: `${standIn}/proj/TODO.md` };
+      expect(swapToolArguments(name, written, new Set(), `relay-${name}`)).toEqual(
+        swapToolArguments(name.slice("mcp__pi__".length), written, new Set()),
+      );
+      expect(swapToolArguments(name, written, new Set())).toEqual({
+        args: { [key]: `${home}/proj/TODO.md` },
+        swapped: 1,
+      });
+    }
+    // Another server's tool of the same name is still an MCP tool.
+    expect(
+      swapToolArguments("mcp__other__read", { path: `${standIn}/a` }, new Set(), "relay-other"),
+    ).toMatchObject({ blocked: true });
+  });
+});
+
 describe("invented stand-ins by shape", () => {
   // Stand-in shaped, never minted, never in real input.
   const INVENTED = "user-0a1b2c";

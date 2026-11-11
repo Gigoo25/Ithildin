@@ -41,6 +41,18 @@ export function isMcpTool(name: string): boolean {
   return name.includes("__");
 }
 
+// pi-claude-code hands Pi's own tools to the Claude Code CLI as an in-process
+// MCP server named "pi", so Claude calls mcp__pi__bash, mcp__pi__read. Pi runs
+// them on this machine like any other of its tools: without this they count
+// as an MCP server's, a home directory's stand-in is never swapped back
+// (cd fails on a path that pwd shows exists), and the call is refused.
+const PI_RELAY_PREFIX = "mcp__pi__";
+
+// The name a tool is judged by: Pi's own name for one of its tools.
+export function localToolName(name: string): string {
+  return name.startsWith(PI_RELAY_PREFIX) ? name.slice(PI_RELAY_PREFIX.length) : name;
+}
+
 const SHELLS = new Set(["bash", "sh", "zsh", "dash", "ksh"]);
 
 function quoteWord(word: string): string {

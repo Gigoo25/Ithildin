@@ -84,7 +84,14 @@ import {
   unguardedTools,
   UNTRUSTED_SEND,
 } from "./trust.ts";
-import { BASH_TOOLS, isMcpTool, LOCAL_TOOLS, shellCommand, writeTargets } from "./tools.ts";
+import {
+  BASH_TOOLS,
+  isMcpTool,
+  LOCAL_TOOLS,
+  localToolName,
+  shellCommand,
+  writeTargets,
+} from "./tools.ts";
 import { argsKey, initReplay, recordOriginal, replayOriginal, saveReplay } from "./replay.ts";
 import { geminiView, mapGeminiResults, noteGeminiCalls } from "./gemini.ts";
 import { type HiddenAt, revealHidden } from "./hidden.ts";
@@ -1556,7 +1563,7 @@ function toolCalls(format: Format, list: unknown[]): ToolCall[] {
     if (format === "anthropic" && Array.isArray(record.content)) {
       for (const block of record.content as Array<Record<string, unknown>>) {
         if (block?.type === "tool_use")
-          out.push({ id: block.id, name: String(block.name), input: block.input });
+          out.push({ id: block.id, name: localToolName(String(block.name)), input: block.input });
       }
     } else if (format === "chat" && Array.isArray(record.tool_calls)) {
       for (const call of record.tool_calls as Array<{
@@ -1565,7 +1572,7 @@ function toolCalls(format: Format, list: unknown[]): ToolCall[] {
       }>) {
         out.push({
           id: call?.id,
-          name: String(call?.function?.name),
+          name: localToolName(String(call?.function?.name)),
           input: parseArgs(call?.function?.arguments),
         });
       }
@@ -1575,7 +1582,7 @@ function toolCalls(format: Format, list: unknown[]): ToolCall[] {
     ) {
       out.push({
         id: record.call_id,
-        name: String(record.name),
+        name: localToolName(String(record.name)),
         input: parseArgs(record.arguments ?? record.input),
       });
     }
@@ -2163,11 +2170,12 @@ export function approvalHint(notice: string, id: string): string {
 // Checked on the arguments as written and as swapped: a path may hold a
 // stand-in (a home directory) that only its real value resolves.
 export function swapToolArguments(
-  toolName: string,
+  rawName: string,
   args: unknown,
   tags: Set<string>,
   callId?: string,
 ): Swapped {
+  const toolName = localToolName(rawName);
   const result = swapArguments(toolName, args, tags, callId);
   if (result.blocked) return result;
   const id = callApproval(toolName, args);
