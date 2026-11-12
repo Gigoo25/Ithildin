@@ -76,25 +76,39 @@ export function redactCookieHeaders(
 ): CookieRedaction {
   let hits = 0;
   const output = text.replace(
-    /\b(set-cookie|cookie)(\s*:\s*)([^\r\n'"`]*)/gi,
-    (_match, header: string, separator: string, value: string, offset: number) => {
+    COOKIE_CARRIER,
+    (match, header: string | undefined, flag: string | undefined, rest: string, offset: number) => {
+      const head = header ?? flag ?? "";
+      const value = flag === undefined ? rest : flagCookies(flag, rest);
+      if (value === undefined) return match;
       const result = redactCookieValue(
         value,
-        header.toLowerCase() === "set-cookie",
+        /^set-cookie/i.test(head),
         replaceValue,
         isSynthetic,
         (start, end, length) =>
-          onEdit?.(
-            offset + header.length + separator.length + start,
-            offset + header.length + separator.length + end,
-            length,
-          ),
+          onEdit?.(offset + head.length + start, offset + head.length + end, length),
       );
       hits += result.hits;
-      return `${header}${separator}${result.text}`;
+      return `${head}${result.text}${rest.slice(value.length)}`;
     },
   );
   return { text: output, hits };
+}
+
+// A Cookie or Set-Cookie header, or the flag curl takes the same string under:
+// "Copy as cURL" writes `-b 'name=value; ...'` as often as `-H 'Cookie: ...'`,
+// and only the header was masked.
+const COOKIE_CARRIER =
+  /(?:\b((?:set-cookie|cookie)\s*:\s*)|(?<![^\s])((?:--cookie|-b)(?:=|\s+)["']?))([^\r\n'"`]*)/gi;
+
+// The cookie string after curl's flag, or nothing when it is not one: `-B` is
+// another flag (the pattern is case-blind for the header's sake), and a value
+// with no `=` is a cookie jar's path. Unquoted, the string ends at a space.
+function flagCookies(flag: string, rest: string): string | undefined {
+  if (flag.startsWith("-B")) return;
+  const value = /["']$/.test(flag) ? rest : (/^\S*/.exec(rest)?.[0] ?? "");
+  return value.includes("=") ? value : undefined;
 }
 
 // A curl or wget command that sends a cookie: a Cookie header, or a cookie
