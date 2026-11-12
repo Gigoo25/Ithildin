@@ -70,6 +70,7 @@ import {
   scan as scanRules,
 } from "../engine/lib/rules.ts";
 import { planSwapBack, reachesNetwork } from "../engine/lib/swap-back.ts";
+import { holdsInputNote, NOTE_AS_INPUT } from "./input-note.ts";
 import { allowHint, protectedBlocked, protectedFinding, shellWrites } from "./protect.ts";
 import { SPELLED_BLOCKED, spellsMasked, UNMASK_BLOCKED, unmasksText } from "./unmask.ts";
 import {
@@ -2176,6 +2177,9 @@ export function swapToolArguments(
   callId?: string,
 ): Swapped {
   const toolName = localToolName(rawName);
+  // Before the swap, and whatever the alias style: the note is this proxy's
+  // own, and nothing in it is worth swapping.
+  if (holdsInputNote(args)) return block(callId, NOTE_AS_INPUT);
   const result = swapArguments(toolName, args, tags, callId);
   if (result.blocked) return result;
   const id = callApproval(toolName, args);

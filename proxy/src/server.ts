@@ -23,6 +23,7 @@ import zlib from "node:zlib";
 import {
   type Counts,
   type Format,
+  blockedNotice,
   identityEntries,
   initEngine,
   redactHeaders,
@@ -285,7 +286,8 @@ const CLIENT_HEADER = "x-opencode-client";
 const OWN_CLIENT_HEADER = "x-ithildin-client";
 const CLIENT_NAME = /^[a-z][a-z0-9-]{0,23}$/;
 // One trailing slash is forgiven: `/dashboard/` is the same page.
-const OWN_PATH = /^\/(?:(selftest|health|mcp)|(dashboard)(?:\/(activity|requests|request))?)\/?$/;
+const OWN_PATH =
+  /^\/(?:(selftest|health|mcp|blocked)|(dashboard)(?:\/(activity|requests|request))?)\/?$/;
 // Set by refuse() and removed by the handler, which logs the refusal for the
 // dashboard. It never reaches the client.
 const REFUSED_HEADER = "x-ithildin-refused";
@@ -1184,6 +1186,7 @@ export function createHandler(
     }
     if (own === "health") return health(url, routes, book, proof, gated);
     if (own === "mcp") return answerMcp(request, stores.originals);
+    if (own === "blocked") return blockedReply(url);
     if (own === "dashboard" || own === "activity" || own === "requests" || own === "request")
       return dashboard(own, url, { events, kept, names });
     if (gated && !proof?.ok) return refuseUnproven(proof);
@@ -1207,6 +1210,18 @@ export function createHandler(
     }
     return logRefusal(events, response);
   };
+}
+
+// Why a call was withheld, for the harness that got it. A blocked call reaches
+// the harness with empty arguments, which it reports as its own validation
+// error ("command: missing"); the notice itself only replaces the result on
+// the way back to the model, so the person at the terminal never saw it. The
+// notice is the text the model is sent, so it holds nothing masked.
+function blockedReply(url: URL): Response {
+  const notice = blockedNotice(url.searchParams.get("call") ?? "");
+  return notice === undefined
+    ? errorReply(404, "no blocked call under that id")
+    : Response.json({ notice });
 }
 
 // The proxy's own endpoints answer only this machine, and only the methods

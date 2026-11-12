@@ -30,6 +30,7 @@ import {
 import { aliases } from "../engine/core.ts";
 import { looksLikeAlias } from "../engine/lib/aliases.ts";
 import { DIAGNOSE_BETA } from "./diagnose.ts";
+import { inputNote, NOTE_AS_INPUT } from "./input-note.ts";
 
 const EMAIL = "jane.doe@acme-corp.com";
 let standIn = "";
@@ -178,6 +179,21 @@ describe("requests", () => {
     const sent = JSON.stringify(up.seen[0]!.body);
     expect(sent).not.toContain(EMAIL);
     expect(sent).toContain("[allow-all]");
+  });
+
+  it("says on /blocked why a call was not run, and 404s an id it never blocked", async () => {
+    const handler = createHandler(DEFAULT_ROUTES, fakeUpstream(() => Response.json({})).fetch);
+    const blocked = (query: string) => handler(new Request(`http://127.0.0.1/blocked${query}`));
+    swapToolArguments("bash", { command: inputNote(1298) }, new Set(), "toolu_blocked_1");
+    const found = await blocked("?call=toolu_blocked_1");
+    expect(found.status).toBe(200);
+    expect(await found.json()).toEqual({ notice: NOTE_AS_INPUT });
+    expect((await blocked("?call=toolu_never")).status).toBe(404);
+    expect((await blocked("")).status).toBe(404);
+    const posted = await handler(
+      new Request("http://127.0.0.1/blocked?call=toolu_blocked_1", { method: "POST" }),
+    );
+    expect(posted.status).toBe(405);
   });
 
   it("reports the badge on /health, ignoring one-message side requests", async () => {

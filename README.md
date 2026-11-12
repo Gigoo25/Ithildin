@@ -446,7 +446,8 @@ Old tool results are masked before the request leaves: past the cutoff, a
 result over 400 characters, or one holding images, becomes a one-line stub
 naming the call that made it. Strings over 400 characters in an old call's
 input, a long shell command, the file a `Write` wrote or both sides of an
-`Edit`, become a note too. So does an old note from the harness (a reminder,
+`Edit`, become a note too. A new call whose input is that note is not run: a
+model that copies it from its history is told to write the input out. So does an old note from the harness (a reminder,
 the tokens left) that a newer one of its kind replaces; the newest of each kind
 stays. An old Anthropic
 turn's thinking is dropped whole, since a signed block cannot be cut; that is
@@ -612,6 +613,7 @@ names. They answer only this machine, and not a page on another site:
 | `/selftest`  | GET    | runs the self-test; 503 with the failures when it fails |
 | `/dashboard` | GET    | the dashboard, and the data it reads below that path    |
 | `/mcp`       | POST   | the retrieve tool (MCP over HTTP)                       |
+| `/blocked`   | GET    | why a call was not run (`?call=<id>`); 404 for none     |
 
 An error the proxy answers itself, on these or a route, is always
 `{"type":"error","error":{"type":"ithildin_error","message":"ithildin: …"}}`.

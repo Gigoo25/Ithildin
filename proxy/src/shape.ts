@@ -40,6 +40,7 @@ import { setting } from "../engine/lib/names.ts";
 import { compact } from "./compact.ts";
 import { crushJson } from "./crush.ts";
 import { shapedGemini } from "./gemini.ts";
+import { inputNote } from "./input-note.ts";
 import { markBoundaries } from "./mark.ts";
 import { cachePrices } from "./prices.ts";
 import { asksForSummary, type Format } from "./redact.ts";
@@ -770,22 +771,14 @@ function shapeEntry(
 //
 // A call's input is re-sent every turn too, and the big ones are the model's
 // own writes: a whole file in a Write, both sides of an Edit, a patch. Past the
-// cutoff a long string in an input becomes a note. The wording says the call
-// ran with the full text and that a new one needs it, because a model that
-// reads its own history as having written placeholders will write them.
+// cutoff a long string in an input becomes a note (input-note.ts), and a new
+// call a model writes with that note as its input is refused (redact.ts).
 
 // The note is about 170 characters; from 400 a long shell command is worth
 // one too, and old commands were a seventh of what was left after shaping.
 export const INPUT_MIN_CHARS = 400;
 // Deep enough for an edit list inside an input, no deeper.
 const INPUT_DEPTH_MAX = 4;
-
-function inputNote(size: number): string {
-  return (
-    `[${size} chars of this earlier call's input removed from the history to save context. ` +
-    "The call ran with the full text; a new call needs its full text written out.]"
-  );
-}
 
 // The value with every long string in it replaced, or undefined when none was.
 function maskedValue(value: unknown, depth = 0): { value: unknown; saved: number } | undefined {
