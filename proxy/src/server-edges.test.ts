@@ -622,6 +622,28 @@ describe("startup", () => {
       expect(() => readOptions(["--port", bad], {}, none)).toThrow(/invalid port/);
   });
 
+  it("shares the port only as a supervisor's worker", async () => {
+    expect(readOptions(["--port", "9100", "--handover"], {}, none)).toEqual({
+      port: 9100,
+      routesFile: undefined,
+      handover: true,
+    });
+    expect("handover" in readOptions([], {}, none)).toBe(false);
+    const fetchUpstream = upstream(() => Response.json({})).fetch;
+    const old = start({ port: 0, routesFile: undefined, handover: true }, fetchUpstream);
+    const port = old.server.port!;
+    expect(() => start({ port, routesFile: undefined }, fetchUpstream)).toThrow("is in use");
+    const next = start({ port, routesFile: undefined, handover: true }, fetchUpstream);
+    try {
+      // The old worker stops listening; what connects now reaches the new one.
+      await old.drain();
+      const health = await fetch(`http://127.0.0.1:${port}/health`);
+      expect(health.status).toBe(200);
+    } finally {
+      await next.drain();
+    }
+  });
+
   it("serves health on a free port and drains", async () => {
     const { server, drain } = start(
       { port: 0, routesFile: undefined },

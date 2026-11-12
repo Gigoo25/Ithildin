@@ -546,6 +546,23 @@ ithildin selftest        # runs the self-test inside the live proxy
 ithildin check           # checks the guard config and runs guard tests
 ```
 
+As a service, start it with `--supervise` and reload it with `SIGHUP` after an
+edit to the inventory, the generalize list or the routes file. The rules are
+read once, when a process starts, so new ones need a new process, and a stop
+first lets the replies in flight finish (up to five minutes). Restarted, the
+proxy refuses every agent for as long as the longest reply still streaming;
+reloaded, a small parent starts the next proxy beside it on the same port, and
+once that one has run its self-test the old one stops listening and finishes
+its replies: no agent is refused. A file that does not parse leaves the old
+proxy serving the old rules, and the log says the reload failed. A full stop
+waits 30 seconds for replies.
+
+```ini
+ExecStart=ithildin --supervise --port 18733
+ExecReload=kill -HUP $MAINPID
+TimeoutStopSec=40
+```
+
 Needs Bun 1.4.2 or newer, and says so rather than starting on an older one: the
 engine bounds each masking rule with a deadline, and before that release those
 deadlines do not fire in time, so one long conversation hangs the proxy for

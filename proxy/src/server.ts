@@ -105,7 +105,7 @@ export const DEFAULT_ROUTES: Record<string, Route> = {
 };
 
 // The proxy's own paths: a route by one of these names could never be reached.
-const RESERVED_ROUTES = new Set(["health", "selftest", "mcp", "dashboard"]);
+const RESERVED_ROUTES = new Set(["health", "selftest", "mcp", "blocked", "dashboard"]);
 
 export function loadRoutes(file: string | undefined): Record<string, Route> {
   if (!file) return DEFAULT_ROUTES;
@@ -1748,7 +1748,9 @@ async function swapJsonReply(
 // TimeoutStopSec above it.
 export const DRAIN_MS = 300_000;
 
-export type Options = { port: number; routesFile: string | undefined };
+// handover: this process is a supervisor's worker (supervise.ts) and may bind
+// the port while the worker before it still holds it.
+export type Options = { port: number; routesFile: string | undefined; handover?: boolean };
 
 // Settings from flags, then environment, then defaults. A port that is not
 // a whole number in range stops startup: listening somewhere unexpected
@@ -1769,7 +1771,7 @@ export function readOptions(
   const defaultRoutes = path.join(configHome(env), NAME, "routes.json");
   const routesFile =
     arg("routes") ?? env.ITHILDIN_ROUTES ?? (exists(defaultRoutes) ? defaultRoutes : undefined);
-  return { port, routesFile };
+  return { port, routesFile, ...(argv.includes("--handover") ? { handover: true } : {}) };
 }
 
 // Networks and clones change under a running proxy; values only join. The
@@ -1795,7 +1797,7 @@ export function start(
     log("aliases are tokens: nothing is swapped back, tools run with the tokens the model wrote");
   const handler = createHandler(routes, fetchUpstream, REDACTORS, true);
   // Bound before any timer starts, so a taken port leaves nothing running.
-  const server = listen(options.port, handler);
+  const server = listen(options.port, handler, options.handover === true);
   const saving = setInterval(saveScanCache, 30_000);
   saving.unref();
   const selfTestRequest = () => new Request("http://127.0.0.1/selftest");
@@ -1826,12 +1828,15 @@ export function start(
 }
 
 // A port already taken stops startup with that, not the runtime's stack.
+// Shared only in a handover: on its own, a second proxy on the port is a
+// mistake to report, not a listener to split requests with.
 function listen(
   port: number,
   handler: (request: Request) => Promise<Response>,
+  reusePort: boolean,
 ): ReturnType<typeof Bun.serve> {
   try {
-    return Bun.serve({ hostname: "127.0.0.1", port, idleTimeout: 255, fetch: handler });
+    return Bun.serve({ hostname: "127.0.0.1", port, reusePort, idleTimeout: 255, fetch: handler });
   } catch (error) {
     if ((error as { code?: string }).code !== "EADDRINUSE") throw error;
     throw new Error(`ithildin: port ${port} is in use (another ithildin running?)`);
