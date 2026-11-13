@@ -1538,9 +1538,15 @@ const LOCAL_RULES: Rule[] = [
     ),
     secretGroup: 1,
     // Common username syntax: lowercase POSIX-style. This keeps display
-    // names ("Jane") and booleans out without a per-word denylist.
+    // names ("Jane") and booleans out without a per-word denylist. Digits
+    // alone are an id, not a login (`owner: 1000`, `user=501`; useradd takes
+    // no all-numeric name): one 3-digit number read as a username was given a
+    // stand-in, a model later wrote that stand-in as a plain number, and from
+    // then on every copy of the number was swapped, in line numbers, sizes
+    // and arithmetic, both ways.
     validate: (value: string, match?: RegExpMatchArray) =>
       /^[a-z0-9._][a-z0-9._-]*$/.test(value) &&
+      !/^\d+$/.test(value) &&
       !codeAssignment(match) &&
       !/^(?:true|false|null|none|yes|no|on|off|test|demo|example|sample|default)$/.test(value) &&
       !PLACEHOLDER_NAMES.test(value) &&
@@ -1565,7 +1571,10 @@ const LOCAL_RULES: Rule[] = [
     // Two-character minimum drops Nix lambda params (`host: u:`). The stem
     // list drops English contractions (`host: don't`) and bare references,
     // TYPE_NAMES drops annotations, and the `<` / `[` guard drops generics.
+    // Digits alone are a port or a count (`server: 8080`, `machine: 12`), as
+    // in pii-labeled-user.
     validate: (value: string, match?: RegExpMatchArray) =>
+      !/^\d+$/.test(value) &&
       !TYPE_NAMES.test(value) &&
       !HOST_STEMS.test(value) &&
       !PROGRAM_NAMES.test(value) &&

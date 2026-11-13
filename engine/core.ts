@@ -1310,9 +1310,22 @@ const SWAPPED_MAX = 2_000;
 // like a name: capitalized, it starts sentences, and lowercased it is too
 // often a plain word (as respelledFindings has it). The name rules still
 // catch a name in prose without the memory.
+//
+// A short number is as common as a plain word: a line number, a size, an exit
+// code, a port. One 3-digit value a rule had read as a username was
+// remembered, and every copy of that number in every session after was
+// masked, across restarts; the stand-in was another number, so any time a
+// model wrote that one it was swapped too. Under seven digits is out: the
+// shortest number that names someone on its own is a local phone number.
+const BARE_NUMBER = /^\d{1,6}$/;
+
+function tooCommon(value: string): boolean {
+  return BARE_NUMBER.test(value) || isProgramName(value);
+}
+
 export function rememberSwapped(value: string, ruleId: string): void {
   if (value.length < 3 || /^\p{L}+$/u.test(value) || SWAPPED.has(value)) return;
-  if (isProgramName(value)) return;
+  if (tooCommon(value)) return;
   keepSwapped(value, ruleId, ++swapGeneration);
   learned = true;
 }
@@ -1510,11 +1523,11 @@ export function respelledFindings(text: string, raw: LocatedFinding[]): LocatedF
 
 function swappedFindings(text: string): LocatedFinding[] {
   const seen = firstSeen(text);
-  // A program name saved before rememberSwapped turned it away is dropped as
-  // it is found, so the next save leaves it out.
+  // A program name or short number saved before rememberSwapped turned it
+  // away is dropped as it is found, so the next save leaves it out.
   if (recall)
     for (const { value, ruleId, since } of recall.find(text))
-      if (!isProgramName(value)) keepSwapped(value, ruleId, since);
+      if (!tooCommon(value)) keepSwapped(value, ruleId, since);
   if (SWAPPED.size === 0) return [];
   const lower = text.toLowerCase();
   const out: LocatedFinding[] = [];

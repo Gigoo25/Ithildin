@@ -377,6 +377,25 @@ describe("local rule additions", () => {
     expect(scan('const user = "zqxops";').some((f) => f.ruleId === "pii-labeled-user")).toBe(true);
   });
 
+  it("does not take a number for a username or a host", () => {
+    for (const text of [
+      "owner: 1000",
+      "user=501",
+      "login: 4242",
+      '"user": "161"',
+      "server: 8080",
+      "machine: 12",
+      "host: 10",
+    ]) {
+      expect(
+        scan(text).some((f) => f.ruleId === "pii-labeled-host" || f.ruleId === "pii-labeled-user"),
+      ).toBe(false);
+    }
+    // A digit in a name is still a name.
+    expect(scan("user: ops42").some((f) => f.ruleId === "pii-labeled-user")).toBe(true);
+    expect(scan("host: web01").some((f) => f.ruleId === "pii-labeled-host")).toBe(true);
+  });
+
   it("does not take type annotations for hosts or usernames", () => {
     for (const text of [
       "let host: string;",

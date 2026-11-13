@@ -580,6 +580,24 @@ describe("values swapped into tool calls", () => {
     clearCaches();
   });
 
+  it("never holds a short number, and drops one remembered before", () => {
+    clearCaches();
+    const file = path.join(mkdtempSync(path.join(tmpdir(), "swapped-")), "swapped.json");
+    const key = Buffer.alloc(32, 7);
+    const saved = new Recall(key);
+    saved.save(file, [saved.entry("161", "pii-labeled-user", 0)!]);
+    loadSwapped(key, file);
+    const lines = "   160\tconst a = 1;\n   161\tconst b = 2;\nexit 161, 161 bytes";
+    expect(redactText(lines).text).toBe(lines);
+    rememberSwapped("161", "pii-labeled-user");
+    rememberSwapped("654321", "pii-postal-code");
+    expect(redactText("line 161 of 654321").text).toBe("line 161 of 654321");
+    // Seven digits can be a phone number: still held.
+    rememberSwapped("5550142", "pii-phone");
+    expect(redactText("call 5550142 now").text).not.toContain("5550142");
+    clearCaches();
+  });
+
   it("still masks a remembered value echoed where no rule would catch it", () => {
     clearCaches();
     for (const [value, rule] of values) rememberSwapped(value, rule);
