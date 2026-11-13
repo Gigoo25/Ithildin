@@ -40,7 +40,6 @@ import { setting } from "../engine/lib/names.ts";
 import { compact } from "./compact.ts";
 import { crushJson } from "./crush.ts";
 import { shapedGemini } from "./gemini.ts";
-import { notedInput } from "./input-note.ts";
 import { markBoundaries } from "./mark.ts";
 import { cachePrices } from "./prices.ts";
 import { asksForSummary, type Format } from "./redact.ts";
@@ -95,7 +94,7 @@ function lastTyped(list: unknown[]): number {
 
 export interface Shaped {
   body: Record<string, unknown>;
-  // Results and call inputs replaced by a stub, results only compacted, and
+  // Results replaced by a stub, results only compacted, and
   // results that repeat an output still whole above them.
   masked: number;
   compacted: number;
@@ -761,7 +760,7 @@ function shapeEntry(
     if (call) return call;
   }
   const entry = record(item);
-  if (unthought && entry?.role === "assistant") return shapeBlocks(entry, false);
+  if (unthought && entry?.role === "assistant") return shapeBlocks(entry);
   if (format === "anthropic") return shapeAnthropic(item, walk, old);
   if (format === "chat") return shapeChat(item, walk, old);
   return shapeResponses(item, walk, old);
@@ -769,55 +768,23 @@ function shapeEntry(
 
 // ── old calls ───────────────────────────────────────────────────────────────
 //
-// A call's input is re-sent every turn too, and the big ones are the model's
-// own writes: a whole file in a Write, both sides of an Edit, a patch. Past the
-// cutoff a long string in an input keeps its start and ends in a note
-// (input-note.ts), and a new call a model writes with that note in its input
-// is refused (redact.ts).
-
-// The kept start and the note are about 370 characters together; from 400 a
-// long shell command is worth one too, and old commands were a seventh of what
-// was left after shaping.
-export const INPUT_MIN_CHARS = 400;
-// Deep enough for an edit list inside an input, no deeper.
-const INPUT_DEPTH_MAX = 4;
-
-// The value with every long string in it replaced, or undefined when none was.
-function maskedValue(value: unknown, depth = 0): { value: unknown; saved: number } | undefined {
-  if (typeof value === "string") {
-    if (value.length < INPUT_MIN_CHARS) return;
-    const noted = notedInput(value);
-    return { value: noted, saved: value.length - noted.length };
-  }
-  if (!value || typeof value !== "object" || depth >= INPUT_DEPTH_MAX) return;
-  const out: Record<string, unknown> | unknown[] = Array.isArray(value)
-    ? [...value]
-    : { ...(value as Record_) };
-  let saved = 0;
-  for (const key of Object.keys(out)) {
-    const next = maskedValue((out as Record_)[key], depth + 1);
-    if (!next) continue;
-    (out as Record_)[key] = next.value;
-    saved += next.saved;
-  }
-  return saved > 0 ? { value: out, saved } : undefined;
-}
-
-// Arguments carried as one JSON string: masked inside, and written back the
-// way JSON.stringify writes them. A string that does not parse is left whole.
-function maskedArguments(text: unknown): { value: string; saved: number } | undefined {
-  if (typeof text !== "string" || text.length < INPUT_MIN_CHARS) return;
-  const parsed = parseArgs(text);
-  const next = parsed === undefined ? undefined : maskedValue(parsed);
-  if (!next) return;
-  const value = JSON.stringify(next.value);
-  return value.length < text.length ? { value, saved: text.length - value.length } : undefined;
-}
+// A call's input is re-sent every turn too, and it stays whole. Long strings
+// in an old input (a shell command, a Write's file, both sides of an Edit)
+// used to be cut to a note, then to their first 200 characters and a note. A
+// model reads its history as what it wrote, so it wrote new calls the same
+// way: 84 of 925 calls in one qwen4-max-preview session as a note alone, and
+// still 11 of 391 once the start was kept, each one a long heredoc (a doc and
+// its commit) abbreviated the way the history showed its earlier ones. Such a
+// call cannot be run, the turn is spent, and the model took the missing file
+// for a rollback. Nothing left in an input fails to be copied, and the cut
+// saved about 200K characters over a 1,200-call session, a tenth of what
+// masking results does. A call ending in the note is still refused
+// (input-note.ts), for a note already in a summary or a resumed conversation.
 
 function shapeCall(format: Format, item: unknown, looping: boolean): Replacement | undefined {
   const entry = record(item);
   if (!entry) return;
-  if (format === "anthropic") return shapeBlocks(entry, true);
+  if (format === "anthropic") return shapeBlocks(entry);
   if (format === "chat") return shapeChatCalls(entry, looping);
   // An old reasoning item is billed as input when the model renders earlier
   // turns, and the API takes a past turn without it. Kept within the loop the
@@ -826,45 +793,28 @@ function shapeCall(format: Format, item: unknown, looping: boolean): Replacement
     return looping
       ? undefined
       : { entry: DROPPED, saved: reasoningSaved(entry), counts: counted("masked") };
-  const field = entry.type === "function_call" ? "arguments" : "input";
-  if (entry.type !== "function_call" && entry.type !== "custom_tool_call") return;
-  const next = field === "arguments" ? maskedArguments(entry.arguments) : maskedValue(entry.input);
-  return (
-    next && {
-      entry: { ...entry, [field]: next.value },
-      saved: next.saved,
-      counts: counted("masked"),
-    }
-  );
+  return undefined;
 }
 
 // An old assistant turn's thinking is dropped whole: it is signed, so it cannot
 // be cut, and the API takes a past turn without it (its own clear_thinking
 // context edit does the same). Only the latest turn of a tool loop must keep
 // its thinking, and an old turn is never that. A turn that is nothing but
-// thinking keeps it, since an empty turn is refused. A recent turn's call
-// input stays whole (`inputs` false) when only its thinking goes.
+// thinking keeps it, since an empty turn is refused.
 const THINKING = new Set(["thinking", "redacted_thinking"]);
 
-function shapeBlocks(entry: Record_, inputs: boolean): Replacement | undefined {
+function shapeBlocks(entry: Record_): Replacement | undefined {
   if (entry.role !== "assistant" || !Array.isArray(entry.content)) return;
   const blocks = entry.content as unknown[];
   const isThinking = (block: unknown) => THINKING.has(String(record(block)?.type));
   const drop = blocks.some((block) => !isThinking(block));
   let saved = 0;
   let masked = 0;
-  const content = blocks.flatMap((block) => {
-    const typed = record(block);
-    if (drop && isThinking(block)) {
-      saved += JSON.stringify(block).length;
-      masked++;
-      return [];
-    }
-    const next = inputs && typed?.type === "tool_use" ? maskedValue(typed.input) : undefined;
-    if (!next) return [block];
-    saved += next.saved;
+  const content = blocks.filter((block) => {
+    if (!drop || !isThinking(block)) return true;
+    saved += JSON.stringify(block).length;
     masked++;
-    return [{ ...typed, input: next.value }];
+    return false;
   });
   return masked === 0
     ? undefined
@@ -913,16 +863,6 @@ function shapeChatCalls(entry: Record_, looping: boolean): Replacement | undefin
   let saved = 0;
   let masked = 0;
   const out: Record_ = { ...entry };
-  if (Array.isArray(entry.tool_calls))
-    out.tool_calls = (entry.tool_calls as unknown[]).map((call) => {
-      const typed = record(call);
-      const fn = record(typed?.function);
-      const next = fn ? maskedArguments(fn.arguments) : undefined;
-      if (!next) return call;
-      saved += next.saved;
-      masked++;
-      return { ...typed, function: { ...fn, arguments: next.value } };
-    });
   if (!looping && hasOutput(entry))
     for (const field of REASONING) {
       const value = entry[field];

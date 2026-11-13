@@ -7,7 +7,6 @@ import {
   MASK_STEP_TURNS,
   MASK_THRESHOLD_TOKENS,
   DEDUPE_MIN_CHARS,
-  INPUT_MIN_CHARS,
   compactOnce,
   compactedHeld,
   shapingOn,
@@ -731,7 +730,7 @@ describe("gemini requests", () => {
     return contents;
   }
 
-  it("masks an old functionResponse and call in Gemini's own parts", () => {
+  it("masks an old functionResponse in Gemini's own parts, and keeps its call's args", () => {
     const contents = gemini();
     const shaped = shapeRequest("gemini", { contents });
     const out = shaped!.body.contents as Array<{ parts: Array<Record<string, any>> }>;
@@ -740,7 +739,7 @@ describe("gemini requests", () => {
     expect(response.name).toBe("bash");
     expect(response.response.content).toContain("bash `ls`");
     expect(out[1]!.parts.some((part) => part.thought)).toBe(false);
-    expect(out[1]!.parts[0]!.functionCall.args.note).toContain("input removed");
+    expect(out[1]!.parts[0]!.functionCall.args.note).toBe("x".repeat(2_000));
     // A turn shaping left alone goes out as it came, and nothing is marked.
     expect(out.at(-1) as unknown).toBe(contents.at(-1));
     expect(JSON.stringify(out)).not.toContain("cache_control");
@@ -945,76 +944,49 @@ describe("repeated outputs", () => {
   });
 });
 
+// Cut to a note once, and models wrote the note as the input of new calls
+// (shape.ts, "old calls"): an old input goes out as it was written.
 describe("old call inputs", () => {
   const file = "const x = 1;\n".repeat(200);
-  // How many of the file's lines a body still holds: 15 fit in the start an
-  // old input keeps, out of 200.
   const lines = (body: unknown) => JSON.stringify(body).split("const x = 1;").length - 1;
 
-  it("masks a long string in an old call, and leaves a recent call whole", () => {
+  it("keeps a long command, a file and a list of edits whole in an old call", () => {
+    const long = `for f in src/*.ts; do ${"echo $f; ".repeat(45)}done`;
+    const edits = [{ old_string: file, new_string: file }];
     const early = [
       call("w1", "Write", { file_path: "/w/a.ts", content: file }),
       result("w1", "ok"),
-    ];
-    const late = [call("w2", "Write", { file_path: "/w/b.ts", content: file }), result("w2", "ok")];
-    const shaped = shapeRequest("anthropic", { messages: around(early, late) });
-    expect(shaped?.masked).toBe(2);
-    const out = shaped!.body.messages as unknown[];
-    const old = ((at(out, 4).content as Array<Record<string, unknown>>)[0] ?? {}).input;
-    expect(old).toEqual({
-      file_path: "/w/a.ts",
-      content: expect.stringContaining("The call ran with the full text"),
-    });
-    expect(JSON.stringify(at(out, out.length - 2))).toContain("const x = 1;");
-    expect(INPUT_MIN_CHARS).toBeGreaterThan(0);
-  });
-
-  it("notes an old shell command from 400 characters, and keeps a short one", () => {
-    const long = `for f in src/*.ts; do ${"echo $f; ".repeat(45)}done`;
-    const early = [
       call("c1", "Bash", { command: long }),
       result("c1", "ok"),
-      call("c2", "Bash", { command: "ls src" }),
-      result("c2", "ok"),
+      call("e1", "MultiEdit", { file_path: "/w/a.ts", edits }),
+      result("e1", "ok"),
     ];
-    const body = JSON.stringify(shapeRequest("anthropic", { messages: around(early, []) })?.body);
-    expect(long.length).toBeGreaterThanOrEqual(400);
-    expect(long.length).toBeLessThan(1_000);
-    expect(body).not.toContain(long);
-    // Its start stays, so the history reads as a command and not as a note.
-    expect(body).toContain(`"command":"${long.slice(0, 200)}\\n[${long.length - 200} more chars`);
-    expect(body).toContain('"command":"ls src"');
-  });
-
-  it("reaches a list of edits inside an input", () => {
-    const edits = [{ old_string: file, new_string: file }];
-    const early = [call("e1", "MultiEdit", { file_path: "/w/a.ts", edits }), result("e1", "ok")];
     const shaped = shapeRequest("anthropic", { messages: around(early, []) });
-    expect(lines(shaped?.body)).toBe(30);
+    expect(shaped?.masked).toBe(1);
+    expect(lines(shaped?.body)).toBe(600);
+    const body = JSON.stringify(shaped?.body);
+    expect(body).toContain(JSON.stringify(long));
+    expect(body).not.toContain("earlier call's input");
   });
 
-  it("masks chat arguments, and leaves ones that do not parse", () => {
-    const args = (text: string) => ({
-      role: "assistant",
-      content: null,
-      tool_calls: [{ id: "c1", function: { name: "write", arguments: text } }],
-    });
+  it("keeps chat arguments whole", () => {
     // A big old chat result, so the step pays.
     const carried = [
       { role: "assistant", tool_calls: [{ id: "c0", function: { name: "cat", arguments: "{}" } }] },
       { role: "tool", tool_call_id: "c0", content: big() },
     ];
-    const good = JSON.stringify({ path: "/w/a.ts", content: file });
-    const shaped = shapeRequest("chat", { messages: around([...carried, args(good)], []) });
-    expect(shaped?.masked).toBe(2);
-    expect(lines(shaped?.body)).toBe(15);
-    const broken = `{"content": "${"x".repeat(INPUT_MIN_CHARS)}`;
-    const kept = shapeRequest("chat", { messages: around([...carried, args(broken)], []) });
-    expect(kept?.masked).toBe(1);
-    expect(JSON.stringify(kept?.body)).toContain(JSON.stringify(broken).slice(1, -1));
+    const args = JSON.stringify({ path: "/w/a.ts", content: file });
+    const write = {
+      role: "assistant",
+      content: null,
+      tool_calls: [{ id: "c1", function: { name: "write", arguments: args } }],
+    };
+    const shaped = shapeRequest("chat", { messages: around([...carried, write], []) });
+    expect(shaped?.masked).toBe(1);
+    expect(lines(shaped?.body)).toBe(200);
   });
 
-  it("masks a Responses call's arguments and a custom call's input", () => {
+  it("keeps a Responses call's arguments and a custom call's input whole", () => {
     const input: Array<Record<string, unknown>> = [];
     for (let i = 0; i < 20; i++) {
       input.push({ type: "message", role: "user", content: "go" });
@@ -1031,8 +1003,8 @@ describe("old call inputs", () => {
     input.splice(4, 0, { type: "function_call", call_id: "r0", name: "cat", arguments: "{}" });
     input.splice(5, 0, { type: "function_call_output", call_id: "r0", output: big() });
     const shaped = shapeRequest("responses", { input });
-    expect(shaped?.masked).toBe(3);
-    expect(lines(shaped?.body)).toBe(30);
+    expect(shaped?.masked).toBe(1);
+    expect(lines(shaped?.body)).toBe(400);
   });
 });
 

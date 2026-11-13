@@ -444,12 +444,12 @@ request while it holds. `[mask-images]` still ends the image grant, as before.
 
 Old tool results are masked before the request leaves: past the cutoff, a
 result over 400 characters, or one holding images, becomes a one-line stub
-naming the call that made it. Strings over 400 characters in an old call's
-input, a long shell command, the file a `Write` wrote or both sides of an
-`Edit`, keep their first 200 characters and end in a note for the rest. A new
-call whose input is that note, or ends in it, is not run: a model that copies it
-from its history is told to write the input out. So does an old note from the harness (a reminder,
-the tokens left) that a newer one of its kind replaces; the newest of each kind
+naming the call that made it. A call's own input, a shell command, the file a
+`Write` wrote or both sides of an `Edit`, stays whole however old: cut to a
+note, models wrote the note as the input of new calls. A call whose input is
+such a note, or ends in one, is still not run, and the model is told to write
+the input out. An old note from the harness (a reminder,
+the tokens left) that a newer one of its kind replaces becomes a stub too; the newest of each kind
 stays. An old Anthropic
 turn's thinking is dropped whole, since a signed block cannot be cut; that is
 often the biggest part of a long conversation. Newer results are

@@ -30,7 +30,7 @@ import {
 import { aliases } from "../engine/core.ts";
 import { looksLikeAlias } from "../engine/lib/aliases.ts";
 import { DIAGNOSE_BETA } from "./diagnose.ts";
-import { inputNote, NOTE_AS_INPUT } from "./input-note.ts";
+import { NOTE_AS_INPUT } from "./input-note.ts";
 
 const EMAIL = "jane.doe@acme-corp.com";
 let standIn = "";
@@ -184,7 +184,8 @@ describe("requests", () => {
   it("says on /blocked why a call was not run, and 404s an id it never blocked", async () => {
     const handler = createHandler(DEFAULT_ROUTES, fakeUpstream(() => Response.json({})).fetch);
     const blocked = (query: string) => handler(new Request(`http://127.0.0.1/blocked${query}`));
-    swapToolArguments("bash", { command: inputNote(1298) }, new Set(), "toolu_blocked_1");
+    const note = "[1298 chars of this earlier call's input removed from the history to save.]";
+    swapToolArguments("bash", { command: note }, new Set(), "toolu_blocked_1");
     const found = await blocked("?call=toolu_blocked_1");
     expect(found.status).toBe(200);
     expect(await found.json()).toEqual({ notice: NOTE_AS_INPUT });

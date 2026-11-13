@@ -1,6 +1,11 @@
 import { describe, expect, it } from "bun:test";
-import { HEAD_CHARS, holdsInputNote, inputNote, notedInput, NOTE_AS_INPUT } from "./input-note.ts";
+import { holdsInputNote, NOTE_AS_INPUT } from "./input-note.ts";
 import { blockedNotice, swapToolArguments } from "./redact.ts";
+
+// The note as shaping wrote it while it cut old inputs.
+const inputNote = (size: number) =>
+  `[${size} more chars of this earlier call's input removed from the history to save ` +
+  "context. The call ran with the full text; a new call needs its full text written out.]";
 
 describe("an old input's note as a new call's input", () => {
   it("is found as a command, a file's content or one side of an edit", () => {
@@ -10,23 +15,15 @@ describe("an old input's note as a new call's input", () => {
     expect(holdsInputNote({ file_path: "/w/a.py", edits })).toBe(true);
   });
 
-  it("is found closing the start of an old input, and written by proxies before the start", () => {
-    const old = `git commit -m "${"x".repeat(600)}"`;
-    const noted = notedInput(old);
-    expect(noted.startsWith(old.slice(0, HEAD_CHARS))).toBe(true);
-    expect(noted).toContain(`[${old.length - HEAD_CHARS} more chars of this earlier call's`);
+  it("is found closing the start of an old input, and as the note alone", () => {
+    const noted = `git commit -m "${"x".repeat(185)}\n${inputNote(416)}`;
     expect(holdsInputNote({ command: noted })).toBe(true);
     expect(holdsInputNote({ command: `${noted}\n` })).toBe(true);
     const before = "[1298 chars of this earlier call's input removed from the history to save";
     expect(holdsInputNote({ command: `${before} context.]` })).toBe(true);
   });
 
-  it("keeps a surrogate pair whole at the cut", () => {
-    const noted = notedInput(`${"a".repeat(HEAD_CHARS - 1)}\u{1F600}${"b".repeat(400)}`);
-    expect(noted.startsWith(`${"a".repeat(HEAD_CHARS - 1)}\n[402 more chars`)).toBe(true);
-  });
-
-  it("is not found in input that mentions it, or below the depth shaping masks", () => {
+  it("is not found in input that mentions it, or below the depth shaping cut", () => {
     const wording = "chars of this earlier call's input removed from the history";
     expect(holdsInputNote({ command: `grep -rn "${wording}" proxy/src` })).toBe(false);
     expect(holdsInputNote({ command: `echo "${inputNote(400)}" >> notes.md` })).toBe(false);
