@@ -40,7 +40,7 @@ import { setting } from "../engine/lib/names.ts";
 import { compact } from "./compact.ts";
 import { crushJson } from "./crush.ts";
 import { shapedGemini } from "./gemini.ts";
-import { inputNote } from "./input-note.ts";
+import { notedInput } from "./input-note.ts";
 import { markBoundaries } from "./mark.ts";
 import { cachePrices } from "./prices.ts";
 import { asksForSummary, type Format } from "./redact.ts";
@@ -771,11 +771,13 @@ function shapeEntry(
 //
 // A call's input is re-sent every turn too, and the big ones are the model's
 // own writes: a whole file in a Write, both sides of an Edit, a patch. Past the
-// cutoff a long string in an input becomes a note (input-note.ts), and a new
-// call a model writes with that note as its input is refused (redact.ts).
+// cutoff a long string in an input keeps its start and ends in a note
+// (input-note.ts), and a new call a model writes with that note in its input
+// is refused (redact.ts).
 
-// The note is about 170 characters; from 400 a long shell command is worth
-// one too, and old commands were a seventh of what was left after shaping.
+// The kept start and the note are about 370 characters together; from 400 a
+// long shell command is worth one too, and old commands were a seventh of what
+// was left after shaping.
 export const INPUT_MIN_CHARS = 400;
 // Deep enough for an edit list inside an input, no deeper.
 const INPUT_DEPTH_MAX = 4;
@@ -784,8 +786,8 @@ const INPUT_DEPTH_MAX = 4;
 function maskedValue(value: unknown, depth = 0): { value: unknown; saved: number } | undefined {
   if (typeof value === "string") {
     if (value.length < INPUT_MIN_CHARS) return;
-    const note = inputNote(value.length);
-    return { value: note, saved: value.length - note.length };
+    const noted = notedInput(value);
+    return { value: noted, saved: value.length - noted.length };
   }
   if (!value || typeof value !== "object" || depth >= INPUT_DEPTH_MAX) return;
   const out: Record<string, unknown> | unknown[] = Array.isArray(value)

@@ -947,6 +947,9 @@ describe("repeated outputs", () => {
 
 describe("old call inputs", () => {
   const file = "const x = 1;\n".repeat(200);
+  // How many of the file's lines a body still holds: 15 fit in the start an
+  // old input keeps, out of 200.
+  const lines = (body: unknown) => JSON.stringify(body).split("const x = 1;").length - 1;
 
   it("masks a long string in an old call, and leaves a recent call whole", () => {
     const early = [
@@ -978,6 +981,8 @@ describe("old call inputs", () => {
     expect(long.length).toBeGreaterThanOrEqual(400);
     expect(long.length).toBeLessThan(1_000);
     expect(body).not.toContain(long);
+    // Its start stays, so the history reads as a command and not as a note.
+    expect(body).toContain(`"command":"${long.slice(0, 200)}\\n[${long.length - 200} more chars`);
     expect(body).toContain('"command":"ls src"');
   });
 
@@ -985,7 +990,7 @@ describe("old call inputs", () => {
     const edits = [{ old_string: file, new_string: file }];
     const early = [call("e1", "MultiEdit", { file_path: "/w/a.ts", edits }), result("e1", "ok")];
     const shaped = shapeRequest("anthropic", { messages: around(early, []) });
-    expect(JSON.stringify(shaped?.body)).not.toContain("const x = 1;");
+    expect(lines(shaped?.body)).toBe(30);
   });
 
   it("masks chat arguments, and leaves ones that do not parse", () => {
@@ -1002,7 +1007,7 @@ describe("old call inputs", () => {
     const good = JSON.stringify({ path: "/w/a.ts", content: file });
     const shaped = shapeRequest("chat", { messages: around([...carried, args(good)], []) });
     expect(shaped?.masked).toBe(2);
-    expect(JSON.stringify(shaped?.body)).not.toContain("const x = 1;");
+    expect(lines(shaped?.body)).toBe(15);
     const broken = `{"content": "${"x".repeat(INPUT_MIN_CHARS)}`;
     const kept = shapeRequest("chat", { messages: around([...carried, args(broken)], []) });
     expect(kept?.masked).toBe(1);
@@ -1027,7 +1032,7 @@ describe("old call inputs", () => {
     input.splice(5, 0, { type: "function_call_output", call_id: "r0", output: big() });
     const shaped = shapeRequest("responses", { input });
     expect(shaped?.masked).toBe(3);
-    expect(JSON.stringify(shaped?.body)).not.toContain("const x = 1;");
+    expect(lines(shaped?.body)).toBe(30);
   });
 });
 
