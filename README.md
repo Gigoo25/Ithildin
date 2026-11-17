@@ -78,6 +78,9 @@ fake survives a restart, and those fakes are never swapped back:
   headers, credentials in URLs, connection strings, TOTP URIs, Wi-Fi PSKs.
 - Generic `KEY=value` assignments and high-entropy tokens next to words like
   `secret` or `token`.
+- Docker Hub tokens and AWS secret keys beside their access-key IDs.
+- Short literal passwords in password assignments, JSON fields, command-line
+  flags, netrc records and Redis AUTH; mixed passwords in English and Japanese prose.
 - Base64 and hex dumps of any of the above, and rot13 copies of a value
   already masked.
 
@@ -86,7 +89,11 @@ fake survives a restart, and those fakes are never swapped back:
 - Emails, phone numbers, street addresses, postal codes, coordinates, names
   near a title or label, card numbers (Luhn-checked), IBANs and bank
   accounts, and national ID formats for the US, FR, DE, IT, ES, JP, KR
-  and CN.
+  and CN; UK National Insurance numbers, compact or spaced.
+- Labelled birth dates and customer/member numbers in English, Japanese,
+  Chinese, Korean, French, Italian, German and Spanish.
+- Numbered postal addresses in JP, CN and KR; street addresses with a postal
+  code and town in FR, IT, DE and ES. International phone numbers may contain separators.
 - IPv4 and IPv6 addresses, MACs, machine IDs, SSIDs.
 - Hostnames and usernames in home paths (Unix and `C:\Users\`), `user@host`
   and labelled fields.
