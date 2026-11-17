@@ -1,3 +1,12 @@
+import {
+  isAwsSecret,
+  isCustomerNumber,
+  isInternationalPhone,
+  isLiteralPassword,
+  isNationalInsurance,
+  isProsePassword,
+} from "./context-validators.ts";
+
 // The checksum algorithms and range checks a rule may name in its `validate`
 // field.
 //
@@ -419,6 +428,12 @@ export function validateJapanesePhone(input: string): boolean {
 }
 
 const VALIDATORS: Readonly<Record<string, (str: string) => boolean>> = {
+  "customer-number": isCustomerNumber,
+  "nino-uk": isNationalInsurance,
+  "phone-intl": isInternationalPhone,
+  "aws-secret-shape": isAwsSecret,
+  "literal-password": isLiteralPassword,
+  "prose-password": isProsePassword,
   luhn: isRealCardNumber,
   "aws-key": isRealAwsKey,
   "mynumber-jp": validateMyNumber,

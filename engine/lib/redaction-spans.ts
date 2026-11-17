@@ -151,6 +151,9 @@ function propagatedValues(findings: LocatedFinding[]): Map<string, LocatedFindin
     // Numeric document fields are classified by their label, not by numeric
     // equality with unrelated counters or protocol-looking document fields.
     if (jsonKind(f) === "json-number") continue;
+    // The localized customer rule also captures short numeric IDs in prose
+    // and raw JSON. Their labels classify them, not equal counts elsewhere.
+    if (f.ruleId === "pii-customer-number" && /^[0-9０-９]+$/.test(f.secretValue)) continue;
     const keys = [f.secretValue];
     if (jsonKind(f) === "json-string") {
       keys.push(JSON.parse(f.secretValue) as string, f.secretValue.slice(1, -1));

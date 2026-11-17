@@ -17,6 +17,8 @@ import { FIRST_NAMES } from "./first-names.ts";
 import { ALIAS_LABEL } from "./aliases.ts";
 import { configFile, setting } from "./names.ts";
 import { assert } from "./assert.ts";
+import { CONTEXT_RULES } from "./context-rules.ts";
+import { isLiteralPassword } from "./context-validators.ts";
 
 export type Category = "secret" | "pii";
 
@@ -541,7 +543,7 @@ function buildRules(): Rule[] {
   effectiveContextWindow = defaultConfig.contextWindow ?? 3;
 
   const defaultRules: Rule[] = [];
-  for (const rc of defaultConfig.rules) {
+  for (const rc of [...defaultConfig.rules, ...CONTEXT_RULES]) {
     try {
       defaultRules.push(compileRule(rc));
     } catch (e) {
@@ -681,9 +683,7 @@ export function compileGeneralizeList(entries: unknown[]): Rule[] {
 // ("... 0130 00 EUR" reads on into a group of four): it is tried without it.
 function ibanValid(value: string): boolean {
   const groups = value.split(" ");
-  return (
-    ibanSum(groups.join("")) || (groups.length > 4 && ibanSum(groups.slice(0, -1).join("")))
-  );
+  return ibanSum(groups.join("")) || (groups.length > 4 && ibanSum(groups.slice(0, -1).join("")));
 }
 
 function ibanSum(value: string): boolean {
@@ -931,7 +931,8 @@ const LOCAL_RULES: Rule[] = [
     id: "cli-secret-flag",
     description: "Secret passed as a command-line flag's value",
     regex: new RegExp(
-      String.raw`(?<![\w-])--?(?:[a-z0-9]+[-_]){0,3}(?:password|passwd|passphrase|pass|pwd|secret|token|api[-_]?key)` +
+      String.raw`(?<![\w-])--?(?:[a-z0-9]+[-_]){0,3}` +
+        String.raw`(?:password|passwd|passphrase|pass|pwd|secret|token|api[-_]?key)` +
         String.raw`[ \t]+["']?(?![-$<{\[])([^\s"'<>|&;]{8,256})`,
       "gi",
     ),
@@ -1988,11 +1989,14 @@ function secretShaped(
   // a Slack webhook is a URL and a secret, and asking whether it looks like
   // a URL is asking the wrong question.
   const capturesAValue = rule.secretGroup != null;
+  // A PIN in an explicit password field is not an ordinary count. Only this
+  // validator permits numbers; generic secret and entropy rules still refuse them.
+  const literalPin = rule.validate === isLiteralPassword && /^\d+$/.test(secretValue);
   return !(
     rule.category === "secret" &&
     (isPlaceholder(secretValue, following) ||
       (capturesAValue &&
-        (isNotSecretShaped(secretValue) ||
+        ((!literalPin && isNotSecretShaped(secretValue)) ||
           isPlaceholder(match[0], following) ||
           isNotSecretShaped(match[0]) ||
           keyDescribesRatherThanHolds(match[0]) ||
