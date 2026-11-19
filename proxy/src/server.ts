@@ -59,7 +59,7 @@ import { AGENT, GUESS, SessionNames, USER } from "./sessions.ts";
 import { createStatusBook } from "./status.ts";
 import { PrefixWatch, threadOf } from "./prefix.ts";
 import { answerMcp, offeredTool, Originals, outputId } from "./retrieve.ts";
-import { markerText } from "./mark.ts";
+import { isStandaloneSummary, markerText, unmarkedMessages } from "./mark.ts";
 import { merge, type Usage, usageOf, usageOfEvent, usageText, writtenText } from "./usage.ts";
 import { findWatched, knownValues, watchPolicy } from "./watch.ts";
 import {
@@ -830,25 +830,12 @@ async function forward(
   // the conversation the dashboard keeps is the one that arrived and only the
   // forwarded copy is shaped. It is pure and fails open: a request it cannot
   // shape goes upstream exactly as redaction left it.
-  const shaped = shapeOutgoing(
-    scanned,
-    format ?? "chat",
-    session?.id ?? null,
-    stores.originals,
-    name,
-  );
-  if (UNPRUNED_HOSTS.has(new URL(route.upstream).hostname)) shaped.unpruned = true;
+  const shaped = forwardedCopy(stores, scanned, format, session?.id ?? null, name, route);
   const sent = redactUrl(rest, url.search, headers, scanned, redact);
   if (sent instanceof Response) return sent;
   const routed = routeFor(route, name, sent.rest, sent.search, headers, format);
   if (routed instanceof Response) return routed;
-  const context = {
-    route: name,
-    endpoint: sent.rest,
-    session: session?.id,
-    ...(session ? { sessionName: names.name(session.client, session.id) } : {}),
-    turn: ++stores.turns,
-  };
+  const context = requestContext(stores, name, sent.rest, session);
   const id = recordScan({ book, events, kept }, context, scanned, shaped.on, shaped);
   const broke = noteBreak(stores, context, format, scanned, shaped);
   const stopped = watchOutgoing(events, context, scanned, sent);
@@ -1071,6 +1058,48 @@ function noteBreak(
   if (!found) return "";
   stores.events.cacheBreak(context, found);
   return ` cachebreak=${found.at.replace(" ", "")}(${found.cause})`;
+}
+
+// Whose request this is, for the journal and the dashboard.
+function requestContext(
+  stores: Stores,
+  route: string,
+  endpoint: string,
+  session: ReturnType<typeof sessionOf>,
+): Context {
+  return {
+    route,
+    endpoint,
+    session: session?.id,
+    ...(session ? { sessionName: stores.names.name(session.client, session.id) } : {}),
+    turn: ++stores.turns,
+  };
+}
+
+// The copy to forward: shaped, flagged for hosts whose clients keep every
+// tool output, and a one-shot summary without its message markers.
+function forwardedCopy(
+  stores: Stores,
+  scanned: Scanned,
+  format: Format | undefined,
+  session: string | null,
+  name: string,
+  route: Route,
+): Forwarded {
+  const shaped = shapeOutgoing(scanned, format ?? "chat", session, stores.originals, name);
+  if (UNPRUNED_HOSTS.has(new URL(route.upstream).hostname)) shaped.unpruned = true;
+  if (format === "anthropic") unmarkSummary(scanned, shaped);
+  return shaped;
+}
+
+// A one-shot summary is forwarded without message markers (isStandaloneSummary).
+export function unmarkSummary(scanned: Scanned, shaped: Forwarded): void {
+  const object = (shaped.object ?? scanned.object) as Record<string, unknown> | undefined;
+  if (!object || typeof object !== "object" || !isStandaloneSummary(object)) return;
+  const unmarked = unmarkedMessages(object);
+  if (!unmarked) return;
+  shaped.object = unmarked;
+  shaped.body = JSON.stringify(unmarked);
 }
 
 // The body to forward and whether shaping was on for it. `on` is undefined

@@ -126,6 +126,49 @@ export function markRoom(body: Record_): number {
   return MARKERS_MAX - markers(body).length + (spared(body.system) ? 1 : 0);
 }
 
+// A one-shot summary: no tools, and one user turn holding the whole history
+// as text (Pi's generateSummary, generateBranchSummary and
+// generateTurnPrefixSummary). Nothing reads its prompt again, yet the Claude
+// Code transport marks it for an hour whatever Pi asks (cacheRetention
+// "none"): a 221k compaction was billed as a 1h write, twice plain input.
+const SUMMARY_PROMPT = /^\s*(?:<conversation>\n|# Conversation\n)/;
+
+export function isStandaloneSummary(body: Record_): boolean {
+  if (Array.isArray(body.tools) && body.tools.length > 0) return false;
+  const messages = body.messages;
+  // The transport may add user turns of its own (reminders), never a reply.
+  if (!Array.isArray(messages) || messages.length === 0) return false;
+  if (messages.some((message) => (message as Record_ | undefined)?.role !== "user")) return false;
+  return messages.some((message) => {
+    const content = (message as Record_).content;
+    if (typeof content === "string") return SUMMARY_PROMPT.test(content);
+    if (!Array.isArray(content)) return false;
+    return content.some((block) => {
+      const typed = block as Record_ | undefined;
+      return (
+        typed?.type === "text" && typeof typed.text === "string" && SUMMARY_PROMPT.test(typed.text)
+      );
+    });
+  });
+}
+
+// The body with the markers in its messages taken off, or undefined when it
+// has none. Tool and system markers stay: that prefix is shared with the
+// session's other requests, so it can still be read back.
+export function unmarkedMessages(body: Record_): Record_ | undefined {
+  const messages = body.messages;
+  if (!Array.isArray(messages) || !JSON.stringify(messages).includes('"cache_control"')) return;
+  const strip = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(strip);
+    if (!value || typeof value !== "object") return value;
+    const out: Record_ = {};
+    for (const [key, inner] of Object.entries(value))
+      if (key !== "cache_control") out[key] = strip(inner);
+    return out;
+  };
+  return { ...body, messages: messages.map(strip) };
+}
+
 // The body with a marker on the last markable message at or before each of
 // `ats`, placed against the markers the request arrived with, freeing a
 // redundant system marker when it needs the room. A boundary that does not fit

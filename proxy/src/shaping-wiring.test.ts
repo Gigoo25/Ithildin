@@ -64,6 +64,33 @@ describe("the request path shapes what it forwards", () => {
     expect(forwarded).not.toContain("line 0 of output");
   });
 
+  it("forwards a one-shot summary without its message markers", async () => {
+    const { seen, fetchUpstream } = recording();
+    const handler = createHandler(DEFAULT_ROUTES, fetchUpstream as never);
+    const hour = { type: "ephemeral", ttl: "1h" };
+    const text = "<conversation>\n[User]: hi\n</conversation>\n\nSummarize.";
+    const summary = {
+      model: "claude-opus-5",
+      system: [{ type: "text", text: "You summarize.", cache_control: hour }],
+      messages: [{ role: "user", content: [{ type: "text", text, cache_control: hour }] }],
+    };
+    await handler(post(summary, "w1s"));
+    const sent = JSON.parse(sentText(seen));
+    expect(sent.messages[0].content[0].cache_control).toBeUndefined();
+    expect(sent.system[0].cache_control).toEqual(hour);
+    // A turn of the conversation keeps its marker.
+    const turn = {
+      ...summary,
+      messages: [
+        { role: "user", content: [summary.messages[0]!.content[0]!, { type: "text", text: "go" }] },
+        { role: "assistant", content: [{ type: "text", text: "ok" }] },
+        { role: "user", content: [{ type: "text", text: "more", cache_control: hour }] },
+      ],
+    };
+    await handler(post(turn, "w1t"));
+    expect(JSON.parse(sentText(seen)).messages[2].content[0].cache_control).toEqual(hour);
+  });
+
   it("is pure across requests: the same conversation forwards the same bytes", async () => {
     const { seen, fetchUpstream } = recording();
     const handler = createHandler(DEFAULT_ROUTES, fetchUpstream as never);

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "bun:test";
-import { markBoundaries, markRoom, MARKERS_MAX } from "./mark.ts";
+import {
+  isStandaloneSummary,
+  markBoundaries,
+  markRoom,
+  MARKERS_MAX,
+  unmarkedMessages,
+} from "./mark.ts";
 import { shapeRequest } from "./shape.ts";
 
 const hour = { type: "ephemeral", ttl: "1h" };
@@ -198,5 +204,36 @@ describe("the cutoff marker", () => {
     const system = [text("a", hour), text("b", hour), text("c", hour)];
     const tools = [{ name: "a", cache_control: hour }];
     expect(kept({ system, tools, messages: list })).toBe(true);
+  });
+});
+
+describe("standalone summaries", () => {
+  const prompt = "<conversation>\n[User]: hi\n</conversation>\n\nSummarize.";
+  const summary = {
+    system: [text("You are a context summarization assistant.", hour)],
+    messages: [said("user", text("<system-reminder>x</system-reminder>"), text(prompt, hour))],
+  };
+
+  it("recognizes Pi's one-shot summary request, wrapped or not", () => {
+    expect(isStandaloneSummary(summary)).toBe(true);
+    expect(
+      isStandaloneSummary({ messages: [{ role: "user", content: "# Conversation\nfoo" }] }),
+    ).toBe(true);
+    // A conversation turn, or a request offering tools, is not one.
+    expect(isStandaloneSummary({ ...summary, tools: [{ name: "Bash" }] })).toBe(false);
+    expect(
+      isStandaloneSummary({ messages: [...summary.messages, said("assistant", text("ok"))] }),
+    ).toBe(false);
+    expect(
+      isStandaloneSummary({ messages: [said("user", text("look at <conversation>\n"))] }),
+    ).toBe(false);
+  });
+
+  it("takes the message markers off and keeps the system ones", () => {
+    const out = unmarkedMessages(summary)!;
+    expect(marks(messagesOf(out))).toEqual([]);
+    expect(out.system).toEqual(summary.system);
+    expect(marks(summary.messages)).toEqual(["0.1"]);
+    expect(unmarkedMessages({ messages: [said("user", text(prompt))] })).toBeUndefined();
   });
 });
