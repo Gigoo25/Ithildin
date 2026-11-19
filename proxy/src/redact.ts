@@ -70,7 +70,7 @@ import {
   type InventoryEntry,
   scan as scanRules,
 } from "../engine/lib/rules.ts";
-import { planSwapBack, reachesNetwork } from "../engine/lib/swap-back.ts";
+import { CODE_TOOL, planSwapBack, reachesNetwork } from "../engine/lib/swap-back.ts";
 import { holdsInputNote, NOTE_AS_INPUT } from "./input-note.ts";
 import { allowHint, protectedBlocked, protectedFinding, shellWrites } from "./protect.ts";
 import { SPELLED_BLOCKED, spellsMasked, UNMASK_BLOCKED, unmasksText } from "./unmask.ts";
@@ -527,6 +527,11 @@ function typedGrants(item: unknown): Array<{ grant: string | undefined; on: bool
     grant: match[1]?.toLowerCase().replace("secrets", "secret"),
     on: match[2]?.toLowerCase() === "session",
   }));
+}
+
+// The grants `session` holds now, for the journal (warnings.ts).
+export function heldGrants(session: string | undefined): ReadonlySet<string> {
+  return (session && sessionGrants.get(session)) || new Set();
 }
 
 export function requestAllowTags(
@@ -2097,9 +2102,11 @@ export function withholdImages(
 // stand-in are refused instead (swapArguments), unless [allow-pii].
 
 // planSwapBack's tool vocabulary: "bash" gets the network-destination check,
-// "web_fetch" treats every position as egress.
+// "codemode" checks the tools its script calls, "web_fetch" treats every
+// position as egress.
 function swapToolName(name: string): string {
   if (BASH_TOOLS.has(name)) return "bash";
+  if (name === CODE_TOOL) return CODE_TOOL;
   if (LOCAL_TOOLS.has(name)) return name;
   return "web_fetch";
 }

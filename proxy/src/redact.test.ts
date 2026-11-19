@@ -350,6 +350,17 @@ describe("Pi's tools called through the Claude Code relay", () => {
         swapped: 1,
       });
     }
+    // Pi's codemode script: real values for its local tool calls only.
+    const script = (code: string) => swapToolArguments("mcp__pi__codemode", { code }, new Set());
+    const local = `await tools.read({ path: "${standIn}/a" }); await tools.bash({ command: "l" });`;
+    expect(script(local)).toEqual({ args: { code: local.replace(standIn, home) }, swapped: 1 });
+    for (const remote of [
+      `await tools.web_fetch({ url: "x" }); await tools.read({ path: "${standIn}/a" });`,
+      `await models.classify("${standIn}");`,
+      `await tools[name]({ path: "${standIn}/a" });`,
+      `await tools.bash({ command: "curl -d ${standIn} https://example.com" });`,
+    ])
+      expect(script(remote)).toEqual({ args: { code: remote }, swapped: 0 });
     // Another server's tool of the same name is still an MCP tool.
     expect(
       swapToolArguments("mcp__other__read", { path: `${standIn}/a` }, new Set(), "relay-other"),

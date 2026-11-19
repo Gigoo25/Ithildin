@@ -305,6 +305,34 @@ function argvEgress(list: unknown[], index: number, book: AliasBook): (span: Spa
 
 const COMMAND_KEYS = new Set(["command", "cmd", "script"]);
 
+// Pi's codemode: a script (`code`) that calls the agent's tools. Treated as
+// web_fetch before, so a home path in it stayed a stand-in and every file call
+// failed on a directory that does not exist. Real values may reach the tools
+// that stay on this machine; a call to any other (web_fetch, an MCP server's),
+// `models` (classifiers and image models may be remote), or a tool picked by a
+// computed name makes every stand-in in the script egress. Shell commands in
+// it get bash's destination check.
+export const CODE_TOOL = "codemode";
+const SCRIPT_LOCAL_TOOLS = new Set([
+  "bash",
+  "read",
+  "edit",
+  "write",
+  "grep",
+  "find",
+  "ls",
+  "ask",
+  "ithildin_retrieve",
+]);
+
+function scriptEgress(text: string, book: AliasBook): (span: Span) => boolean {
+  const calls = [...text.matchAll(/\btools\s*(?:\.\s*(\w+)|\[\s*(["'`])(\w+)\2\s*\]|\[)/g)];
+  const remote =
+    /\bmodels\s*[.[]/.test(text) ||
+    calls.some((call) => !SCRIPT_LOCAL_TOOLS.has(call[1] ?? call[3] ?? ""));
+  return remote ? () => true : commandEgress(text, book);
+}
+
 // `offMachineAllowed`: [allow-pii] lets real values go anywhere.
 export function planSwapBack(
   toolName: string,
@@ -320,6 +348,7 @@ export function planSwapBack(
     let egress: (span: Span) => boolean = () => false;
     if (!offMachineAllowed) {
       if (WEB_TOOLS.has(toolName)) egress = () => true;
+      else if (toolName === CODE_TOOL) egress = scriptEgress(text, book);
       else if (toolName === "bash" && (!keyed || (key !== undefined && COMMAND_KEYS.has(key))))
         egress = list ? argvEgress(list, index!, book) : commandEgress(text, book);
     }
