@@ -74,6 +74,12 @@ describe("structured documents", () => {
     expect(edits.some((e) => e.secretValue === "hunter2hunter")).toBe(true);
     expect(edits.some((e) => e.secretValue === "3")).toBe(false);
   });
+  it("leaves an assignment that only names a variable", () => {
+    const refs = 'password = ${DB_PASSWORD}\napi_key = $API_KEY\npassword = "${DB_PASSWORD}"\n';
+    expect(assignmentEdits(refs)).toEqual([]);
+    const withDefault = assignmentEdits("password = ${DB_PASSWORD:-kq7ZpL2x}\n");
+    expect(withDefault.map((e) => e.secretValue)).toEqual(["${DB_PASSWORD:-kq7ZpL2x}"]);
+  });
   it("hook integration: labeled identity hidden, longer variable survives", async () => {
     const { handlers, ctx } = setup();
     try {

@@ -10,6 +10,9 @@ const SECRET_LABELS = new Set([
   "privatekey",
 ]);
 const PII_LABELS = new Set(["accountnumber", "bankaccountnumber", "passportnumber"]);
+// `password = ${DB_PASSWORD}` names where the value lives and holds none, as
+// isLiteralPassword already reads it; a default (`${X:-...}`) may hold one.
+const REFERENCE_ONLY = /^\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)$/;
 const normLabel = (key: string) => key.toLowerCase();
 const normalize = (key: string) => normLabel(key).replace(/_/g, "");
 // Retain the existing document ceiling. Exceeding it is now explicit omission,
@@ -201,7 +204,8 @@ export function assignmentEdits(text: string, check = assertScanBudget): Located
           : null;
       const group = m[2] !== undefined ? 2 : m[3] !== undefined ? 3 : 4;
       const val = m[group]!;
-      if (category && val.length && !(group === 4 && /^(?:null|true|false)$/.test(val))) {
+      const empty = (group === 4 && /^(?:null|true|false)$/.test(val)) || REFERENCE_ONLY.test(val);
+      if (category && val.length && !empty) {
         const [start, stop] = m.indices![group]!;
         findings.push({
           ruleId: `structured-${category}-field`,
