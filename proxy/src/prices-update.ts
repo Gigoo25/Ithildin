@@ -83,8 +83,11 @@ export async function update(
   return tables;
 }
 
-if (import.meta.main) {
-  const tables = await update();
-  for (const [provider, table] of Object.entries(tables))
-    process.stdout.write(`${provider}: ${Object.keys(table).length} models\n`);
+// One line per provider, so a run shows at a glance which list grew or shrank.
+export function summary(tables: Tables): string {
+  return Object.entries(tables)
+    .map(([provider, table]) => `${provider}: ${Object.keys(table).length} models\n`)
+    .join("");
 }
+
+if (import.meta.main) process.stdout.write(summary(await update()));

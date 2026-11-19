@@ -1,8 +1,8 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { dataFile, PROVIDERS, ratiosFrom, update } from "./prices-update.ts";
+import { dataFile, PROVIDERS, ratiosFrom, SOURCE, summary, update } from "./prices-update.ts";
 
 const cost = (input: number, cache_read?: number, cache_write?: number) => ({
   cost: { input, cache_read, cache_write },
@@ -52,5 +52,32 @@ describe("price table update", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  it("fetches models.dev by default", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ithildin-prices-update-"));
+    const asked: string[] = [];
+    globalThis.fetch = (async (url: string) => {
+      asked.push(url);
+      return Response.json(api({ m: cost(2, 0.1) }));
+    }) as unknown as typeof fetch;
+    try {
+      const tables = await update(undefined, join(dir, "prices.data.ts"), "2026-10-28");
+      expect(asked).toEqual([SOURCE]);
+      expect(tables["anthropic"]).toEqual({ m: [0.05, 1] });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("summarizes how many models each provider lists", () => {
+    expect(summary({ anthropic: { a: [0.1, 1.25], b: [0.1, 1] }, openai: {} })).toBe(
+      "anthropic: 2 models\nopenai: 0 models\n",
+    );
   });
 });
