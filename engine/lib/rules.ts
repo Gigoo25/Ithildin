@@ -18,7 +18,7 @@ import { ALIAS_LABEL } from "./aliases.ts";
 import { configFile, setting } from "./names.ts";
 import { assert } from "./assert.ts";
 import { CONTEXT_RULES } from "./context-rules.ts";
-import { isLiteralPassword } from "./context-validators.ts";
+import { isLiteralCredential, isLiteralPassword } from "./context-validators.ts";
 
 export type Category = "secret" | "pii";
 
@@ -1991,13 +1991,18 @@ function secretShaped(
   const capturesAValue = rule.secretGroup != null;
   // A PIN in an explicit password field is not an ordinary count. Only this
   // validator permits numbers; generic secret and entropy rules still refuse them.
-  const literalPin = rule.validate === isLiteralPassword && /^\d+$/.test(secretValue);
+  // A six-digit API token under a credential key is the same case.
+  const literal = rule.validate === isLiteralPassword || rule.validate === isLiteralCredential;
+  const literalPin = literal && /^\d+$/.test(secretValue);
+  // `<password>…</password>` reads as a `<placeholder>` by its opening tag; the
+  // value inside is what the placeholder test is for.
+  const whole = rule.id === "credential-xml-element" ? secretValue : match[0];
   return !(
     rule.category === "secret" &&
     (isPlaceholder(secretValue, following) ||
       (capturesAValue &&
         ((!literalPin && isNotSecretShaped(secretValue)) ||
-          isPlaceholder(match[0], following) ||
+          isPlaceholder(whole, following) ||
           isNotSecretShaped(match[0]) ||
           keyDescribesRatherThanHolds(match[0]) ||
           isCodeIdentifier(match[0], secretValue) ||

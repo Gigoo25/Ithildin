@@ -57,6 +57,11 @@ const KOREA =
 // Quote capture and backreference make spaces part of a quoted password, but
 // stop an unquoted value at its first separator. Capture 2 is the value alone.
 const PASSWORD_VALUE = String.raw`(["']?)([^\r\n"'\x60]{1,256}?)\1(?=$|[ \t\r\n,;)}\]])`;
+// A key that names a credential, at the end of the name: `ClientSecret`, `db_password`,
+// `X-Auth-Token`, `secret_key_base`. `max_tokens` and `token_type` do not end in one.
+const CREDENTIAL_KEY =
+  String.raw`[A-Za-z0-9_.-]{0,40}?(?:secret[_-]key[_-]base|secret|token|api[_-]?key|` +
+  String.raw`passw(?:or)?d)`;
 const AWS_ID =
   String.raw`(?:A3T[A-Z0-9]|AKIA|ABIA|ACCA|APKA|ASCA|AGPA|AIDA|AROA|` +
   String.raw`AIPA|ANPA|ANVA|ASIA)`;
@@ -253,6 +258,72 @@ export const CONTEXT_RULES: RuleConfig[] = [
       String.raw`\bredis-cli(?:[ \t]+[^\s;|&]{1,128}){0,16}?[ \t]+-a[ \t]+)` +
       PASSWORD_VALUE,
     flags: "gm",
+    secretGroup: 2,
+    validate: "literal-password",
+    category: "secret",
+  },
+  // A quoted literal on a credential-named key, in the separators code and config
+  // use for one: `=`, `:`, PHP's `=>`, and a key closed by a quote or `]`. The
+  // entropy rules need twenty characters, so a six-digit token or a hyphenated
+  // passphrase went out under every one of these keys (V23 holdout, needle
+  // experiment). Quoted only: an unquoted value there is usually a variable.
+  {
+    id: "credential-quoted-assignment",
+    description: "Quoted literal assigned to a credential-named key",
+    regex:
+      String.raw`(?<![\w.$-])` +
+      CREDENTIAL_KEY +
+      String.raw`["']?\]?[ \t]*(?::|=>|=)[ \t]*(["'])([^"'\r\n]{1,256})\1`,
+    flags: "gi",
+    secretGroup: 2,
+    validate: "literal-credential",
+    category: "secret",
+  },
+  // The same in a dotenv or shell line, unquoted. Upper-case keys only, the
+  // spelling of an environment variable rather than of code, and `=` with no
+  // space around it, as dotenv and shell write it: `KEY = cfg.x` is Nix and
+  // `KEY = 0x4` is a Go constant. A dotted value is an attribute path.
+  {
+    id: "credential-env-line",
+    description: "Unquoted literal on an upper-case credential environment variable",
+    regex:
+      String.raw`^[ \t]*(?:export[ \t]+)?[A-Z][A-Z0-9_]*(?:SECRET|TOKEN|API_?KEY|PASSWORD)` +
+      String.raw`=([^\s"'#$\x60;.]{4,256})(?=[ \t]*(?:#|\r?$))`,
+    flags: "gm",
+    secretGroup: 1,
+    validate: "literal-credential",
+    category: "secret",
+  },
+  // `<password>…</password>` and .NET's `<add key="ApiSecret" value="…" />`.
+  {
+    id: "credential-xml-element",
+    description: "Literal in an XML element named for a credential",
+    regex:
+      String.raw`<((?:[\w.-]+:)?[A-Za-z_]*(?:password|passwd|secret|token|api-?key|api_key))>` +
+      String.raw`([^<>\s]{1,256})</\1>`,
+    flags: "gi",
+    secretGroup: 2,
+    validate: "literal-credential",
+    category: "secret",
+  },
+  {
+    id: "credential-xml-setting",
+    description: "Literal value of an XML setting keyed by a credential name",
+    regex:
+      String.raw`\bkey=(["'])[\w.:-]*(?:password|passwd|secret|token|api-?key|api_key)\1` +
+      String.raw`[ \t]+value=(["'])([^"'\r\n]{1,256})\2`,
+    flags: "gi",
+    secretGroup: 3,
+    validate: "literal-credential",
+    category: "secret",
+  },
+  {
+    id: "powershell-plaintext-securestring",
+    description: "Literal passed to ConvertTo-SecureString -AsPlainText",
+    regex:
+      String.raw`\bConvertTo-SecureString[ \t]+(?:-String[ \t]+)?(["'])([^"'\r\n]{1,256})\1` +
+      String.raw`[ \t]+-AsPlainText`,
+    flags: "gi",
     secretGroup: 2,
     validate: "literal-password",
     category: "secret",

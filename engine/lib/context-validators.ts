@@ -20,6 +20,19 @@ export function isLiteralPassword(value: string, match?: RegExpMatchArray): bool
   );
 }
 
+// A token, secret or API key, unlike a password, is not a word someone chose:
+// `"token": "string"` in an API schema and `apiKey: "Required"` describe one.
+// No spaces either; a passphrase is the password rules' business. Four
+// characters at least, and no `%s`/`{}` template: a format string is not a value.
+export function isLiteralCredential(value: string): boolean {
+  return (
+    value.length >= 4 &&
+    isLiteralPassword(value) &&
+    !/\s|%[sd]|\{\}/.test(value) &&
+    !/^(?:[a-z]+|[A-Z][a-z]+|[A-Z]+)$/.test(value)
+  );
+}
+
 // In prose, an ordinary word after "password is" is usually a description.
 // Keep the existing requirement for letters and digits, but not its length
 // or entropy floor: a short mixed password is still a password.

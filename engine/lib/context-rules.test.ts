@@ -384,4 +384,41 @@ describe("contextual built-in rules", () => {
     expect(allowSecrets).not.toContain("1985-03-12");
     expect(allowSecrets).toContain("R7m!q2");
   });
+
+  it("detects short literals on credential-named keys across languages", () => {
+    const cases: [string, string, string][] = [
+      ["credential-quoted-assignment", "$config['db_password'] = '797268';", "797268"],
+      ["credential-quoted-assignment", "    'api_key' => '429113',", "429113"],
+      ["credential-quoted-assignment", 'options.ClientSecret = "583920";', "583920"],
+      ["credential-quoted-assignment", 'Client.new(access_token: "760215")', "760215"],
+      ["credential-quoted-assignment", '{"refresh_token": "kq7-zp2-xm9"}', "kq7-zp2-xm9"],
+      ["credential-env-line", "PAYMENTS_SECRET=948212\nLOG_LEVEL=info", "948212"],
+      ["credential-xml-element", "<password>Ab3dEfGh9kLm</password>", "Ab3dEfGh9kLm"],
+      ["credential-xml-element", "<password>304718</password>", "304718"],
+      ["credential-xml-setting", '<add key="ApiSecret" value="615204" />', "615204"],
+      [
+        "powershell-plaintext-securestring",
+        '$p = ConvertTo-SecureString "snin-oojd" -AsPlainText -Force',
+        "snin-oojd",
+      ],
+    ];
+    for (const [id, text, value] of cases) detects(id, text, value);
+  });
+
+  it("leaves references, schemas, templates and code constants on credential keys", () => {
+    const ids = /^(?:credential-|powershell-plaintext)/;
+    for (const text of [
+      '{"token": "string", "apiKey": "Required", "password": "Password"}',
+      "update access_tokens set token='%s' where user_id = '%s'",
+      "'ARCHIVE_REPO_TOKEN': '1',",
+      "SMTP_PASSWORD=${VAULT_SMTP_PASSWORD}",
+      "MAPBOX_TOKEN = cfg.mapboxToken",
+      "    THREAD_SET_THREAD_TOKEN          = 0x80",
+      "GREENLIGHT_SECRET=cfg.secret.path",
+      "<password>${db.password}</password>",
+      '<add key="AssetVersion" value="615204" />',
+      '$p = Read-Host -AsSecureString "Password"',
+    ])
+      expect(scan(text).filter((f) => ids.test(f.ruleId))).toEqual([]);
+  });
 });
