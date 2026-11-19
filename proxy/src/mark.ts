@@ -18,8 +18,11 @@
 //
 // Anthropic allows four markers and Claude Code uses three, two of them on
 // adjacent system blocks. A step needs two, so it takes the first system
-// marker off: the second looks back far enough to find the same entry. A
-// request without that room is marked only as far as it has room.
+// marker off: the second looks back far enough to find the same entry. Pi's
+// Claude transport marks its last tool and last system block instead, which
+// fills all four; the system marker a few blocks on stands for the tool one
+// the same way. A request without that room is marked only as far as it has
+// room.
 
 type Record_ = Record<string, unknown>;
 
@@ -106,24 +109,30 @@ function markable(messages: unknown[], at: number): number {
   return -1;
 }
 
-// The system blocks with their first marker taken off, when a later system
-// block carries one too: that later marker looks back far enough to find the
-// first one's entry, so the first only spends a marker. Undefined when there
-// is no such pair.
-function spared(system: unknown): unknown[] | undefined {
-  if (!Array.isArray(system)) return;
-  const at = system.flatMap((block, i) =>
+// The tools and system blocks with their first marker taken off, when a later
+// system block carries one too: that later marker looks back far enough to
+// find the first one's entry, so the first only spends a marker. The tools
+// come before the system prompt, so a tool's marker can be the first.
+// Undefined when there is no such pair.
+function spared(body: Record_): Partial<Pick<Record_, "tools" | "system">> | undefined {
+  if (!Array.isArray(body.system)) return;
+  const tools = Array.isArray(body.tools) ? body.tools : [];
+  const blocks = [...tools, ...body.system];
+  const at = blocks.flatMap((block, i) =>
     block && typeof block === "object" && "cache_control" in block ? [i] : [],
   );
-  if (at.length < 2 || at[1]! - at[0]! > LOOKBACK_BLOCKS) return;
-  const { cache_control: _dropped, ...rest } = system[at[0]!] as Record_;
-  return system.map((block, i) => (i === at[0] ? rest : block));
+  const second = at.find((i) => i >= tools.length && i > at[0]!);
+  if (second === undefined || second - at[0]! > LOOKBACK_BLOCKS) return;
+  const { cache_control: _dropped, ...rest } = blocks[at[0]!] as Record_;
+  const out = blocks.map((block, i) => (i === at[0] ? rest : block));
+  if (at[0]! >= tools.length) return { system: out.slice(tools.length) };
+  return { tools: out.slice(0, tools.length) };
 }
 
 // How many markers a request can add: the ones it has room for, and one more
 // when it carries a system marker that another makes redundant.
 export function markRoom(body: Record_): number {
-  return MARKERS_MAX - markers(body).length + (spared(body.system) ? 1 : 0);
+  return MARKERS_MAX - markers(body).length + (spared(body) ? 1 : 0);
 }
 
 // A one-shot summary: no tools, and one user turn holding the whole history
@@ -171,14 +180,14 @@ export function unmarkedMessages(body: Record_): Record_ | undefined {
 
 // The body with a marker on the last markable message at or before each of
 // `ats`, placed against the markers the request arrived with, freeing a
-// redundant system marker when it needs the room. A boundary that does not fit
+// redundant tool or system marker when it needs the room. A boundary that does not fit
 // is left unmarked, and the body is unchanged when none does.
 export function markBoundaries(body: Record_, messages: unknown[], ats: number[]): Record_ {
   const wanted = [...new Set(ats.map((at) => markable(messages, at)).filter((i) => i >= 0))];
   const free = MARKERS_MAX - markers(body).length;
-  const system = wanted.length > free ? spared(body.system) : undefined;
-  const room = free + (system ? 1 : 0);
+  const freed = wanted.length > free ? spared(body) : undefined;
+  const room = free + (freed ? 1 : 0);
   const out = messages.slice();
   for (const i of wanted.slice(0, room)) out[i] = marked(out[i], markerAt(body, i));
-  return { ...body, ...(system && { system }), messages: out };
+  return { ...body, ...freed, messages: out };
 }

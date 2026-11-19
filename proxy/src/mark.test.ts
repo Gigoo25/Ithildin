@@ -122,8 +122,42 @@ describe("markBoundaries", () => {
     expect(marks(messagesOf(apart))).toEqual(["0.0", "2.0"]);
   });
 
+  it("frees a tool marker the system marker after it stands for", () => {
+    // Pi's Claude transport: the last tool, the last system block, the two
+    // newest messages. All four taken, as on 2026-11-19's missed steps.
+    const list = [
+      said("user", text("a")),
+      said("assistant", text("b")),
+      said("user", text("c", hour)),
+      said("assistant", text("d", hour)),
+    ];
+    const tools = [{ name: "read" }, { name: "bash", cache_control: hour }, { name: "x" }];
+    const system = [text("x"), text("y", hour)];
+    const body = { tools, system, messages: list };
+    expect(markRoom(body)).toBe(1);
+    const out = markBoundaries(body, list, [0]);
+    expect((out.tools as Array<Record<string, unknown>>).some((t) => "cache_control" in t)).toBe(
+      false,
+    );
+    expect(out.system).toBe(system);
+    expect(marks(messagesOf(out))).toEqual(["0.0", "2.0", "3.0"]);
+    // With no system marker after it, the tool marker stays and nothing fits.
+    const bare = { tools, system: [text("x")], messages: list };
+    expect(markRoom({ ...bare, messages: [...list, said("user", text("e", hour))] })).toBe(0);
+    const kept = markBoundaries(
+      { ...bare, messages: [...list, said("user", text("e", hour))] },
+      list,
+      [0],
+    );
+    expect(kept.tools).toBe(tools);
+  });
+
   it("leaves the body's messages as they came with no room or nothing to mark", () => {
-    const tools = [{ name: "a", cache_control: hour }];
+    // A tool marker too far before the system one to stand for it.
+    const tools = [
+      { name: "a", cache_control: hour },
+      ...Array.from({ length: 25 }, (_, i) => ({ name: `t${i}` })),
+    ];
     const far = [text("a", hour), ...Array.from({ length: 25 }, () => text("p")), text("b", hour)];
     expect(
       marks(messagesOf(markBoundaries({ system: far, tools, messages }, messages, [1]))),
