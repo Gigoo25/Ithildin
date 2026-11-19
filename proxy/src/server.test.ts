@@ -1980,6 +1980,45 @@ describe("routes", () => {
     }
   });
 
+  it("warns once per typed [allow-all] prompt, and of a pause the cache lapsed in", async () => {
+    const lines: string[] = [];
+    const spy = spyOn(process.stderr, "write").mockImplementation(
+      ((line: string) => lines.push(line) > 0) as never,
+    );
+    const clock = spyOn(Date, "now");
+    try {
+      let now = 1_000_000;
+      clock.mockImplementation(() => now);
+      const usage = { input_tokens: 2, cache_read_input_tokens: 0 };
+      const up = fakeUpstream(() =>
+        Response.json({ content: [], usage: { ...usage, cache_creation_input_tokens: 40_000 } }),
+      );
+      const handler = createHandler(DEFAULT_ROUTES, up.fetch);
+      const session = { "x-claude-code-session-id": "sess-warn" };
+      const body = (...texts: string[]) => ({
+        model: "m",
+        tools: [{ name: "Bash" }],
+        messages: texts.map((text) => ({ role: "user", content: text })),
+      });
+      const send = async (sent: unknown) =>
+        (await handler(post("anthropic/v1/messages", sent, session))).text();
+      const warned = (what: string) => lines.filter((line) => line.includes(what));
+      await send(body("hi [allow-all]"));
+      await send(body("hi [allow-all]"));
+      expect(warned("one-time [allow-all]")).toHaveLength(1);
+      expect(warned("one-time [allow-all]")[0]).toContain("session=sess-war");
+      await send(body("hi [allow-all]", "go [allow-all:session]"));
+      expect(warned("one-time [allow-all]")).toHaveLength(1);
+      expect(warned("cold start")).toHaveLength(0);
+      now += 2 * 60 * 60 * 1000;
+      await send(body("hi", "more", "later"));
+      expect(warned("warning: cold start: 120 min")).toHaveLength(1);
+    } finally {
+      clock.mockRestore();
+      spy.mockRestore();
+    }
+  });
+
   it("logs a stand-in a tool read from disk, once per file", async () => {
     const lines: string[] = [];
     const spy = spyOn(process.stderr, "write").mockImplementation(

@@ -24,6 +24,7 @@ import {
   type Counts,
   type Format,
   blockedNotice,
+  heldGrants,
   identityEntries,
   initEngine,
   redactHeaders,
@@ -58,6 +59,7 @@ import {
 import { AGENT, GUESS, SessionNames, USER } from "./sessions.ts";
 import { createStatusBook } from "./status.ts";
 import { PrefixWatch, threadOf } from "./prefix.ts";
+import { allowAllWarning, coldWarning, Warmth } from "./warnings.ts";
 import { answerMcp, offeredTool, Originals, outputId } from "./retrieve.ts";
 import { isStandaloneSummary, markerText, unmarkedMessages } from "./mark.ts";
 import { merge, type Usage, usageOf, usageOfEvent, usageText, writtenText } from "./usage.ts";
@@ -801,6 +803,7 @@ interface Stores {
   prefixes: PrefixWatch;
   originals: Originals;
   diagnoses: Diagnoses;
+  warmth: Warmth;
   turns: number;
 }
 
@@ -867,7 +870,7 @@ async function forward(
   const tap = (event: ActivityEvent) => events.record(context, event);
   const asked = request.method !== "GET" && request.method !== "HEAD";
   const heard: Heard = {};
-  const counted = usageCounter(events, context);
+  const counted = usageCounter(stores, context, { main: asking.main, scanned, shaped });
   const diagnosed = missDiagnosis(asking, reached.asked, heard, scanned, shaped);
   const answered = (usage: Usage | undefined) => counted(usage) + diagnosed(usage);
   const hooks = replyHooks(kept, id, heard, request.signal);
@@ -1005,11 +1008,30 @@ async function sendAsking(
 }
 
 // What a reply says it cost, counted for the dashboard and named in the
-// journal line it ends.
-function usageCounter(events: EventLog, context: Context): (usage: Usage | undefined) => string {
+// journal line it ends; a main request's reply also tells whether a pause
+// let the cache lapse (warnings.ts), on a line of its own, as does a typed
+// one-time [allow-all], once per prompt.
+function usageCounter(
+  stores: Stores,
+  context: Context,
+  request: { main: boolean; scanned: Scanned; shaped: Forwarded },
+): (usage: Usage | undefined) => string {
+  const { session } = context;
+  const { scanned } = request;
+  const once = allowAllWarning(scanned.tags, heldGrants(session));
+  if (once && session && stores.warmth.firstOf(session, scanned.prompts))
+    log(once + cacheTrail(undefined, session, false, undefined));
+  const sent = request.shaped.object ?? scanned.object ?? {};
+  const cache = { main: request.main, markers: markerText(sent as Record<string, unknown>) };
+  const idle = session && cache.main ? stores.warmth.idle(session) : undefined;
   return (usage) => {
     if (!usage) return "";
-    events.usage(usage, context);
+    stores.events.usage(usage, context);
+    if (session && cache.main) {
+      stores.warmth.heard(session, cache.markers);
+      const cold = coldWarning(idle, usage);
+      if (cold) log(`${cold}${cacheTrail(undefined, session, false, undefined)}`);
+    }
     return ` usage=${usageText(usage)}${writtenText(usage)}`;
   };
 }
@@ -1192,6 +1214,7 @@ export function createHandler(
     prefixes: new PrefixWatch(),
     originals: new Originals(),
     diagnoses: new Diagnoses((miss) => missKeeper?.(miss)),
+    warmth: new Warmth(),
     turns: 0,
   };
   const { book, events, kept, names } = stores;
