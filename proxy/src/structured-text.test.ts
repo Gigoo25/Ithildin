@@ -80,6 +80,14 @@ describe("structured documents", () => {
     const withDefault = assignmentEdits("password = ${DB_PASSWORD:-kq7ZpL2x}\n");
     expect(withDefault.map((e) => e.secretValue)).toEqual(["${DB_PASSWORD:-kq7ZpL2x}"]);
   });
+  it("leaves an unquoted expression that names where the value lives", () => {
+    const refs =
+      "password = var.db_password\napi_key = process.env.API_KEY\n" +
+      "client_secret = local.clientSecret\npassword = data.vault.ci.data['pw']\n";
+    expect(assignmentEdits(refs)).toEqual([]);
+    const literal = assignmentEdits('password = hunter.two\npassword = "var.db_password"\n');
+    expect(literal.map((e) => e.secretValue)).toEqual(["hunter.two", "var.db_password"]);
+  });
   it("hook integration: labeled identity hidden, longer variable survives", async () => {
     const { handlers, ctx } = setup();
     try {

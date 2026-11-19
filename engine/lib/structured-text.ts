@@ -13,6 +13,13 @@ const PII_LABELS = new Set(["accountnumber", "bankaccountnumber", "passportnumbe
 // `password = ${DB_PASSWORD}` names where the value lives and holds none, as
 // isLiteralPassword already reads it; a default (`${X:-...}`) may hold one.
 const REFERENCE_ONLY = /^\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)$/;
+// Unquoted, `password = var.db_password` (HCL) or `process.env.DB_PASSWORD`
+// is an expression naming the value too. A snake_case or camelCase segment, or
+// three segments, sets it apart from a dotted password such as `hunter.two`.
+const PATH_ONLY = /^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+(?:\[["']?\w+["']?\])*$/;
+const isReferencePath = (value: string) =>
+  PATH_ONLY.test(value) &&
+  (/_|[a-z][A-Z]/.test(value.replace(/^\w+\./, "")) || value.split(".").length > 2);
 const normLabel = (key: string) => key.toLowerCase();
 const normalize = (key: string) => normLabel(key).replace(/_/g, "");
 // Retain the existing document ceiling. Exceeding it is now explicit omission,
@@ -204,7 +211,9 @@ export function assignmentEdits(text: string, check = assertScanBudget): Located
           : null;
       const group = m[2] !== undefined ? 2 : m[3] !== undefined ? 3 : 4;
       const val = m[group]!;
-      const empty = (group === 4 && /^(?:null|true|false)$/.test(val)) || REFERENCE_ONLY.test(val);
+      const empty =
+        (group === 4 && (/^(?:null|true|false)$/.test(val) || isReferencePath(val))) ||
+        REFERENCE_ONLY.test(val);
       if (category && val.length && !empty) {
         const [start, stop] = m.indices![group]!;
         findings.push({
