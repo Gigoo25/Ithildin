@@ -34,6 +34,7 @@
 // Read again whenever the file changes. The engine ignores the section.
 
 import { inventoryLiterals, readConfigFile } from "../engine/lib/rules.ts";
+import { memoHash } from "./memo-hash.ts";
 import { configKey, guardConfigFile } from "./policy.ts";
 
 export const MIN_TERM_CHARS = 3;
@@ -262,7 +263,7 @@ function note(scan: Scan, found: Omit<WatchHit, "start">, text: string): void {
 // Short strings cost less to scan than to hash, so they are not kept.
 const MEMO_MIN_CHARS = 32;
 const MEMO_MAX = 50_000;
-const MEMO_SEED = BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER));
+const memoKey = memoHash();
 const memo = {
   lists: "",
   index: indexKnown([]),
@@ -285,7 +286,7 @@ function foundIn(scan: Scan, text: string): [string[], string[]] {
     [...new Set(knownIn(text, scan.index))],
   ];
   if (text.length < MEMO_MIN_CHARS) return scanned();
-  const key = Bun.hash(text, MEMO_SEED);
+  const key = memoKey(text);
   const known = memo.found.get(key);
   if (known) return known;
   if (memo.found.size >= MEMO_MAX) memo.found.clear();

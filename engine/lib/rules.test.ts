@@ -541,9 +541,11 @@ describe("local rule additions", () => {
       ["IBAN GB82 WEST 1234 5698 7654 32", "GB82 WEST 1234 5698 7654 32"],
       ["pay DE89 3704 0044 0532 0130 00 EUR now", "DE89 3704 0044 0532 0130 00"],
     ] as const)
-      expect(scan(text).filter((f) => f.ruleId === "iban").map((f) => f.secretValue)).toEqual([
-        secretValue,
-      ]);
+      expect(
+        scan(text)
+          .filter((f) => f.ruleId === "iban")
+          .map((f) => f.secretValue),
+      ).toEqual([secretValue]);
     expect(scan("AB12 THIS IS NOT ONE").some((f) => f.ruleId === "iban")).toBe(false);
     expect(scan("0x1234").some((f) => f.ruleId === "eth-address")).toBe(false);
   });

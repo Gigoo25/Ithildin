@@ -74,8 +74,12 @@ export class Recall {
   private shapes: Shape[] = [];
   private readonly searched = new Set<string>();
   private readonly seed: number;
+  private readonly key: Buffer;
 
-  constructor(private readonly key: Buffer) {
+  // A plain field, not a parameter property: the Node checks load this file
+  // with type stripping, which cannot run one.
+  constructor(key: Buffer) {
+    this.key = key;
     this.seed = createHmac("sha256", key).update("recall-seed").digest().readUInt32LE(0);
   }
 

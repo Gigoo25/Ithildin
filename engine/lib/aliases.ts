@@ -815,11 +815,7 @@ export class AliasBook {
     } else {
       for (attempt = 0; attempt < MAX_TRIES; attempt++) {
         const candidate = make(attempt);
-        if (
-          candidate !== value &&
-          !this.taken(candidate, value, id) &&
-          !this.avoided(candidate)
-        ) {
+        if (candidate !== value && !this.taken(candidate, value, id) && !this.avoided(candidate)) {
           out = candidate;
           break;
         }

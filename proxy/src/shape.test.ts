@@ -364,7 +364,7 @@ describe("anthropic requests", () => {
     expect(MASK_KEEP_TURNS).toBeGreaterThan(0);
   });
 
-  it("counts a step's rewrite against what it saved, and a request after it at a read's price", () => {
+  it("counts a step's rewrite against what it saved, and a later request at a read's price", () => {
     const stepped = shapeRequest("anthropic", { messages: messages(2) })!;
     expect(stepped.step).toBeDefined();
     expect(stepped.savedCost).toBeLessThan(Math.ceil(stepped.savedChars / 4) * 0.1);

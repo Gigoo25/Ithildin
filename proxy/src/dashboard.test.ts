@@ -1212,7 +1212,15 @@ describe("dashboard", () => {
   it("says a session's shaping and cache in a line", () => {
     const pick = (name: string) =>
       new RegExp(`function ${name}[\\s\\S]*?\\n\\}`).exec(DASHBOARD_HTML)![0];
-    const source = ["count", "bytes", "tokensSaved", "costSaved", "breakCounts", "shapingWrote", "tallyLine"]
+    const source = [
+      "count",
+      "bytes",
+      "tokensSaved",
+      "costSaved",
+      "breakCounts",
+      "shapingWrote",
+      "tallyLine",
+    ]
       .map(pick)
       .join("\n");
     const tallyLine = new Function(`${source}; return tallyLine;`)() as (

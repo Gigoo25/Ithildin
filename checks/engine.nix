@@ -17,10 +17,12 @@ pkgs.runCommand "check-engine"
     export HOME="$TMPDIR"
     # The README too: garble.test.ts reads ../../README.md to assert that a
     # long document of prose survives redaction unchanged. Copying only engine/
-    # left it missing, so that check failed on every commit.
+    # left it missing, so that check failed on every commit. AGENTS.md for the
+    # same reason: core.test.ts swaps values through both documents.
     cp -R ${src} engine
     cp ${root}/README.md ./README.md
-    chmod -R u+w engine README.md
+    cp ${root}/AGENTS.md ./AGENTS.md
+    chmod -R u+w engine README.md AGENTS.md
     cd engine
     bun test
     touch "$out"

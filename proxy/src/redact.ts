@@ -11,6 +11,7 @@
 // every stand-in the model can name, so the book never needs to be saved.
 
 import { createHash, createHmac } from "node:crypto";
+import { memoHash } from "./memo-hash.ts";
 import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import {
@@ -1182,7 +1183,7 @@ const blockedCalls = new Map<string, string>();
 const MAX_REMEMBERED = 50_000;
 // Seeded hashes of the items whose literals are in seenLiterals.
 const literalSources = new Set<number | bigint>();
-const LITERALS_SEED = BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER));
+const literalsHash = memoHash();
 
 // Why a call was blocked, for `ithildin check`.
 export function blockedNotice(callId: string): string | undefined {
@@ -1219,7 +1220,7 @@ function rememberLiterals(format: Format, body: Record<string, unknown>): void {
     const text = typeof value === "string" ? value : JSON.stringify(value);
     // Every request carries the conversation again: an item read before
     // added its literals then.
-    const key = Bun.hash(text, LITERALS_SEED);
+    const key = literalsHash(text);
     if (literalSources.has(key)) continue;
     literalSources.add(key);
     for (const match of aliasMatches(text)) seenLiterals.add(match.text);
@@ -1828,12 +1829,12 @@ function secretListing(cwd: string): SecretListing {
 // decided then; checking it anew costs a path lookup per line and can only
 // change what was sent before. Keyed by a seeded 64-bit hash.
 const WITHHELD_MAX = 50_000;
-const WITHHELD_SEED = BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER));
+const withheldHash = memoHash();
 const withheldBefore = new Map<number | bigint, { text: string; hits: number }>();
 
 function withholdLines(text: string, secret: SecretListing): { text: string; hits: number } {
   if (!text.includes(":") && !text.includes("-")) return { text, hits: 0 };
-  const key = Bun.hash(`${secret.cwd}\0${text}`, WITHHELD_SEED);
+  const key = withheldHash(`${secret.cwd}\0${text}`);
   const before = withheldBefore.get(key);
   if (before) return before;
   if (withheldBefore.size >= WITHHELD_MAX) withheldBefore.clear();

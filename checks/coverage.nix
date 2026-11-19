@@ -27,6 +27,7 @@ pkgs.runCommand "check-coverage"
     # garble test reads ../../README.md from proxy/engine/lib, so it belongs
     # beside proxy/, not at the top of the build.
     cp ${root}/README.md proxy/README.md
+    cp ${root}/AGENTS.md proxy/AGENTS.md
     chmod -R u+w proxy
     cd proxy
     bun test src bench engine --coverage --coverage-reporter=lcov

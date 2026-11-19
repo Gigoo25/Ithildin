@@ -400,7 +400,8 @@ export const DASHBOARD_HTML = `<!doctype html>
     <div id="alerts"></div>
   </div>
   <div class="find">
-    <input id="detail_search" type="search" placeholder="Search this conversation (Enter: next, Shift+Enter: previous)"
+    <input id="detail_search" type="search"
+      placeholder="Search this conversation (Enter: next, Shift+Enter: previous)"
       aria-label="Search this conversation">
     <span id="detail_count" class="count"></span>
     <div id="legend"></div>
