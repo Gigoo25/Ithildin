@@ -2474,6 +2474,13 @@ describe("images", () => {
       ),
     ).toBe(false);
     expect(tags([say("[allow-pii:session]")], null).has("pii")).toBe(false);
+    // Nor from a refusal notice pasted back to ask about it.
+    const pasted = say(
+      "Why do I keep getting these? Not run: x. To permit it, they can\n include [allow-pii] " +
+        "in their prompt, or [allow-pii:session] for the rest of the session.",
+    );
+    expect(tags([pasted], "s-grant-paste").has("pii")).toBe(false);
+    expect(tags([say("next")], "s-grant-paste").has("pii")).toBe(false);
     // A different session is not touched.
     expect(tags([say("hello")], "s-grant-other").has("pii")).toBe(false);
   });

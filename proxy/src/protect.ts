@@ -244,18 +244,33 @@ function words(segment: string): string[] {
   );
 }
 
+// Words that run the command after them: wrappers, and the shell keywords a
+// loop or test body starts with once `;` has split it off (`do head x`).
+const WRAPPERS = new Set([
+  "sudo",
+  "env",
+  "command",
+  "exec",
+  "time",
+  "nice",
+  "nohup",
+  "doas",
+  "{",
+  "!",
+  "do",
+  "then",
+  "else",
+  "elif",
+  "if",
+  "while",
+  "until",
+]);
+
 // The program and its arguments, past assignments and wrappers.
 function program(segment: string): string[] {
   const list = words(segment);
   let i = 0;
-  while (
-    i < list.length &&
-    (/^[A-Za-z_]\w*=/.test(list[i]!) ||
-      ["sudo", "env", "command", "exec", "time", "nice", "nohup", "doas", "{", "!"].includes(
-        list[i]!,
-      ))
-  )
-    i++;
+  while (i < list.length && (/^[A-Za-z_]\w*=/.test(list[i]!) || WRAPPERS.has(list[i]!))) i++;
   return list.slice(i).map((word, j) => (j === 0 ? path.basename(word) : word));
 }
 
@@ -313,6 +328,26 @@ const READ_ONLY = new Set([
   "hexdump",
   "basename",
   "dirname",
+  "fold",
+  "paste",
+  "strings",
+  "tac",
+  "rev",
+  "comm",
+  "join",
+  "expand",
+  "fmt",
+  "base64",
+  "read",
+  "sleep",
+  "date",
+  // Loop and test syntax around a body that is checked on its own.
+  "for",
+  "case",
+  "done",
+  "fi",
+  "esac",
+  "}",
 ]);
 // add and commit record the file as it is; they do not change it.
 const GIT_READ_ONLY = new Set([
@@ -341,6 +376,15 @@ export function gitArgs(argv: string[]): string[] {
   return args;
 }
 
+// The command xargs runs, past its own options; echo when none is named.
+function xargsProgram(argv: string[]): string[] {
+  const args = argv.slice(1);
+  let i = 0;
+  while (args[i]?.startsWith("-")) i += XARGS_VALUES.has(args[i]!) ? 2 : 1;
+  const inner = args.slice(i).map((word, j) => (j === 0 ? path.basename(word) : word));
+  return inner.length ? inner : ["echo"];
+}
+
 function readOnly(argv: string[], segment: string): boolean {
   if (writesRedirect(segment)) return false;
   const [name] = argv;
@@ -348,6 +392,9 @@ function readOnly(argv: string[], segment: string): boolean {
   if (name === "sed") return !argv.some((arg) => /^(?:-[a-zA-Z]*i|--in-place)/.test(arg));
   if (name === "find") return !argv.some((arg) => /^-(?:delete|exec|execdir|ok|fprint)/.test(arg));
   if (name === "git") return GIT_READ_ONLY.has(gitArgs(argv)[0] ?? "status");
+  // dd writes only through of=.
+  if (name === "dd") return !argv.some((arg) => arg.startsWith("of="));
+  if (name === "xargs") return readOnly(xargsProgram(argv), "");
   return READ_ONLY.has(name);
 }
 
@@ -474,9 +521,7 @@ function removedPaths(
     ];
   }
   if (name !== "xargs") return [];
-  let i = 0;
-  while (args[i]?.startsWith("-")) i += XARGS_VALUES.has(args[i]!) ? 2 : 1;
-  const inner = args.slice(i).map((word, j) => (j === 0 ? path.basename(word) : word));
+  const inner = xargsProgram(argv);
   if (!REMOVERS.has(inner[0] ?? "")) return [];
   const piped = previous[0] === "find" ? findTargets(previous, roots) : [];
   return [...removedPaths(inner, [], roots), ...piped];

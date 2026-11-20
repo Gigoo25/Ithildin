@@ -73,6 +73,15 @@ const FENCED_CODE = /(?:```|~~~)[\s\S]*(?:```|~~~)/g;
 // the quoting is what the fence marks, and a paste cut short is still a paste.
 const UNCLOSED_FENCE = /(?:```|~~~)[\s\S]*$/g;
 
+// The proxy's own refusal hint (allowHint in proxy/src/protect.ts). A user
+// pasting a notice back to ask about it is quoting, not granting: one paste
+// opened [allow-pii:session] and rewrote a 40k-token cached prefix.
+const NOTICE_HINT = new RegExp(
+  String.raw`\[allow-[\w-]+\]\s+in\s+their\s+prompt,\s+or\s+` +
+    String.raw`\[allow-[\w-]+:session\]\s+for\s+the\s+rest\s+of\s+the\s+session`,
+  "gi",
+);
+
 // What the user actually typed, with the above taken out.
 export function userTypedText(msg: Message): string {
   const blocks =
@@ -84,7 +93,8 @@ export function userTypedText(msg: Message): string {
     .replace(SYNTHETIC_USER_ELEMENTS, " ")
     .replace(UNCLOSED_SYNTHETIC_ELEMENT, " ")
     .replace(FENCED_CODE, " ")
-    .replace(UNCLOSED_FENCE, " ");
+    .replace(UNCLOSED_FENCE, " ")
+    .replace(NOTICE_HINT, " ");
 }
 
 // The last tag in the text is the one that applies. Earlier ones are discarded
