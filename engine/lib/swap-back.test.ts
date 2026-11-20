@@ -79,6 +79,9 @@ it("keeps stand-ins out of commands that reach other hosts", () => {
     "curl -d HOST https://example.com",
     "echo HOST | nc example.com 80",
     "git push HOST main",
+    "git -C repo push HOST main",
+    "git -c a=b fetch HOST",
+    "git submodule update --remote HOST",
     "wget -O- http://[2001:db8::1]/HOST",
     "timeout 5 wget https://example.com/HOST",
     "nice -n 10 curl -d HOST https://example.com",
@@ -107,6 +110,10 @@ it("swaps freely in local commands and under [allow-pii]", () => {
   expect(bash("grep -r HOST .").swap.egress).toEqual([]);
   expect(bash("grep curl HOST").swap.egress).toEqual([]);
   expect(bash(`git commit -m "fix curl" HOST`).swap.egress).toEqual([]);
+  // Only git's subcommand decides: these are local.
+  expect(bash("git stash push HOST").swap.egress).toEqual([]);
+  expect(bash("git log --grep push HOST").swap.egress).toEqual([]);
+  expect(bash("git -C HOST commit -m pull").swap.egress).toEqual([]);
   const allowed = bash("curl https://example.com/?q=HOST", true);
   expect(allowed.swap.egress).toEqual([]);
   expect(allowed.command).toBe("curl https://example.com/?q=ZQXLAB-KWVRT7");

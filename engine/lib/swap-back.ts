@@ -57,6 +57,26 @@ const NETWORK_CLIENTS = new Set([
   "git",
 ]);
 const GIT_NETWORK = new Set(["push", "fetch", "pull", "clone", "ls-remote"]);
+// Global options whose value is the next word (git -C dir push).
+const GIT_OPTION_VALUES = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace"]);
+
+// Whether git's subcommand talks to a remote. Only the subcommand counts: a
+// network word anywhere after git withheld `git stash push` and
+// `git log --grep push`, local commands that name a home path.
+function gitReachesRemote(args: string[]): boolean {
+  for (let j = 0; j < args.length; j++) {
+    const arg = args[j]!;
+    if (GIT_OPTION_VALUES.has(arg)) {
+      j++;
+      continue;
+    }
+    if (arg.startsWith("-")) continue;
+    if (GIT_NETWORK.has(arg)) return true;
+    // git submodule update and git remote update fetch.
+    return (arg === "submodule" || arg === "remote") && args.slice(j + 1).includes("update");
+  }
+  return false;
+}
 const HOST_ARG_CLIENTS = new Set([
   "nc",
   "ncat",
@@ -177,7 +197,7 @@ function destinations(command: string): Array<{ start: number; end: number }> | 
     const i = clientIndex(words.map((word) => word.text));
     if (i === undefined) continue;
     const program = clientName(words[i]!.text);
-    if (program === "git" && !words.slice(i + 1).some((word) => GIT_NETWORK.has(word.text)))
+    if (program === "git" && !gitReachesRemote(words.slice(i + 1).map((word) => word.text)))
       continue;
     network = true;
     for (const url of segment[0].matchAll(
