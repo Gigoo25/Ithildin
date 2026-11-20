@@ -472,6 +472,37 @@ describe("the upstream's deadline", () => {
     );
     expect("upstream" in fine && (await fine.upstream.text())).toBe("ok");
   });
+
+  it("sends a body-less request again once when a pooled connection was closed", async () => {
+    const flaky = (fail: number, message = "The connection was closed.") => {
+      let calls = 0;
+      const fetcher = (async () => {
+        if (calls++ < fail) throw new Error(message);
+        return new Response("ok");
+      }) as unknown as typeof fetch;
+      return { fetcher, calls: () => calls };
+    };
+    const get = new Request("http://x/api/hello");
+    const once = flaky(1);
+    const retried = await fetchHeaders(once.fetcher, "https://up.example", get, {});
+    expect("upstream" in retried && retried.upstream.status).toBe(200);
+    expect(once.calls()).toBe(2);
+    // Only once.
+    const twice = flaky(2);
+    const gone = await fetchHeaders(twice.fetcher, "https://up.example", get, {});
+    expect("refused" in gone && gone.refused.status).toBe(502);
+    expect(twice.calls()).toBe(2);
+    // A body may have reached the model: not sent again.
+    const post = flaky(1);
+    const kept = await fetchHeaders(post.fetcher, "https://up.example", get, { body: "{}" });
+    expect("refused" in kept && kept.refused.status).toBe(502);
+    expect(post.calls()).toBe(1);
+    // Nor another failure.
+    const other = flaky(1, "ECONNREFUSED");
+    const down = await fetchHeaders(other.fetcher, "https://up.example", get, {});
+    expect("refused" in down && down.refused.status).toBe(502);
+    expect(other.calls()).toBe(1);
+  });
 });
 
 describe("a routes file", () => {

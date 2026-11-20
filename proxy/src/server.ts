@@ -914,9 +914,20 @@ export async function fetchHeaders(
 ): Promise<{ upstream: Response } | { refused: Response }> {
   const late = new AbortController();
   const timer = setTimeout(() => late.abort(), deadlineMs);
+  const signal = AbortSignal.any([request.signal, late.signal]);
+  const send = () => fetchUpstream(target, { ...init, signal });
   try {
-    const signal = AbortSignal.any([request.signal, late.signal]);
-    return { upstream: await fetchUpstream(target, { ...init, signal }) };
+    try {
+      return { upstream: await send() };
+    } catch (error) {
+      // A pooled connection the upstream closed while idle fails the next
+      // request on it: 213 of 214 such refusals in two days were Claude Code's
+      // body-less /api/hello. One without a body is safe to send again; one
+      // with a body may have reached the model, so it is not.
+      const closed = /connection was closed/i.test((error as Error).message);
+      if (signal.aborted || init.body != null || !closed) throw error;
+      return { upstream: await send() };
+    }
   } catch (error) {
     if (late.signal.aborted)
       return { refused: refuse(504, `upstream sent no reply within ${deadlineMs / 1000}s`) };
