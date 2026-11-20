@@ -1493,6 +1493,41 @@ describe("secret reads", () => {
     expect(read(sent(history, null as unknown as string), 2)).toBe(INVENTORY_NOTICE);
   });
 
+  it("masks the system prompt the same under any tag, so the cached prefix holds", () => {
+    // [allow-pii:session] and [allow-pii:mask] each changed the masked system
+    // prompt and wrote a whole conversation to the cache again.
+    const system = `Work in /home/fizehei/repo. Mail ${EMAIL}.`;
+    const anthropic = (prompt: string) =>
+      JSON.stringify(
+        redactRequest(
+          "anthropic",
+          { system, messages: [{ role: "user", content: prompt }] },
+          "s-sys",
+        ).body.system,
+      );
+    const chat = (prompt: string) =>
+      JSON.stringify(
+        (
+          redactRequest(
+            "chat",
+            {
+              messages: [
+                { role: "system", content: system },
+                { role: "user", content: prompt },
+              ],
+            },
+            "s-sys-chat",
+          ).body.messages as unknown[]
+        )[0],
+      );
+    for (const send of [anthropic, chat]) {
+      const plain = send("go");
+      expect(plain).not.toContain(EMAIL);
+      for (const tag of ["[allow-pii]", "[allow-all]", "[allow-secrets]"])
+        expect(send(`${tag} go`)).toBe(plain);
+    }
+  });
+
   it("an Anthropic prompt's [allow-secrets] outlives the tool results after it", () => {
     const messages = (prompt: string) => [
       { role: "user", content: prompt },

@@ -628,6 +628,7 @@ export function turnTags(
   const grants = session ? grantsByTurn(list, session) : undefined;
   let prompt: Set<string> | undefined;
   return list.map((item, i) => {
+    if (isHarnessItem(item)) return new Set(kept);
     prompt = promptTags(item) ?? prompt;
     if (prompt === undefined) return tags;
     const out = new Set([...kept, ...prompt]);
@@ -635,6 +636,46 @@ export function turnTags(
     if (out.has("all")) for (const tag of GRANT_OPENS.all!) out.add(tag);
     return out;
   });
+}
+
+// The agent's own text (system prompt, tool list, a system or developer
+// message) is masked under no content tag. It holds the user's home path, so
+// masking it under the latest prompt's tags changed the first block of the
+// request whenever a grant came or went: on 11-19 [allow-pii:session] and
+// [allow-pii:mask] each wrote a long conversation to the cache again.
+// A tag lifts masking on what the user and tools said, not on the harness.
+function harnessTags(tags: Set<string>): Set<string> {
+  return new Set([...tags].filter((tag) => !CONTENT_TAGS.has(tag)));
+}
+
+function isHarnessItem(item: unknown): boolean {
+  const role = (item as { role?: unknown } | null)?.role;
+  return role === "system" || role === "developer";
+}
+
+// Under [allow-all] the conversation goes as typed, but the harness text is
+// still masked as on every other request, so the prefix does not move.
+function maskHarness(
+  format: Format,
+  body: Record<string, unknown>,
+  tags: Set<string>,
+): { body: Record<string, unknown>; hits: number } {
+  const key = format === "gemini" ? "contents" : format === "responses" ? "input" : "messages";
+  const at = harnessTags(tags);
+  const { [key]: list, ...rest } = body;
+  const top = redactValue(rest, at, undefined, undefined, [], true);
+  let hits = top.hits;
+  const out = top.value as Record<string, unknown>;
+  if (list === undefined) return { body: out, hits };
+  out[key] = !Array.isArray(list)
+    ? list
+    : list.map((item, i) => {
+        if (!isHarnessItem(item)) return item;
+        const result = redactValue(item, at, undefined, undefined, [key, i], true);
+        hits += result.hits;
+        return result.value;
+      });
+  return { body: out, hits };
 }
 
 // The content tags of the prompt one item holds, or undefined when it holds
@@ -739,7 +780,7 @@ function redactAnthropic(
   turns?: Array<Set<string>>,
 ): { value: Record<string, unknown>; hits: number } {
   const { messages, ...rest } = body;
-  const top = redactValue(rest, tags, undefined, undefined, [], true);
+  const top = redactValue(rest, harnessTags(tags), undefined, undefined, [], true);
   let hits = top.hits;
   const out = top.value as Record<string, unknown>;
   if (Array.isArray(messages)) {
@@ -896,7 +937,7 @@ function redactOpenAi(
 ): { value: Record<string, unknown>; hits: number } {
   const key = format === "responses" ? "input" : "messages";
   const { [key]: list, ...rest } = body;
-  const top = redactValue(rest, tags, undefined, undefined, [], true);
+  const top = redactValue(rest, harnessTags(tags), undefined, undefined, [], true);
   let hits = top.hits;
   const out = top.value as Record<string, unknown>;
   if (Array.isArray(list)) {
@@ -940,7 +981,7 @@ function redactGemini(
   turns?: Array<Set<string>>,
 ): { value: Record<string, unknown>; hits: number } {
   const { contents, ...rest } = body;
-  const top = redactValue(rest, tags, undefined, undefined, [], true);
+  const top = redactValue(rest, harnessTags(tags), undefined, undefined, [], true);
   let hits = top.hits;
   const out = top.value as Record<string, unknown>;
   if (!Array.isArray(contents)) {
@@ -1149,13 +1190,17 @@ function redactWithCorpus(
     : withholdImages(format, body, session);
   if (images.session) tags.add("images");
   // An earlier turn sent masked stays masked under a later [allow-all].
-  if (tags.has("all") && (turns ?? []).every((turn) => turn.has("all")))
+  if (tags.has("all") && (turns ?? []).every((turn) => turn.has("all"))) {
+    const harness = withScanBudget(() =>
+      collectValues(() => maskHarness(format, images.body, tags)),
+    );
     return {
-      body: explainBlocked(format, images.body),
-      hits: images.hits,
-      counts: { masked: 0, files: 0, lines: 0, images: images.hits },
+      body: explainBlocked(format, harness.result.body),
+      hits: harness.result.hits + images.hits,
+      counts: { masked: harness.values, files: 0, lines: 0, images: images.hits },
       tags,
     };
+  }
   const stripped = images.body;
   const result = redactBody(format, stripped, tags, turns);
   return {
