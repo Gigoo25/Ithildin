@@ -1,5 +1,13 @@
 import { expect, it, spyOn } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FIRST_NAMES } from "./first-names.ts";
@@ -181,6 +189,92 @@ it("keeps /64s together in the IPv6 documentation prefix", () => {
   expect(x).not.toBe(y);
   expect(expandIpv6("::ffff:192.0.2.1")).toEqual(["0", "0", "0", "0", "0", "ffff", "c000", "201"]);
   expect(expandIpv6("1::2::3")).toBeUndefined();
+});
+
+it("mints by rule: network kinds, user@host, and a label when the value will not parse", () => {
+  const b = book();
+  expect(b.standIn("pii-ipv6", "fd12:3456:789a:1::10")).toBe(b.ipv6("fd12:3456:789a:1::10")!);
+  expect(b.standIn("pii-mac", "a4:83:e7:12:34:56")).toBe(b.mac("a4:83:e7:12:34:56")!);
+  // Unparseable: a labelled stand-in, never the value itself.
+  for (const [rule, value] of [
+    ["pii-ipv4", "300.1.1.1"],
+    ["pii-ipv6", "1::2::3"],
+    ["pii-mac", "zqxcorp"],
+  ] as const) {
+    const standIn = b.standIn(rule, value);
+    expect(standIn).not.toBe(value);
+    expect(b.valueOf(standIn)).toBe(value);
+  }
+  const pair = b.standIn("pii-user-at-host", "deploy@FatMan");
+  expect(pair).toBe(`${b.user("deploy")}@${b.host("FatMan")}`);
+  expect(b.resolve(pair)?.value).toBe("deploy@FatMan");
+  expect(b.standIn("pii-user-at-host", "deploy")).toBe(b.user("deploy"));
+});
+
+it("resolves composites by their parts, and says when a part is unknown", () => {
+  const b = book();
+  const email = b.standIn("pii-email", "zqk@zqxcorp.io");
+  // Mail ignores case: the upper-cased stand-in resolves, upper-cased.
+  expect(b.resolve(email.toUpperCase())?.value).toBe("ZQK@ZQXCORP.IO");
+  // A known user at an unknown domain keeps the domain as written.
+  const user = email.slice(0, email.indexOf("@"));
+  expect(b.resolve(`${user}@example.test`)?.value).toBe("zqk@example.test");
+  // An unknown user: nothing to resolve, in either case.
+  expect(b.resolve("nobody@example.test")).toBeUndefined();
+  expect(b.resolve("NOBODY@EXAMPLE.TEST")).toBeUndefined();
+  // The host octet moves with the /24; a /24 no one minted resolves to nothing.
+  const ip = b.ipv4("203.0.113.7")!;
+  expect(b.resolve(ip.replace(/\.7$/, ".9"))?.value).toBe("203.0.113.9");
+  const other = ip.split(".");
+  other[2] = String((Number(other[2]) + 1) % 256);
+  expect(b.resolve(other.join("."))).toBeUndefined();
+});
+
+it("marks a stand-in two values claim as ambiguous, and composites built on it", () => {
+  const b = book();
+  const standIn = b.standIn("pii-custom-handle", "zqk", "handle");
+  // Recorded again for another value: neither can be trusted.
+  (b as unknown as { record(s: string, v: string, r: string): void }).record(
+    standIn,
+    "zqxother",
+    "pii-custom-handle",
+  );
+  expect(b.resolve(standIn)).toBeNull();
+  expect(b.resolve(`${standIn}@example.test`)).toBeNull();
+  expect(b.resolve(`${standIn}@example.test`.toUpperCase())).toBeNull();
+});
+
+it("falls back to an in-process key when the key file cannot be read or created", () => {
+  const dir = mkdtempSync(join(tmpdir(), "alias-key-"));
+  const warn = spyOn(process.stderr, "write").mockImplementation(() => true);
+  try {
+    // A directory where the file should be: unreadable, not missing.
+    const asDir = join(dir, "is-a-dir");
+    mkdirSync(asDir);
+    expect(loadAliasKey(asDir)).toHaveLength(32);
+    expect(String(warn.mock.calls.at(-1)?.[0])).toContain("alias key file is unreadable");
+    // Missing, in a directory nothing can be created in.
+    const locked = join(dir, "locked");
+    mkdirSync(locked, { mode: 0o500 });
+    expect(loadAliasKey(join(locked, "alias-key"))).toHaveLength(32);
+    expect(String(warn.mock.calls.at(-1)?.[0])).toContain("cannot create alias key file");
+    chmodSync(locked, 0o700);
+  } finally {
+    warn.mockRestore();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+it("loses a counters save it cannot write, without throwing", () => {
+  const dir = mkdtempSync(join(tmpdir(), "alias-save-"));
+  try {
+    const b = book();
+    b.loadCounters(join(dir, "missing", "counters.json"));
+    b.standIn("pii-custom-handle", "zqk", "handle");
+    expect(() => b.saveCounters()).not.toThrow();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 it("makes MACs locally administered and keeps their format", () => {
