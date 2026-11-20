@@ -23,6 +23,7 @@ import zlib from "node:zlib";
 import {
   type Counts,
   type Format,
+  blockedInput,
   blockedNotice,
   heldGrants,
   identityEntries,
@@ -1284,7 +1285,7 @@ function blockedReply(url: URL): Response {
   const notice = blockedNotice(url.searchParams.get("call") ?? "");
   return notice === undefined
     ? errorReply(404, "no blocked call under that id")
-    : Response.json({ notice });
+    : Response.json({ notice, input: blockedInput(url.searchParams.get("call") ?? "") });
 }
 
 // The proxy's own endpoints answer only this machine, and only the methods

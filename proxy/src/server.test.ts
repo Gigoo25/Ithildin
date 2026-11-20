@@ -189,6 +189,15 @@ describe("requests", () => {
     const found = await blocked("?call=toolu_blocked_1");
     expect(found.status).toBe(200);
     expect(await found.json()).toEqual({ notice: NOTE_AS_INPUT });
+    // A guarded call also says what it was, which the harness got blanked.
+    const input = { command: "rm -rf ~/.local/state/ithildin" };
+    expect(swapToolArguments("bash", input, new Set(), "toolu_blocked_2").blocked).toBe(true);
+    const guarded = (await (await blocked("?call=toolu_blocked_2")).json()) as {
+      notice: string;
+      input: string;
+    };
+    expect(guarded.notice).toContain("Not run");
+    expect(JSON.parse(guarded.input)).toEqual(input);
     expect((await blocked("?call=toolu_never")).status).toBe(404);
     expect((await blocked("")).status).toBe(404);
     const posted = await handler(

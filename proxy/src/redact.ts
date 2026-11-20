@@ -1240,6 +1240,27 @@ export function blockedNotice(callId: string): string | undefined {
   return blockedCalls.get(callId);
 }
 
+// The arguments a blocked call was written with, for /blocked. The harness
+// gets the call with empty arguments, so its transcript lost what the model
+// tried; a session reviewed later had to guess a dozen withheld commands.
+// As the model wrote them, before any swap-back: stand-ins, nothing it was
+// not already sent. Memory only and capped: not worth a disk copy.
+const blockedInputs = new Map<string, string>();
+const BLOCKED_INPUT_MAX = 4000;
+
+export function blockedInput(callId: string): string | undefined {
+  return blockedInputs.get(callId);
+}
+
+function rememberBlockedInput(callId: string | undefined, args: unknown): void {
+  if (!callId || !blockedCalls.has(callId)) return;
+  let text = typeof args === "string" ? args : JSON.stringify(args);
+  if (text === undefined) return;
+  if (text.length > BLOCKED_INPUT_MAX) text = `${text.slice(0, BLOCKED_INPUT_MAX)}…`;
+  if (blockedInputs.size > MAX_REMEMBERED) blockedInputs.clear();
+  blockedInputs.set(callId, text);
+}
+
 function rememberLiterals(format: Format, body: Record<string, unknown>): void {
   const list = format === "responses" ? body.input : body.messages;
   const real = [
@@ -2234,13 +2255,18 @@ export function swapToolArguments(
   // own, and nothing in it is worth swapping.
   if (holdsInputNote(args)) return block(callId, NOTE_AS_INPUT);
   const result = swapArguments(toolName, args, tags, callId);
-  if (result.blocked) return result;
+  if (result.blocked) {
+    rememberBlockedInput(callId, args);
+    return result;
+  }
   const id = callApproval(toolName, args);
   if (tags.has(`once:${id}`)) return result;
   const notice = guardNotice(toolName, args, result, tags);
   if (!notice || approvedForReason(notice, tags)) return result;
   rememberRefusal(id, notice);
-  return block(callId, approvalHint(notice, id));
+  const blocked = block(callId, approvalHint(notice, id));
+  rememberBlockedInput(callId, args);
+  return blocked;
 }
 
 // Why the guards refuse a call, or undefined when they let it run.
@@ -2427,6 +2453,7 @@ export function swapToolJson(
   } catch {
     // Agents repair broken JSON and run the call, which no guard has read.
     block(callId, UNREADABLE_CALL);
+    rememberBlockedInput(callId, json);
     return { json: "{}", swapped: 0, blocked: true };
   }
   const result = swapToolArguments(toolName, args, tags, callId);
