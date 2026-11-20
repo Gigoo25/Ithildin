@@ -58,6 +58,7 @@ import { commandSendsCookies, redactCookieHeaders, redactCookieValue } from "./l
 import { isImagePayload, isPayloadMediaType } from "./lib/image-payload.ts";
 import { Recall } from "./lib/recall.ts";
 import { isSecretFile } from "./lib/secret-files.ts";
+import { withoutShellData } from "./lib/shell-data.ts";
 
 // Larger strings are not scanned: they are withheld whole, behind a marker.
 export const MAX_SCAN_BYTES = 2_000_000;
@@ -1150,8 +1151,12 @@ export function commandPathCandidates(command: string, cwd: string): string[] {
   return candidates;
 }
 
+// Patterns, jq filters and copied heredoc text are data: `jq -r '.key'` or
+// a notes heredoc naming .env opens no secret (see lib/shell-data.ts).
 function commandReadsSecretFile(command: string, cwd: string): boolean {
-  return commandPathCandidates(command, cwd).some((candidate) => isSecretPath(candidate, cwd));
+  return commandPathCandidates(withoutShellData(command), cwd).some((candidate) =>
+    isSecretPath(candidate, cwd),
+  );
 }
 
 // The local inventory holds real PII used as match patterns. The model

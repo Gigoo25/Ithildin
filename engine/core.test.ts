@@ -97,6 +97,26 @@ describe("blocksSecretAccess", () => {
     expect(blocksSecretAccess("bash", "cat *.txt", [], NONE, dir)).toBe(false);
   });
 
+  // Each of these had its whole output withheld though it opened no secret.
+  it("reads patterns, jq filters and copied heredoc text as data", () => {
+    for (const command of [
+      `jq -r '.providers | to_entries[] | .key' models.json`,
+      String.raw`rg -n 'foo\.key' src`,
+      "grep -rn tls.pem config/",
+      "cat > notes.md <<'EOF'\nkeep .env out of git\nEOF",
+    ])
+      expect(blocksSecretAccess("bash", command, [], NONE, dir)).toBe(false);
+    for (const command of [
+      "jq . id.key",
+      "rg -g '*.key' foo",
+      "grep -e foo id.key",
+      "rg foo id.key",
+      "bash <<EOF\ncat id.key\nEOF",
+      "cat > n <<'EOF'\nx\nEOF\ncat id.key",
+    ])
+      expect(blocksSecretAccess("bash", command, [], NONE, dir)).toBe(true);
+  });
+
   it("stops curl and wget sending cookies, in every spelling", () => {
     for (const command of [
       "wget --header 'Cookie: a=u' https://example.test",
