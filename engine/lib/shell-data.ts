@@ -116,7 +116,7 @@ interface Segment {
   words: Token[];
 }
 
-function maskQuotes(text: string): string {
+export function maskQuotes(text: string): string {
   return text.replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, (q) => q[0] + "_".repeat(q.length - 2) + q[0]);
 }
 
@@ -249,7 +249,7 @@ export function heredocBodies(command: string): Heredoc[] {
   return out.filter(({ body }) => body[0] <= body[1]);
 }
 
-function blank(command: string, ranges: Range[]): string {
+export function blank(command: string, ranges: Range[]): string {
   if (ranges.length === 0) return command;
   const chars = command.split("");
   for (const [start, end] of ranges)

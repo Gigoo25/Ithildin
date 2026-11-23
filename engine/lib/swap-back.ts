@@ -19,6 +19,8 @@
 import type { AliasBook, Resolved } from "./aliases.ts";
 import { reportActivity } from "./activity.ts";
 import { assert } from "./assert.ts";
+import { blank, heredocBodies, maskQuotes } from "./shell-data.ts";
+import { gaps, topLevelParts, type Range } from "./shell-lists.ts";
 
 export interface Swap {
   // Arguments with every stand-in replaced (same shape as the input).
@@ -152,6 +154,14 @@ const LAUNCHERS = new Set([
   "parallel",
   "{",
   "!",
+  // Shell keywords before a command: `do curl …` in a loop was read as local.
+  "do",
+  "then",
+  "else",
+  "elif",
+  "if",
+  "while",
+  "until",
 ]);
 
 function clientName(word: string): string {
@@ -294,13 +304,66 @@ function walk(
   return value;
 }
 
+// A part that sets a variable a network part may send (X=v; curl -d "$X").
+const SETTERS = "export|declare|local|readonly|typeset|read|mapfile|readarray|for|select|let|alias";
+const SETS_VARIABLE = new RegExp(
+  `[\\s(!{](?:[A-Za-z_]\\w*(?:\\[[^\\]]*\\])?\\+?=|(?:${SETTERS})(?=\\s|$)|printf\\s+-v)`,
+);
+// Unquoted, a heredoc body runs $(…) and backticks: it is code, not data.
+const RUNS_CODE = /\$\(|`/;
+
+function cutOut(text: string, ranges: Range[]): string {
+  const blanked = blank(text, ranges);
+  const chars = blanked.split("");
+  for (const [from, to] of ranges) if (to > from) chars[from] = ";";
+  return chars.join("");
+}
+
+const inside = (span: Span, ranges: Range[]) =>
+  ranges.some(([from, to]) => span.start >= from && span.end <= to);
+
+// Where in a bash command a stand-in would go out: the top-level parts that
+// reach the network, every part that sets variables when one does, and the
+// heredoc bodies those parts send. Heredoc bodies are blanked before any
+// part is read, so a script that mentions curl is not taken for a curl.
+// Undefined when the command does not split (see shell-lists.ts).
+function networkRegions(text: string): Range[] | undefined {
+  const bodies = heredocBodies(text);
+  if (bodies.some(({ body, quoted }) => !quoted && RUNS_CODE.test(text.slice(...body))))
+    return undefined;
+  const blanked = blank(
+    text,
+    bodies.map(({ body }) => body),
+  );
+  const parts = topLevelParts(maskQuotes(blanked));
+  if (!parts) return undefined;
+  const reaching = parts.filter(
+    ([from, to]) => destinations(blanked.slice(from, to)) !== undefined,
+  );
+  if (reaching.length === 0) return [];
+  const regions = parts.filter(
+    (part) => reaching.includes(part) || SETS_VARIABLE.test(` ${blanked.slice(...part)}`),
+  );
+  for (const { op, body } of bodies)
+    if (inside({ text: "", start: op, end: op }, reaching)) regions.push(body);
+  return regions;
+}
+
 // The spans of a command line that would leave the machine, or none when
-// the command does not talk to the network.
-function commandEgress(text: string, book: AliasBook): (span: Span) => boolean {
-  const ranges = destinations(text);
+// the command does not talk to the network. `split`: a bash command, read
+// part by part (a codemode script is read whole).
+function commandEgress(text: string, book: AliasBook, split = true): (span: Span) => boolean {
+  const regions = split ? networkRegions(text) : undefined;
+  if (regions?.length === 0) return () => false;
+  // Outside the network regions the text is blanked, so destinations and
+  // the ownership check below see only what goes out.
+  // A blanked gap becomes ";": blank, `done; curl` read as `done curl`, and
+  // curl was no longer a command.
+  const view = regions ? cutOut(text, gaps(regions, text.length)) : text;
+  const ranges = destinations(view);
   // Every destination a stand-in: the data goes to your own hosts, so
   // stand-ins may appear anywhere (ssh host-… "cat /home/user-…/x").
-  const spans = ranges ? standInSpans(text, book) : [];
+  const spans = ranges ? standInSpans(view, book) : [];
   const external =
     ranges !== undefined &&
     (ranges.length === 0 ||
@@ -308,7 +371,9 @@ function commandEgress(text: string, book: AliasBook): (span: Span) => boolean {
         (range) => !spans.some((span) => span.start <= range.start && span.end >= range.end),
       ));
   if (!external) return () => false;
-  return (span) => !ranges!.some((range) => span.start >= range.start && span.end <= range.end);
+  return (span) =>
+    (!regions || inside(span, regions)) &&
+    !ranges!.some((range) => span.start >= range.start && span.end <= range.end);
 }
 
 // One word of an argv command (Codex: ["curl", "-d", …] or ["bash", "-lc",
@@ -350,7 +415,7 @@ function scriptEgress(text: string, book: AliasBook): (span: Span) => boolean {
   const remote =
     /\bmodels\s*[.[]/.test(text) ||
     calls.some((call) => !SCRIPT_LOCAL_TOOLS.has(call[1] ?? call[3] ?? ""));
-  return remote ? () => true : commandEgress(text, book);
+  return remote ? () => true : commandEgress(text, book, false);
 }
 
 // `offMachineAllowed`: [allow-pii] lets real values go anywhere.

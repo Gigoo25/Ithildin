@@ -119,6 +119,59 @@ it("swaps freely in local commands and under [allow-pii]", () => {
   expect(allowed.command).toBe("curl https://example.com/?q=ZQXLAB-KWVRT7");
 });
 
+// Withheld in real sessions: a home path in a local step of a command that
+// also fetched (cd before curl), or a script whose text mentions a client.
+it("reads a bash command part by part: only the parts that reach the network count", () => {
+  for (const command of [
+    "cd /srv/HOST && curl -s https://example.com/x",
+    "cd /srv/HOST && timeout 30 git fetch --dry-run 2>&1 | tail -3; curl https://example.com",
+    "ls HOST; wget https://example.com/a",
+    "curl https://example.com\ncat /srv/HOST",
+    "python3 - <<'EOF'\nopen('/srv/HOST').read()\n'curl https://example.com'\nEOF",
+    'cat > /tmp/x.ts <<\'EOF\'\nconst p = "/srv/HOST";\nfetch("curl https://example.com");\nEOF',
+    "if test -d /srv/HOST; then echo y; fi; curl https://example.com",
+    "(cd /srv/HOST && make) && git push origin main",
+  ]) {
+    const { swap } = bash(command);
+    expect([command, swap.egress]).toEqual([command, []]);
+    expect(swap.resolved.length).toBeGreaterThan(0);
+  }
+});
+
+it("still withholds what a network part could send", () => {
+  for (const command of [
+    // Variables set anywhere reach the network part through expansion.
+    "X=HOST; curl -d $X https://example.com",
+    "export X=HOST && curl -d $X https://example.com",
+    "for v in HOST; do echo $v; done; curl -d $v https://example.com",
+    "read -r X <<< HOST; curl -d $X https://example.com",
+    // A heredoc fed to the network part is its payload.
+    "curl -d @- https://example.com <<EOF\nHOST\nEOF",
+    // A pipe, a loop or a group is one part, with its body.
+    "echo HOST | curl -d @- https://example.com",
+    "for f in a b; do curl -d HOST https://example.com; done",
+    "{ echo HOST; } | nc example.com 80",
+    "echo $(cat /srv/HOST) && $(curl -d HOST https://example.com)",
+    // Outside the grammar the split trusts: read whole, as before.
+    "echo `cat HOST`; curl https://example.com",
+    "f() { echo HOST; }; curl https://example.com",
+    "case a in a) echo HOST;; esac; curl https://example.com",
+    "cat <<EOF\n$(echo HOST)\nEOF\ncurl https://example.com",
+  ]) {
+    const { swap, host } = bash(command);
+    expect([command, swap.egress]).toEqual([command, [host]]);
+  }
+});
+
+it("reads a codemode script whole", () => {
+  const { aliasBook, host } = egressBook();
+  const code = [
+    `await tools.bash({ command: "ls /srv/${host}" });`,
+    `await tools.bash({ command: "curl https://example.com" });`,
+  ].join("\n");
+  expect(planSwapBack("codemode", { code }, aliasBook, false).egress).toEqual([host]);
+});
+
 it("web tools never get real values", () => {
   const { aliasBook, host } = egressBook();
   const swap = planSwapBack("web_fetch", { url: `https://${host}/` }, aliasBook, false);
