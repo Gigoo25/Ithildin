@@ -57,11 +57,23 @@ describe("allow tags", () => {
 });
 
 describe("status book", () => {
-  it("falls back to the route's latest conversation for an unknown session", () => {
+  it("falls back to the route's latest conversation only when no session is named", () => {
     const book = createStatusBook();
     book.record(undefined, "anthropic", { ...none, masked: 1 }, 1);
-    expect(book.lookup("unseen", "anthropic")?.badge).toBe("ITHILDIN ON · 1 masked (+1)");
-    expect(book.lookup("unseen", "opencode-go")).toBeUndefined();
+    expect(book.lookup(undefined, "anthropic")?.badge).toBe("ITHILDIN ON · 1 masked (+1)");
+    expect(book.lookup(undefined, "opencode-go")).toBeUndefined();
+  });
+
+  // A new Pi session showed the previous conversation's badge, its
+  // ⚠ private and +send included, before sending anything itself.
+  it("gives a session it has not seen no status, not another session's", () => {
+    const book = createStatusBook();
+    book.record("old", "anthropic", { ...none, masked: 27 }, 1, new Set(["send:session"]), {
+      untrusted: true,
+      private: true,
+    });
+    expect(book.lookup("old", "anthropic")?.private).toBe(true);
+    expect(book.lookup("new", "anthropic")).toBeUndefined();
   });
 
   it("does not count a shrunken conversation as negative", () => {

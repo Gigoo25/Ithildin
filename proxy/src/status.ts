@@ -177,11 +177,11 @@ export function createStatusBook() {
       return route ? plans.get(route) : undefined;
     },
 
+    // A named session answers for itself: an unseen one has no status (the
+    // route fallback showed a new Pi session another one's flags and tags).
     lookup(session: string | undefined, route: string | undefined): Status | undefined {
-      return (
-        (session ? sessions.get(session)?.status : undefined) ??
-        (route ? routes.get(route) : undefined)
-      );
+      if (session) return sessions.get(session)?.status;
+      return route ? routes.get(route) : undefined;
     },
   };
 }

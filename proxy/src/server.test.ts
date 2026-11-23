@@ -333,6 +333,9 @@ describe("requests", () => {
     ]);
     expect(await badge("pi-1")).toBe("ITHILDIN ON · 1 masked (+1)");
     expect(await badge("claude-1")).toBe("ITHILDIN ON · nothing masked · 1 req");
+    // A session that has sent nothing yet shows the plain badge, not the
+    // route's latest conversation.
+    expect(await badge("pi-new")).toBe("ITHILDIN ON");
     expect(up.seen[0]!.headers.get("x-ithildin-session")).toBeNull();
     // A tool result in the same turn adds to the turn; a new prompt starts
     // the count again.
