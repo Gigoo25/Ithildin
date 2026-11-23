@@ -280,6 +280,17 @@ describe("local rule additions", () => {
   it("does not fire fleet inventory on ordinary prose", () => {
     expect(scan("they rob banks").some((f) => f.ruleId === "pii-fleet-user-context")).toBe(false);
     expect(scan("mini pc review").some((f) => f.ruleId === "pii-fleet-host-short")).toBe(false);
+    for (const text of [
+      "Inkling 2 Mini is out",
+      "ggml-org/Inkling-2-Mini-GGUF",
+      "Inkling-2-Mini",
+      "Mini-instruct",
+    ]) {
+      expect(scan(text).some((f) => f.ruleId === "pii-fleet-host-short")).toBe(false);
+    }
+    for (const text of ["ssh Mini", "nixosConfigurations.Mini.config", "host Mini is up"]) {
+      expect(scan(text).some((f) => f.ruleId === "pii-fleet-host-short")).toBe(true);
+    }
     // A context word within the window is not enough: the literal is an
     // English verb, and only an identity label right before it names a user.
     for (const text of [

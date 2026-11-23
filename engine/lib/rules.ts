@@ -1082,7 +1082,10 @@ const LOCAL_RULES: Rule[] = [
   {
     id: "pii-fleet-host-short",
     description: "Fleet hostname (common word, case-sensitive)",
-    regex: /\b(Mini)\b/g,
+    // Not inside a hyphenated or versioned name: the word is also a model
+    // size ("Inkling 2 Mini", "Inkling-2-Mini-GGUF"), and blocking those
+    // stopped every model lookup that named it.
+    regex: /(?<![\w-])(?<!\d )(Mini)(?![\w-])/g,
     category: "pii",
   },
   {
